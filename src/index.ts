@@ -82,9 +82,12 @@ import {
 } from "./modules/balances/schemas.js";
 
 import { getBitcoinBalance, getBitcoinPortfolio } from "./modules/bitcoin/index.js";
+import { prepareBitcoinSend, broadcastBitcoinTx } from "./modules/bitcoin/send.js";
 import {
   getBitcoinBalanceInput,
   getBitcoinPortfolioInput,
+  prepareBitcoinSendInput,
+  broadcastBitcoinTxInput,
 } from "./modules/bitcoin/schemas.js";
 
 import { getCompoundPositions } from "./modules/compound/index.js";
@@ -486,6 +489,26 @@ async function main() {
       inputSchema: getBitcoinPortfolioInput.shape,
     },
     handler(getBitcoinPortfolio)
+  );
+
+  server.registerTool(
+    "prepare_bitcoin_send",
+    {
+      description:
+        "Prepare a Bitcoin send by selecting UTXOs that minimize the transaction fee (greedy largest-first). Returns the selection plan — inputs, outputs (recipient + optional change), estimated vsize, fee in sats/BTC, and fee rate used. No PSBT or signed transaction is produced; sign externally (Sparrow, Electrum, hardware wallet) and broadcast via broadcast_bitcoin_tx. Dust-sized change is absorbed into the fee rather than creating uneconomical outputs.",
+      inputSchema: prepareBitcoinSendInput.shape,
+    },
+    handler(prepareBitcoinSend)
+  );
+
+  server.registerTool(
+    "broadcast_bitcoin_tx",
+    {
+      description:
+        "Broadcast a fully signed raw Bitcoin transaction (hex) to mempool.space. Returns the txid on success. The caller is responsible for producing a valid signed tx.",
+      inputSchema: broadcastBitcoinTxInput.shape,
+    },
+    handler(broadcastBitcoinTx)
   );
 
   // ---- Module 8: Compound V3 ----

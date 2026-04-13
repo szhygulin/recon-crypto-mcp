@@ -130,7 +130,7 @@ Focus on read-only operations to ship fast and validate demand:
 - Add EVM chains (Base, Optimism) — reuses existing viem/LiFi/Aave V3 tooling (Polygon shipped)
 - Add non-EVM chains:
   - Tron — native TRX + TRC-20 (notably USDT-TRC20) balances, portfolio integration, and native/TRC-20 send txs signed via Ledger Live WalletConnect `tron:` namespace. Requires a separate SDK (e.g. `tronweb`) and address/validation layer
-  - Bitcoin — native BTC balance and portfolio integration shipped (`get_bitcoin_balance`, `get_bitcoin_portfolio`, plus `bitcoinAddresses` on `get_portfolio_summary`) via mempool.space. Outstanding: send txs via a UTXO library (PSBT assembly, fee-rate selection) and signing via Ledger Live WalletConnect `bip122:` namespace. Smart-contract-dependent tools (Aave, Uniswap, staking, security) are N/A
+  - Bitcoin — native BTC balance, portfolio integration, UTXO-selecting send-preparation, and broadcast all shipped via mempool.space. Tools: `get_bitcoin_balance`, `get_bitcoin_portfolio`, `bitcoinAddresses` on `get_portfolio_summary`, `prepare_bitcoin_send` (greedy largest-first UTXO selection with dust absorption to minimize fee), and `broadcast_bitcoin_tx`. Outstanding: PSBT construction and hardware-wallet signing via Ledger Live WalletConnect `bip122:` namespace — the current flow returns a selection plan for the caller to sign externally (Sparrow, Electrum, any wallet). Smart-contract-dependent tools (Aave, Uniswap, staking, security) are N/A
 
 ### Protocol expansion
 - Lending: Compound V3, Morpho Blue, Spark
