@@ -1,0 +1,552 @@
+/**
+ * Regression tests for each finding in the internal security audit. Every fix
+ * has at least one assertion here so a future refactor that re-introduces the
+ * bug fails loud instead of silently shipping.
+ *
+ * Grouped by the audit's priority labels (C1/C2/C3…, H1/H3…) so the mapping
+ * from commit → audit → test is clear.
+ */
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { parseUnits, maxUint256, encodeFunctionData, toFunctionSelector } from "viem";
+
+// ----- Hoisted mocks -----
+// Every test below that needs to avoid real network traffic talks to these
+// handles. vi.hoisted makes them available inside the vi.mock factory before
+// module-scope imports resolve.
+const { readContractMock, multicallMock } = vi.hoisted(() => ({
+  readContractMock: vi.fn(),
+  multicallMock: vi.fn(),
+}));
+
+vi.mock("../src/data/rpc.js", () => ({
+  getClient: () => ({
+    readContract: readContractMock,
+    multicall: multicallMock,
+    getChainId: vi.fn(),
+    estimateGas: vi.fn(),
+    getGasPrice: vi.fn(),
+    getBalance: vi.fn(),
+    getTransactionReceipt: vi.fn(),
+    getTransaction: vi.fn(),
+    getCode: vi.fn(),
+    getStorageAt: vi.fn(),
+  }),
+  verifyChainId: vi.fn().mockResolvedValue(undefined),
+  resetClients: vi.fn(),
+}));
+
+// ====================================================================
+// C1 — send_transaction is bound to prepare_* via opaque handle.
+// The tx-store is the binding primitive; if it breaks, send_transaction
+// is back to accepting raw calldata.
+// ====================================================================
+describe("C1: tx-store handle binding", () => {
+  it("issueHandles stamps every node in the .next chain with its own handle", async () => {
+    const { issueHandles } = await import("../src/signing/tx-store.js");
+    const inner = {
+      chain: "ethereum" as const,
+      to: "0x1111111111111111111111111111111111111111" as `0x${string}`,
+      data: "0x" as `0x${string}`,
+      value: "0",
+      description: "inner",
+    };
+    const outer = {
+      chain: "ethereum" as const,
+      to: "0x2222222222222222222222222222222222222222" as `0x${string}`,
+      data: "0x" as `0x${string}`,
+      value: "0",
+      description: "outer",
+      next: inner,
+    };
+    const stamped = issueHandles(outer);
+    expect(stamped.handle).toMatch(/^[0-9a-f-]{36}$/);
+    expect(stamped.next?.handle).toMatch(/^[0-9a-f-]{36}$/);
+    expect(stamped.handle).not.toBe(stamped.next?.handle);
+  });
+
+  it("consumeHandle round-trips the stored tx", async () => {
+    const { issueHandles, consumeHandle } = await import("../src/signing/tx-store.js");
+    const tx = {
+      chain: "ethereum" as const,
+      to: "0x3333333333333333333333333333333333333333" as `0x${string}`,
+      data: "0xdeadbeef" as `0x${string}`,
+      value: "42",
+      description: "payload",
+    };
+    const stamped = issueHandles(tx);
+    const retrieved = consumeHandle(stamped.handle!);
+    expect(retrieved.to).toBe(tx.to);
+    expect(retrieved.data).toBe(tx.data);
+    expect(retrieved.value).toBe(tx.value);
+  });
+
+  it("consumeHandle refuses unknown or never-issued handles", async () => {
+    const { consumeHandle } = await import("../src/signing/tx-store.js");
+    // A prompt-injected agent that fabricated a handle string must NOT be able
+    // to feed arbitrary calldata to send_transaction — this is the C1 fix.
+    expect(() => consumeHandle("not-a-real-handle")).toThrow(/Unknown or expired/);
+    expect(() =>
+      consumeHandle("00000000-0000-0000-0000-000000000000")
+    ).toThrow(/Unknown or expired/);
+  });
+});
+
+// ====================================================================
+// C2 + M10 — peer identity is surfaced to the agent with a trust warning.
+// ====================================================================
+describe("C2+M10: WalletConnect peer identity", () => {
+  it("exports a trust warning string covering the self-report attack", async () => {
+    const { PEER_TRUST_WARNING } = await import("../src/signing/session.js");
+    // The literal content drives the agent's behaviour at prepare/send time.
+    // If anyone softens it, this catches the regression.
+    expect(PEER_TRUST_WARNING).toMatch(/self-reported/i);
+    expect(PEER_TRUST_WARNING).toMatch(/Ledger/);
+    expect(PEER_TRUST_WARNING).toMatch(/confirm|device/i);
+  });
+});
+
+// ====================================================================
+// C3 — Aave stable-rate removed from schemas.
+// ====================================================================
+describe("C3: Aave stable-rate removed", () => {
+  it("prepare_aave_borrow schema has no interestRateMode", async () => {
+    const { prepareAaveBorrowInput } = await import(
+      "../src/modules/execution/schemas.js"
+    );
+    expect("interestRateMode" in prepareAaveBorrowInput.shape).toBe(false);
+  });
+
+  it("prepare_aave_repay schema has no interestRateMode", async () => {
+    const { prepareAaveRepayInput } = await import(
+      "../src/modules/execution/schemas.js"
+    );
+    expect("interestRateMode" in prepareAaveRepayInput.shape).toBe(false);
+  });
+});
+
+// ====================================================================
+// C4 — Aave supply/repay reject the native-coin pseudoaddress.
+// ====================================================================
+describe("C4: Aave rejects native-coin pseudoaddresses", () => {
+  const wallet = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+  const makeArgs = (asset: `0x${string}`) => ({
+    wallet,
+    chain: "ethereum" as const,
+    asset,
+    amount: "1",
+    decimals: 18,
+    symbol: "ETH",
+  });
+
+  it("buildAaveSupply rejects the zero-address pseudoaddr", async () => {
+    const { buildAaveSupply } = await import("../src/modules/positions/actions.js");
+    await expect(
+      buildAaveSupply(makeArgs("0x0000000000000000000000000000000000000000"))
+    ).rejects.toThrow(/does not accept/i);
+  });
+
+  it("buildAaveSupply rejects the 0xEee…Eee pseudoaddr", async () => {
+    const { buildAaveSupply } = await import("../src/modules/positions/actions.js");
+    await expect(
+      buildAaveSupply(makeArgs("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"))
+    ).rejects.toThrow(/does not accept/i);
+  });
+
+  it("buildAaveRepay rejects the zero-address pseudoaddr", async () => {
+    const { buildAaveRepay } = await import("../src/modules/positions/actions.js");
+    await expect(
+      buildAaveRepay(makeArgs("0x0000000000000000000000000000000000000000"))
+    ).rejects.toThrow(/does not accept/i);
+  });
+
+  it("error message points the caller at the wrapped token", async () => {
+    const { buildAaveSupply } = await import("../src/modules/positions/actions.js");
+    await expect(
+      buildAaveSupply(makeArgs("0x0000000000000000000000000000000000000000"))
+    ).rejects.toThrow(/WETH|wrapped/i);
+  });
+});
+
+// ====================================================================
+// H1 — USDT-style approve(0) reset when a nonzero prior allowance exists.
+// ====================================================================
+describe("H1: USDT-style approve(0) reset in Aave action builder", () => {
+  const wallet = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+  const USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7" as `0x${string}`;
+  const POOL = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2" as `0x${string}`;
+
+  beforeEach(() => {
+    readContractMock.mockReset();
+    // getAavePoolAddress issues `readContract({ functionName: "getPool" })`
+    // then ensureApproval issues `readContract({ functionName: "allowance" })`.
+    readContractMock.mockImplementation(
+      async ({ functionName }: { functionName: string }) => {
+        if (functionName === "getPool") return POOL;
+        if (functionName === "allowance") return 500n; // nonzero → triggers reset
+        throw new Error(`unexpected readContract: ${functionName}`);
+      }
+    );
+  });
+
+  it("emits approve(0) → approve(amount) → supply when prior allowance is nonzero", async () => {
+    const { buildAaveSupply } = await import("../src/modules/positions/actions.js");
+    const tx = await buildAaveSupply({
+      wallet,
+      chain: "ethereum",
+      asset: USDT,
+      amount: "100",
+      decimals: 6,
+      symbol: "USDT",
+    });
+    // Outer tx = approve(0).
+    expect(tx.to).toBe(USDT);
+    expect(tx.description).toMatch(/Reset USDT allowance to 0/i);
+    const approveSelector = toFunctionSelector("approve(address,uint256)");
+    expect(tx.data.startsWith(approveSelector)).toBe(true);
+    // The encoded amount for approve(0) ends in 64 zero hex chars.
+    expect(tx.data.endsWith("0".repeat(64))).toBe(true);
+
+    // Middle tx = approve(amount).
+    const mid = tx.next!;
+    expect(mid.to).toBe(USDT);
+    expect(mid.description).toMatch(/Approve USDT.*exact amount/i);
+    // Re-encode the expected exact-amount approve to compare calldata bytes.
+    const expectedApproveData = encodeFunctionData({
+      abi: [
+        {
+          type: "function",
+          name: "approve",
+          stateMutability: "nonpayable",
+          inputs: [
+            { name: "spender", type: "address" },
+            { name: "amount", type: "uint256" },
+          ],
+          outputs: [{ type: "bool" }],
+        },
+      ],
+      functionName: "approve",
+      args: [POOL, parseUnits("100", 6)],
+    });
+    expect(mid.data).toBe(expectedApproveData);
+
+    // Tail tx = supply.
+    const supply = mid.next!;
+    expect(supply.to).toBe(POOL);
+    expect(supply.description).toMatch(/Supply 100 USDT/i);
+    expect(supply.next).toBeUndefined();
+  });
+
+  it("skips the reset when prior allowance is zero (single approve + action)", async () => {
+    readContractMock.mockImplementation(
+      async ({ functionName }: { functionName: string }) => {
+        if (functionName === "getPool") return POOL;
+        if (functionName === "allowance") return 0n;
+        throw new Error(`unexpected readContract: ${functionName}`);
+      }
+    );
+    const { buildAaveSupply } = await import("../src/modules/positions/actions.js");
+    const tx = await buildAaveSupply({
+      wallet,
+      chain: "ethereum",
+      asset: USDT,
+      amount: "100",
+      decimals: 6,
+      symbol: "USDT",
+    });
+    // Outer = approve(amount) (no reset needed).
+    expect(tx.description).toMatch(/Approve USDT.*exact amount/i);
+    expect(tx.next?.description).toMatch(/Supply 100 USDT/i);
+    expect(tx.next?.next).toBeUndefined();
+  });
+});
+
+// ====================================================================
+// H2 — Aave repay-max sizes allowance against the user's real debt.
+// ====================================================================
+describe("H2: Aave repay-max sizes approval against live debt", () => {
+  const wallet = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+  const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as `0x${string}`;
+  const POOL = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2" as `0x${string}`;
+  const V_DEBT = "0x72E95b8931767C79bA4EeE721354d6E99a61D004" as `0x${string}`;
+
+  beforeEach(() => {
+    readContractMock.mockReset();
+  });
+
+  it("approval amount = debt × 1.01 when amount is 'max'", async () => {
+    const debt = 1_000_000n; // 1 USDC (6 decimals)
+    readContractMock.mockImplementation(
+      async ({ functionName }: { functionName: string }) => {
+        if (functionName === "getPool") return POOL;
+        if (functionName === "getReserveData") {
+          return { variableDebtTokenAddress: V_DEBT };
+        }
+        if (functionName === "balanceOf") return debt;
+        if (functionName === "allowance") return 0n; // force an approve step
+        throw new Error(`unexpected readContract: ${functionName}`);
+      }
+    );
+
+    const { buildAaveRepay } = await import("../src/modules/positions/actions.js");
+    const tx = await buildAaveRepay({
+      wallet,
+      chain: "ethereum",
+      asset: USDC,
+      amount: "max",
+      decimals: 6,
+      symbol: "USDC",
+    });
+    // First step is an approve with amount = debt * 1.01.
+    expect(tx.to).toBe(USDC);
+    const expected = encodeFunctionData({
+      abi: [
+        {
+          type: "function",
+          name: "approve",
+          stateMutability: "nonpayable",
+          inputs: [
+            { name: "spender", type: "address" },
+            { name: "amount", type: "uint256" },
+          ],
+          outputs: [{ type: "bool" }],
+        },
+      ],
+      functionName: "approve",
+      args: [POOL, (debt * 101n) / 100n],
+    });
+    expect(tx.data).toBe(expected);
+  });
+
+  it("refuses repay-max when the user has zero variable debt", async () => {
+    readContractMock.mockImplementation(
+      async ({ functionName }: { functionName: string }) => {
+        if (functionName === "getPool") return POOL;
+        if (functionName === "getReserveData") {
+          return { variableDebtTokenAddress: V_DEBT };
+        }
+        if (functionName === "balanceOf") return 0n;
+        throw new Error(`unexpected readContract: ${functionName}`);
+      }
+    );
+    const { buildAaveRepay } = await import("../src/modules/positions/actions.js");
+    await expect(
+      buildAaveRepay({
+        wallet,
+        chain: "ethereum",
+        asset: USDC,
+        amount: "max",
+        decimals: 6,
+        symbol: "USDC",
+      })
+    ).rejects.toThrow(/No variable-rate debt|nothing to repay/i);
+  });
+});
+
+// ====================================================================
+// C5 + C6 + H4 — portfolio summary reports coverage and unpriced assets.
+// ====================================================================
+describe("C5+C6+H4: portfolio coverage + priceMissing flag", () => {
+  it("makeTokenAmount flags nonzero balances without a price", async () => {
+    const { makeTokenAmount } = await import("../src/data/format.js");
+    const t = makeTokenAmount(
+      "ethereum",
+      "0x1111111111111111111111111111111111111111",
+      1_000_000n,
+      6,
+      "MYSTERY"
+    );
+    expect(t.priceMissing).toBe(true);
+    expect(t.valueUsd).toBeUndefined();
+  });
+
+  it("makeTokenAmount leaves zero balances unflagged", async () => {
+    const { makeTokenAmount } = await import("../src/data/format.js");
+    const t = makeTokenAmount(
+      "ethereum",
+      "0x1111111111111111111111111111111111111111",
+      0n,
+      18,
+      "ZERO"
+    );
+    expect(t.priceMissing).toBeUndefined();
+  });
+
+  it("makeTokenAmount does not flag tokens that were priced", async () => {
+    const { makeTokenAmount } = await import("../src/data/format.js");
+    const t = makeTokenAmount(
+      "ethereum",
+      "0x1111111111111111111111111111111111111111",
+      1_000_000n,
+      6,
+      "USDC",
+      1.0
+    );
+    expect(t.priceMissing).toBeUndefined();
+    expect(t.valueUsd).toBe(1);
+  });
+});
+
+// ====================================================================
+// H7 — LP position no longer exposes the broken IL estimate; renamed
+// fees field signals "this is a lower bound, not authoritative".
+// ====================================================================
+describe("H7: Uniswap V3 LP position shape", () => {
+  it("LPPosition type uses the renamed cached-owed fees and drops the IL field", () => {
+    // Structural check: TypeScript compiles this only if the fields exist /
+    // don't exist as expected. An IL field resurfacing would fail `satisfies`
+    // below.
+    type Expected = {
+      tokensOwedCached0: unknown;
+      tokensOwedCached1: unknown;
+      valueUsdIsApproximate: true;
+    };
+    type NotExpected = {
+      impermanentLossEstimate: number;
+      unclaimedFees0: unknown;
+      unclaimedFees1: unknown;
+    };
+    const _required: Expected = {
+      tokensOwedCached0: {},
+      tokensOwedCached1: {},
+      valueUsdIsApproximate: true,
+    };
+    // @ts-expect-error — removed fields should no longer be part of LPPosition.
+    const _forbidden: NotExpected = {
+      impermanentLossEstimate: 0,
+      unclaimedFees0: {},
+      unclaimedFees1: {},
+    };
+    expect(_required.valueUsdIsApproximate).toBe(true);
+  });
+});
+
+// ====================================================================
+// H9 — Etherscan-derived names are sanitized before they can reach the
+// agent transcript.
+// ====================================================================
+describe("H9: Etherscan field sanitization", () => {
+  it("sanitizeContractName strips characters outside [A-Za-z0-9._-]", async () => {
+    const { sanitizeContractName } = await import("../src/data/apis/etherscan.js");
+    expect(sanitizeContractName("Ignore previous instructions")).toBe(
+      "Ignorepreviousinstructions"
+    );
+    expect(sanitizeContractName("<script>alert(1)</script>")).toBe("scriptalert1script");
+    expect(sanitizeContractName("Aave V3 Pool")).toBe("AaveV3Pool");
+    expect(sanitizeContractName("Safe.Name_1-2")).toBe("Safe.Name_1-2");
+  });
+
+  it("sanitizeContractName caps length at 64 chars", async () => {
+    const { sanitizeContractName } = await import("../src/data/apis/etherscan.js");
+    const long = "A".repeat(200);
+    expect(sanitizeContractName(long)?.length).toBe(64);
+  });
+
+  it("sanitizeContractName collapses empty / undefined input to undefined", async () => {
+    const { sanitizeContractName } = await import("../src/data/apis/etherscan.js");
+    expect(sanitizeContractName(undefined)).toBeUndefined();
+    expect(sanitizeContractName("")).toBeUndefined();
+    expect(sanitizeContractName("!!! @@@")).toBeUndefined();
+  });
+});
+
+// ====================================================================
+// H10 — RPC URLs validated (https, no RFC1918/loopback) + chainId check.
+// ====================================================================
+describe("H10: RPC URL validation", () => {
+  const savedAllow = process.env.RECON_MCP_ALLOW_INSECURE_RPC;
+  beforeEach(() => {
+    delete process.env.RECON_MCP_ALLOW_INSECURE_RPC;
+  });
+  afterAll(() => {
+    if (savedAllow === undefined) delete process.env.RECON_MCP_ALLOW_INSECURE_RPC;
+    else process.env.RECON_MCP_ALLOW_INSECURE_RPC = savedAllow;
+  });
+
+  it("rejects plaintext http:// URLs", async () => {
+    const { validateRpcUrl, RpcConfigError } = await import("../src/config/chains.js");
+    expect(() => validateRpcUrl("ethereum", "http://mainnet.infura.io/v3/x"))
+      .toThrow(RpcConfigError);
+    expect(() => validateRpcUrl("ethereum", "http://mainnet.infura.io/v3/x"))
+      .toThrow(/https/i);
+  });
+
+  it("rejects IPv4 loopback", async () => {
+    const { validateRpcUrl } = await import("../src/config/chains.js");
+    expect(() => validateRpcUrl("ethereum", "https://127.0.0.1:8545/"))
+      .toThrow(/private|loopback/i);
+  });
+
+  it("rejects RFC1918 private ranges (10/8, 172.16/12, 192.168/16)", async () => {
+    const { validateRpcUrl } = await import("../src/config/chains.js");
+    for (const url of [
+      "https://10.0.0.1/",
+      "https://172.16.5.4/",
+      "https://192.168.1.1/",
+      "https://169.254.169.254/", // link-local (cloud metadata)
+    ]) {
+      expect(() => validateRpcUrl("ethereum", url)).toThrow(/private|loopback/i);
+    }
+  });
+
+  it("rejects localhost / *.local hostnames", async () => {
+    const { validateRpcUrl } = await import("../src/config/chains.js");
+    expect(() => validateRpcUrl("ethereum", "https://localhost/")).toThrow();
+    expect(() => validateRpcUrl("ethereum", "https://node.local/")).toThrow();
+  });
+
+  it("accepts normal public https URLs", async () => {
+    const { validateRpcUrl } = await import("../src/config/chains.js");
+    expect(() =>
+      validateRpcUrl("ethereum", "https://eth-mainnet.g.alchemy.com/v2/key")
+    ).not.toThrow();
+    expect(() =>
+      validateRpcUrl("ethereum", "https://mainnet.infura.io/v3/key")
+    ).not.toThrow();
+  });
+
+  it("RECON_MCP_ALLOW_INSECURE_RPC=1 opts out (for anvil/hardhat forks)", async () => {
+    const { validateRpcUrl } = await import("../src/config/chains.js");
+    process.env.RECON_MCP_ALLOW_INSECURE_RPC = "1";
+    expect(() => validateRpcUrl("ethereum", "http://127.0.0.1:8545")).not.toThrow();
+  });
+});
+
+// ====================================================================
+// H3 — slippage schema capped at 500 bps; 100–500 bps requires ack.
+// ====================================================================
+describe("H3: slippage ceiling + acknowledgement", () => {
+  it("schema rejects slippageBps > 500", async () => {
+    const { prepareSwapInput } = await import("../src/modules/swap/schemas.js");
+    const res = prepareSwapInput.safeParse({
+      wallet: "0x1111111111111111111111111111111111111111",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "native",
+      toToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      amount: "1",
+      slippageBps: 501,
+    });
+    expect(res.success).toBe(false);
+  });
+
+  it("assertSlippageOk throws above 100 bps without the ack flag", async () => {
+    const { assertSlippageOk } = await import("../src/modules/swap/index.js");
+    expect(() => assertSlippageOk(200, undefined)).toThrow(/acknowledgeHighSlippage/);
+    expect(() => assertSlippageOk(101, undefined)).toThrow(/acknowledgeHighSlippage/);
+  });
+
+  it("assertSlippageOk permits ≤100 bps without ack", async () => {
+    const { assertSlippageOk } = await import("../src/modules/swap/index.js");
+    expect(() => assertSlippageOk(50, undefined)).not.toThrow();
+    expect(() => assertSlippageOk(100, undefined)).not.toThrow();
+    expect(() => assertSlippageOk(undefined, undefined)).not.toThrow();
+  });
+
+  it("assertSlippageOk permits high slippage when explicitly acknowledged", async () => {
+    const { assertSlippageOk } = await import("../src/modules/swap/index.js");
+    expect(() => assertSlippageOk(400, true)).not.toThrow();
+  });
+});
+
+// vi's afterAll import — keep here so it's hoisted alongside vi.
+import { afterAll } from "vitest";

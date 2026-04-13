@@ -107,7 +107,7 @@ async function readOnchainDecimals(
  * (1%) that requires an explicit ack. MEV sandwich bots target open-slippage
  * txs, so every unnecessary basis point is paid straight to a searcher.
  */
-function assertSlippageOk(slippageBps: number | undefined, ack: boolean | undefined): void {
+export function assertSlippageOk(slippageBps: number | undefined, ack: boolean | undefined): void {
   if (slippageBps === undefined) return;
   if (slippageBps > 100 && !ack) {
     throw new Error(

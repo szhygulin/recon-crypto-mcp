@@ -33,7 +33,7 @@ export interface ContractInfo {
  * angle brackets, braces, quotes) and caps length. We never want the raw
  * string hitting the agent transcript — it's attacker-controlled.
  */
-function sanitizeContractName(raw: string | undefined): string | undefined {
+export function sanitizeContractName(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
   const cleaned = raw.replace(/[^A-Za-z0-9._\-]/g, "").slice(0, 64);
   return cleaned.length > 0 ? cleaned : undefined;

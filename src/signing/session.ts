@@ -32,7 +32,7 @@ export interface SessionStatus {
   peerUnreachable?: boolean;
 }
 
-const PEER_TRUST_WARNING =
+export const PEER_TRUST_WARNING =
   "WalletConnect peer metadata is self-reported — any app can claim to be 'Ledger Live'. " +
   "If the paired wallet/URL above is unexpected (e.g. not 'Ledger Live' / ledger.com), ask the user " +
   "to confirm before calling send_transaction. The ultimate check is that the tx shows up on the " +
