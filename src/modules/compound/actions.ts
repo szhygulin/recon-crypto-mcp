@@ -53,7 +53,7 @@ async function ensureApprovalTx(
     args: [wallet, spender],
   })) as bigint;
   if (allowance >= amountWei) return null;
-  return {
+  const approveTx: UnsignedTx = {
     chain,
     to: asset,
     data: encodeFunctionData({
@@ -66,6 +66,25 @@ async function ensureApprovalTx(
     description: `Approve ${symbol} for Compound V3 market (unlimited)`,
     decoded: { functionName: "approve", args: { spender, amount: "max" } },
   };
+  if (allowance > 0n) {
+    // USDT-style reset: some ERC-20s (notably USDT) revert on
+    // approve(nonzero→nonzero). Zero first, then set new amount.
+    return {
+      chain,
+      to: asset,
+      data: encodeFunctionData({
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [spender, 0n],
+      }),
+      value: "0",
+      from: wallet,
+      description: `Reset ${symbol} allowance to 0 (required by USDT-style tokens before re-approval)`,
+      decoded: { functionName: "approve", args: { spender, amount: "0" } },
+      next: approveTx,
+    };
+  }
+  return approveTx;
 }
 
 export async function buildCompoundSupply(p: PrepareCompoundSupplyArgs): Promise<UnsignedTx> {
@@ -90,7 +109,9 @@ export async function buildCompoundSupply(p: PrepareCompoundSupplyArgs): Promise
     decoded: { functionName: "supply", args: { asset, amount: p.amount, market } },
   };
   if (approval) {
-    approval.next = supplyTx;
+    let tail = approval;
+    while (tail.next) tail = tail.next;
+    tail.next = supplyTx;
     return approval;
   }
   return supplyTx;
@@ -167,7 +188,9 @@ export async function buildCompoundRepay(p: PrepareCompoundRepayArgs): Promise<U
     decoded: { functionName: "supply(base)", args: { asset: baseToken, amount: p.amount, market } },
   };
   if (approval) {
-    approval.next = repayTx;
+    let tail = approval;
+    while (tail.next) tail = tail.next;
+    tail.next = repayTx;
     return approval;
   }
   return repayTx;

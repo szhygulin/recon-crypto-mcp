@@ -388,6 +388,29 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
         },
         next: swapTx,
       };
+      if (allowance > 0n) {
+        // USDT-style reset: tokens like USDT revert on approve(nonzero→nonzero).
+        // Chain approve(0) → approve(amount) → swap so we don't silently fail on
+        // the first tx of the triple.
+        const resetTx: UnsignedTx = {
+          chain,
+          to: fromToken,
+          data: encodeFunctionData({
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [approvalAddress, 0n],
+          }),
+          value: "0",
+          from: args.wallet as `0x${string}`,
+          description: `Reset ${fromSym} allowance to 0 (required by USDT-style tokens before re-approval)`,
+          decoded: {
+            functionName: "approve",
+            args: { spender: approvalAddress, amount: "0" },
+          },
+          next: approveTx,
+        };
+        return resetTx;
+      }
       return approveTx;
     }
   }

@@ -70,7 +70,7 @@ async function ensureApprovalTx(
     args: [wallet, spender],
   })) as bigint;
   if (allowance >= amountWei) return null;
-  return {
+  const approveTx: UnsignedTx = {
     chain,
     to: asset,
     data: encodeFunctionData({
@@ -83,6 +83,25 @@ async function ensureApprovalTx(
     description: `Approve ${symbol} for Morpho Blue (unlimited)`,
     decoded: { functionName: "approve", args: { spender, amount: "max" } },
   };
+  if (allowance > 0n) {
+    // USDT-style reset: approve(0) before approve(nonzero) to work around tokens
+    // that revert on nonzero→nonzero approvals.
+    return {
+      chain,
+      to: asset,
+      data: encodeFunctionData({
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [spender, 0n],
+      }),
+      value: "0",
+      from: wallet,
+      description: `Reset ${symbol} allowance to 0 (required by USDT-style tokens before re-approval)`,
+      decoded: { functionName: "approve", args: { spender, amount: "0" } },
+      next: approveTx,
+    };
+  }
+  return approveTx;
 }
 
 function paramsTuple(p: MorphoMarketParams) {
@@ -127,7 +146,9 @@ export async function buildMorphoSupply(p: PrepareMorphoSupplyArgs): Promise<Uns
     },
   };
   if (approval) {
-    approval.next = supplyTx;
+    let tail = approval;
+    while (tail.next) tail = tail.next;
+    tail.next = supplyTx;
     return approval;
   }
   return supplyTx;
@@ -228,7 +249,9 @@ export async function buildMorphoRepay(p: PrepareMorphoRepayArgs): Promise<Unsig
     },
   };
   if (approval) {
-    approval.next = repayTx;
+    let tail = approval;
+    while (tail.next) tail = tail.next;
+    tail.next = repayTx;
     return approval;
   }
   return repayTx;
@@ -268,7 +291,9 @@ export async function buildMorphoSupplyCollateral(
     },
   };
   if (approval) {
-    approval.next = tx;
+    let tail = approval;
+    while (tail.next) tail = tail.next;
+    tail.next = tx;
     return approval;
   }
   return tx;
