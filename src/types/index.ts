@@ -34,6 +34,37 @@ export interface TokenAmount {
   formatted: string;
   valueUsd?: number;
   priceUsd?: number;
+  /**
+   * True when we could not resolve a USD price for this token. `valueUsd` is
+   * `undefined` rather than 0, and portfolio totals will NOT include this
+   * balance — callers should flag it to the user instead of silently treating
+   * it as worthless.
+   */
+  priceMissing?: boolean;
+}
+
+/**
+ * Per-subsystem status reported alongside a portfolio summary, so callers can
+ * distinguish "no Aave position" (covered:true, positions empty) from "Aave
+ * fetch failed" (covered:false, errored:true) from "not attempted" (covered:
+ * false, errored:false — e.g. Morpho Blue, which requires caller-supplied
+ * market ids and so has no on-chain enumeration path from a wallet).
+ */
+export interface CoverageStatus {
+  covered: boolean;
+  errored?: boolean;
+  /** Free-form message explaining why `covered` is false when it is. */
+  note?: string;
+}
+
+export interface PortfolioCoverage {
+  aave: CoverageStatus;
+  compound: CoverageStatus;
+  morpho: CoverageStatus;
+  uniswapV3: CoverageStatus;
+  staking: CoverageStatus;
+  /** Number of token balances whose USD valuation could not be resolved. */
+  unpricedAssets: number;
 }
 
 export interface LendingPosition {
@@ -144,6 +175,7 @@ export interface PortfolioSummary {
     lp: LPPosition[];
     staking: StakingPosition[];
   };
+  coverage: PortfolioCoverage;
 }
 
 /** Multi-wallet portfolio aggregation. */
@@ -157,6 +189,7 @@ export interface MultiWalletPortfolioSummary {
   stakingUsd: number;
   perChain: Record<SupportedChain, number>;
   perWallet: PortfolioSummary[];
+  coverage: PortfolioCoverage;
 }
 
 /** Unsigned transaction, ready to be sent to Ledger Live for signing. */

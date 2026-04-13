@@ -10,6 +10,7 @@ import type { GetPortfolioSummaryArgs } from "./schemas.js";
 import type {
   LendingPositionUnion,
   MultiWalletPortfolioSummary,
+  PortfolioCoverage,
   PortfolioSummary,
   SupportedChain,
   TokenAmount,
@@ -105,6 +106,21 @@ export async function getPortfolioSummary(
       perChain[c] = round((perChain[c] ?? 0) + (p.perChain[c] ?? 0), 2);
     }
   }
+  // Aggregate coverage: a subsystem is considered errored across the group if
+  // ANY wallet's fetch failed — because the group-level total will be short
+  // that wallet's contribution. Notes get merged to the worst (errored) state.
+  const mergedCoverage: PortfolioCoverage = {
+    aave: mergeCoverage(perWallet.map((p) => p.coverage.aave)),
+    compound: mergeCoverage(perWallet.map((p) => p.coverage.compound)),
+    morpho: perWallet[0]?.coverage.morpho ?? {
+      covered: false,
+      note: "Morpho Blue requires caller-supplied marketIds.",
+    },
+    uniswapV3: mergeCoverage(perWallet.map((p) => p.coverage.uniswapV3)),
+    staking: mergeCoverage(perWallet.map((p) => p.coverage.staking)),
+    unpricedAssets: perWallet.reduce((s, p) => s + p.coverage.unpricedAssets, 0),
+  };
+
   return {
     wallets,
     chains,
@@ -115,6 +131,17 @@ export async function getPortfolioSummary(
     stakingUsd,
     perChain,
     perWallet,
+    coverage: mergedCoverage,
+  };
+}
+
+function mergeCoverage(entries: { covered: boolean; errored?: boolean; note?: string }[]) {
+  const anyErrored = entries.some((e) => e.errored);
+  const allCovered = entries.every((e) => e.covered);
+  return {
+    covered: allCovered && !anyErrored,
+    ...(anyErrored ? { errored: true } : {}),
+    ...(entries.find((e) => e.note)?.note ? { note: entries.find((e) => e.note)!.note } : {}),
   };
 }
 
@@ -129,6 +156,10 @@ async function buildWalletSummary(
   // (Blue has no on-chain enumeration of a user's markets). Surface Morpho via the
   // dedicated get_morpho_positions tool instead.
   const emptyPositions = { wallet, positions: [] as never[] };
+  // Wrap each subquery so the portfolio can distinguish failure from empty. A
+  // thrown fetch becomes errored:true so callers don't mistake "Aave down" for
+  // "no Aave position".
+  const errors = { aave: false, compound: false, lp: false, staking: false };
   const [nativeAmounts, erc20Amounts, aave, compound, lp, staking] = await Promise.all([
     Promise.all(
       chains.map((c) =>
@@ -136,10 +167,22 @@ async function buildWalletSummary(
       )
     ),
     Promise.all(chains.map((c) => fetchTopErc20Balances(wallet, c).catch(() => []))),
-    getLendingPositions({ wallet, chains }).catch(() => emptyPositions as never),
-    getCompoundPositions({ wallet, chains }).catch(() => emptyPositions as never),
-    getLpPositions({ wallet, chains }).catch(() => emptyPositions as never),
-    getStakingPositions({ wallet, chains }).catch(() => emptyPositions as never),
+    getLendingPositions({ wallet, chains }).catch(() => {
+      errors.aave = true;
+      return emptyPositions as never;
+    }),
+    getCompoundPositions({ wallet, chains }).catch(() => {
+      errors.compound = true;
+      return emptyPositions as never;
+    }),
+    getLpPositions({ wallet, chains }).catch(() => {
+      errors.lp = true;
+      return emptyPositions as never;
+    }),
+    getStakingPositions({ wallet, chains }).catch(() => {
+      errors.staking = true;
+      return emptyPositions as never;
+    }),
   ]);
 
   // Filter zero native balances out.
@@ -182,6 +225,19 @@ async function buildWalletSummary(
     perChain[c] = round(chainNative + chainErc20 + chainLending + chainLp + chainStaking, 2);
   });
 
+  const unpricedAssets = [...native, ...erc20].filter((t) => t.priceMissing).length;
+  const coverage: PortfolioCoverage = {
+    aave: { covered: !errors.aave, ...(errors.aave ? { errored: true, note: "Aave fetch failed — positions not included in totals." } : {}) },
+    compound: { covered: !errors.compound, ...(errors.compound ? { errored: true, note: "Compound V3 fetch failed — positions not included in totals." } : {}) },
+    morpho: {
+      covered: false,
+      note: "Morpho Blue positions require caller-supplied marketIds (no on-chain enumeration from a wallet). Call get_morpho_positions separately if the user has Morpho exposure.",
+    },
+    uniswapV3: { covered: !errors.lp, ...(errors.lp ? { errored: true, note: "Uniswap V3 LP fetch failed — positions not included." } : {}) },
+    staking: { covered: !errors.staking, ...(errors.staking ? { errored: true, note: "Staking (Lido/EigenLayer) fetch failed — positions not included." } : {}) },
+    unpricedAssets,
+  };
+
   return {
     wallet,
     chains,
@@ -198,5 +254,6 @@ async function buildWalletSummary(
       lp: lp.positions,
       staking: staking.positions,
     },
+    coverage,
   };
 }

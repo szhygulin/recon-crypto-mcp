@@ -19,7 +19,7 @@ export function makeTokenAmount(
   const formatted = formatUnits(amountWei, decimals);
   const numeric = Number(formatted);
   const valueUsd = priceUsd !== undefined ? round(numeric * priceUsd, 2) : undefined;
-  return {
+  const t: TokenAmount = {
     token: getAddress(address) as `0x${string}`,
     symbol,
     decimals,
@@ -28,6 +28,8 @@ export function makeTokenAmount(
     priceUsd,
     valueUsd,
   };
+  if (priceUsd === undefined && amountWei > 0n) t.priceMissing = true;
+  return t;
 }
 
 /** Price up a list of token amounts in one batched call. Mutates in place. */
@@ -44,6 +46,9 @@ export async function priceTokenAmounts(
     if (p !== undefined) {
       a.priceUsd = p;
       a.valueUsd = round(Number(a.formatted) * p, 2);
+      delete a.priceMissing;
+    } else if (BigInt(a.amount) > 0n) {
+      a.priceMissing = true;
     }
   }
 }
