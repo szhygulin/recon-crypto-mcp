@@ -574,3 +574,219 @@ describe("Bug 9: Portfolio summary aggregates Compound alongside Aave", () => {
     expect(single.breakdown.lending[0].protocol).toBe("compound-v3");
   });
 });
+
+describe("Bug 10: LiFi fee cost aggregation ignores amountUSD when it contradicts amount*priceUSD", () => {
+  // Live session: a 100 USDC → Polygon bridge reported feeCostsUsd ≈ $249,940. LiFi
+  // returned feeCosts[0].amountUSD as "249940000" (raw 6-decimal token units) while the
+  // token price and amount said the real fee was ~$0.25. Reading amountUSD verbatim
+  // inflated the number by 6 orders of magnitude. Fix: derive USD from amount + priceUSD
+  // when both are available and clamp stated amountUSD that disagrees by more than 10×.
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("prefers amount*priceUSD over amountUSD when amountUSD is raw-units-shaped", async () => {
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => ({
+        tool: "polygon-pos-bridge",
+        action: {
+          fromToken: { symbol: "USDC", decimals: 6 },
+          toToken: { symbol: "USDC.e", decimals: 6 },
+          fromAmount: "100000000",
+        },
+        estimate: {
+          fromAmount: "100000000",
+          toAmount: "99750000",
+          toAmountMin: "99500000",
+          executionDuration: 1140,
+          feeCosts: [
+            {
+              // The bug: amountUSD is actually raw token units. Derived USD (~$0.25) is
+              // ~6 orders of magnitude smaller — must be preferred.
+              amountUSD: "249940000",
+              amount: "250000",
+              token: { decimals: 6, priceUSD: "1" },
+            },
+          ],
+          gasCosts: [
+            {
+              amountUSD: "0.14",
+              amount: "50000000000000000",
+              token: { decimals: 18, priceUSD: "2800" },
+            },
+          ],
+        },
+      }),
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        readContract: async () => 6,
+      }),
+      resetClients: () => {},
+    }));
+
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    const quote = await getSwapQuote({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "polygon",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+      amount: "100",
+    });
+
+    // Fee should be $0.25 (the derived value), not $249,940,000.
+    expect(quote.feeCostsUsd).toBeCloseTo(0.25, 2);
+    // Gas stated USD ($0.14) roughly matches derived ($0.14), so we accept the stated value.
+    expect(quote.gasCostsUsd).toBeCloseTo(0.14, 2);
+  });
+
+  it("falls back to amountUSD when token priceUSD is missing", async () => {
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => ({
+        tool: "some-dex",
+        action: {
+          fromToken: { symbol: "WETH", decimals: 18 },
+          toToken: { symbol: "DAI", decimals: 18 },
+          fromAmount: "1000000000000000000",
+        },
+        estimate: {
+          fromAmount: "1000000000000000000",
+          toAmount: "2800000000000000000000",
+          toAmountMin: "2790000000000000000000",
+          executionDuration: 30,
+          feeCosts: [
+            {
+              amountUSD: "1.5",
+              amount: "500000000000000",
+              // No token.priceUSD → derivation impossible → trust amountUSD.
+              token: { decimals: 18 },
+            },
+          ],
+          gasCosts: [],
+        },
+      }),
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        readContract: async () => 18,
+      }),
+      resetClients: () => {},
+    }));
+
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    const quote = await getSwapQuote({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "native",
+      toToken: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+      amount: "1",
+    });
+    expect(quote.feeCostsUsd).toBeCloseTo(1.5, 2);
+  });
+});
+
+describe("Bug 11: LiFi toAmount scale check — re-derive displayed output when it implies >10× input USD", () => {
+  // Live session: a 100 USDC → WBTC swap came back with toAmount=128815483595 at
+  // 8 decimals — i.e. the tool claimed the user would receive 1288.15 WBTC for $100.
+  // With WBTC priced around $70k, that implies ~$90M of output for $100 of input, which
+  // is obviously an aggregator scaling bug. The MCP must not display that number
+  // verbatim: instead re-derive toAmountExpected / toAmountMin from token prices and
+  // attach a warning telling the caller not to sign a prepared tx built from this quote.
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../src/modules/compound/index.js");
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("re-derives toAmountExpected from prices and emits a warning when output USD >10× input USD", async () => {
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => ({
+        tool: "some-aggregator",
+        action: {
+          fromToken: { symbol: "USDC", decimals: 6, priceUSD: "1" },
+          toToken: { symbol: "WBTC", decimals: 8, priceUSD: "70588" },
+          fromAmount: "100000000",
+        },
+        estimate: {
+          fromAmount: "100000000",
+          // 128815483595 at 8 decimals = 1288.15483595 WBTC — the bug.
+          toAmount: "128815483595",
+          toAmountMin: "127527328759",
+          executionDuration: 30,
+          feeCosts: [],
+          gasCosts: [],
+        },
+      }),
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({ readContract: async () => 6 }),
+      resetClients: () => {},
+    }));
+
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    const quote = await getSwapQuote({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+      amount: "100",
+    });
+
+    // Expected output derived from prices: 100 / 70588 ≈ 0.001416 WBTC.
+    expect(Number(quote.toAmountExpected)).toBeCloseTo(100 / 70588, 6);
+    // Min preserves the route's stated slippage ratio (~0.99).
+    const ratio = 127527328759 / 128815483595;
+    expect(Number(quote.toAmountMin)).toBeCloseTo((100 / 70588) * ratio, 6);
+    // USD of output should be the input USD, not the inflated stated value.
+    expect(quote.toAmountUsd).toBeCloseTo(100, 2);
+    expect(quote.fromAmountUsd).toBeCloseTo(100, 2);
+    // Warning must be present so the model/user doesn't sign a prepared tx built from this quote.
+    expect(quote.warning).toBeDefined();
+    expect(quote.warning).toMatch(/Do NOT sign/i);
+  });
+
+  it("passes the quote through unchanged when output USD is within a sane range of input USD", async () => {
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => ({
+        tool: "some-aggregator",
+        action: {
+          fromToken: { symbol: "USDC", decimals: 6, priceUSD: "1" },
+          toToken: { symbol: "WBTC", decimals: 8, priceUSD: "70588" },
+          fromAmount: "100000000",
+        },
+        estimate: {
+          fromAmount: "100000000",
+          // 0.001416 WBTC — the correct expected output.
+          toAmount: "141600",
+          toAmountMin: "140184",
+          executionDuration: 30,
+          feeCosts: [],
+          gasCosts: [],
+        },
+      }),
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({ readContract: async () => 6 }),
+      resetClients: () => {},
+    }));
+
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    const quote = await getSwapQuote({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+      amount: "100",
+    });
+
+    expect(Number(quote.toAmountExpected)).toBeCloseTo(0.001416, 6);
+    expect(quote.warning).toBeUndefined();
+  });
+});

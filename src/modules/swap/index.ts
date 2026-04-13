@@ -5,6 +5,55 @@ import { getClient } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
 
+/**
+ * Sum LiFi fee/gas cost entries into a USD number.
+ *
+ * LiFi's `amountUSD` is unreliable on some bridge routes (notably Polygon PoS): the
+ * field has been observed containing raw token units rather than a USD decimal, which
+ * inflates the reported fee by ~6 orders of magnitude for stablecoins (a real 0.25 USDC
+ * fee shows as ~$250,000). To sidestep this, always prefer deriving USD from the raw
+ * `amount` + `token.priceUSD` + `token.decimals`. Fall back to `amountUSD` only when
+ * the token price is missing, and sanity-clamp if both are available but disagree by
+ * more than 10×.
+ */
+interface LifiCostLike {
+  amount?: string;
+  amountUSD?: string;
+  token?: { decimals?: number; priceUSD?: string };
+}
+
+function sumLifiCostsUsd(items: readonly LifiCostLike[] | undefined): number | undefined {
+  if (!items || items.length === 0) return undefined;
+  let total = 0;
+  for (const item of items) {
+    const stated = item.amountUSD !== undefined ? Number(item.amountUSD) : NaN;
+    const rawAmt = item.amount !== undefined ? Number(item.amount) : NaN;
+    const priceUsd =
+      item.token?.priceUSD !== undefined ? Number(item.token.priceUSD) : NaN;
+    const decimals = item.token?.decimals ?? 18;
+
+    const derived =
+      Number.isFinite(rawAmt) && Number.isFinite(priceUsd)
+        ? (rawAmt / 10 ** decimals) * priceUsd
+        : NaN;
+
+    if (Number.isFinite(derived)) {
+      // Both available: trust derived if they disagree wildly (stated is the known-bad
+      // source). 10× threshold catches the "raw-units-as-USD" class of bug.
+      if (Number.isFinite(stated) && derived > 0 && stated / derived > 10) {
+        total += derived;
+      } else if (Number.isFinite(stated) && stated >= 0) {
+        total += stated;
+      } else {
+        total += derived;
+      }
+    } else if (Number.isFinite(stated) && stated >= 0) {
+      total += stated;
+    }
+  }
+  return total;
+}
+
 /** Resolve ERC-20 decimals (native = 18). */
 async function resolveDecimals(
   chain: SupportedChain,
@@ -41,19 +90,68 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
     slippage: args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined,
   });
 
+  const fromTokenDecimals = quote.action.fromToken.decimals;
+  const toTokenDecimals = quote.action.toToken.decimals;
+  const fromPriceUsd = Number(quote.action.fromToken.priceUSD ?? NaN);
+  const toPriceUsd = Number(quote.action.toToken.priceUSD ?? NaN);
+
+  const fromAmountFormatted = formatUnits(BigInt(quote.action.fromAmount), fromTokenDecimals);
+  const rawToAmount = formatUnits(BigInt(quote.estimate.toAmount), toTokenDecimals);
+  const rawToAmountMin = formatUnits(BigInt(quote.estimate.toAmountMin), toTokenDecimals);
+
+  const fromAmountUsd = Number.isFinite(fromPriceUsd)
+    ? Number(fromAmountFormatted) * fromPriceUsd
+    : undefined;
+  const statedToAmountUsd = Number.isFinite(toPriceUsd)
+    ? Number(rawToAmount) * toPriceUsd
+    : undefined;
+
+  // Sanity-check the output amount. LiFi has been observed returning toAmount scaled
+  // wrong for some aggregator integrations (100 USDC → supposedly 1288 WBTC). When
+  // priced out, the implied output USD vastly exceeds the input USD — no rational
+  // route pays >10× the input. When that happens, we re-derive the displayed amount
+  // from prices and attach a warning so the caller doesn't sign a malformed tx.
+  let toAmountExpected = rawToAmount;
+  let toAmountMin = rawToAmountMin;
+  let toAmountUsd = statedToAmountUsd;
+  let warning: string | undefined;
+
+  if (
+    fromAmountUsd !== undefined &&
+    statedToAmountUsd !== undefined &&
+    fromAmountUsd > 0 &&
+    statedToAmountUsd / fromAmountUsd > 10
+  ) {
+    // Derive what the output *should* be from prices.
+    const impliedToAmount = fromAmountUsd / toPriceUsd;
+    // Preserve the route's stated slippage ratio when re-deriving the min.
+    const rawRatio =
+      Number(rawToAmount) > 0 ? Number(rawToAmountMin) / Number(rawToAmount) : 1;
+    toAmountExpected = impliedToAmount.toString();
+    toAmountMin = (impliedToAmount * rawRatio).toString();
+    toAmountUsd = fromAmountUsd;
+    warning =
+      `LiFi returned toAmount=${rawToAmount} ${quote.action.toToken.symbol} (~$${statedToAmountUsd.toFixed(2)}) ` +
+      `which is >10× the input value ($${fromAmountUsd.toFixed(2)}). Displayed output re-derived from ` +
+      `token prices. Do NOT sign a prepared tx using this quote — fetch a fresh one.`;
+  }
+
   return {
     fromChain: args.fromChain,
     toChain: args.toChain,
     fromToken: quote.action.fromToken,
     toToken: quote.action.toToken,
-    fromAmount: formatUnits(BigInt(quote.action.fromAmount), quote.action.fromToken.decimals),
-    toAmountMin: formatUnits(BigInt(quote.estimate.toAmountMin), quote.action.toToken.decimals),
-    toAmountExpected: formatUnits(BigInt(quote.estimate.toAmount), quote.action.toToken.decimals),
+    fromAmount: fromAmountFormatted,
+    toAmountMin,
+    toAmountExpected,
+    fromAmountUsd,
+    toAmountUsd,
     tool: quote.tool,
     executionDurationSeconds: quote.estimate.executionDuration,
-    feeCostsUsd: quote.estimate.feeCosts?.reduce((s, f) => s + Number(f.amountUSD ?? 0), 0),
-    gasCostsUsd: quote.estimate.gasCosts?.reduce((s, g) => s + Number(g.amountUSD ?? 0), 0),
+    feeCostsUsd: sumLifiCostsUsd(quote.estimate.feeCosts),
+    gasCostsUsd: sumLifiCostsUsd(quote.estimate.gasCosts),
     crossChain: args.fromChain !== args.toChain,
+    ...(warning ? { warning } : {}),
   };
 }
 
