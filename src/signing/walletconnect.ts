@@ -35,6 +35,18 @@ const REQUIRED_NAMESPACES = {
 
 let client: InstanceType<typeof SignClient> | null = null;
 let currentSession: SessionTypes.Struct | null = null;
+/**
+ * Set when the last liveness check timed out (peer didn't respond within the
+ * window) rather than returning an explicit "session not found". We keep the
+ * local session record in that case — the peer may just be offline — but
+ * surface the ambiguity via `getSessionStatus()` so callers don't treat the
+ * session as confirmed-alive.
+ */
+let peerUnreachable = false;
+
+export function isPeerUnreachable(): boolean {
+  return peerUnreachable;
+}
 
 function getProjectId(): string {
   const id = resolveWalletConnectProjectId(readUserConfig()) || DEFAULT_PROJECT_ID;
@@ -84,7 +96,61 @@ export async function getSignClient(): Promise<InstanceType<typeof SignClient>> 
     });
   }
 
+  // Verify the restored session is still live on the relay. Three outcomes:
+  //   - alive: peer ack'd, keep using it.
+  //   - dead:  peer rejected (session was ended on their side), drop it locally.
+  //   - unknown: ping timed out — peer is offline or the relay is slow. Keep
+  //              the record so a future launch (when peer is back online) can
+  //              resume without re-pairing, but flag `peerUnreachable` so
+  //              callers don't assume the session is usable.
+  if (currentSession) {
+    const liveness = await verifySessionAlive(client, currentSession.topic);
+    if (liveness === "dead") {
+      try {
+        await client.session.delete(currentSession.topic, getSdkError("USER_DISCONNECTED"));
+      } catch {
+        // Session record may already be gone; ignore.
+      }
+      currentSession = null;
+      peerUnreachable = false;
+      patchUserConfig({
+        walletConnect: { sessionTopic: undefined, pairingTopic: undefined },
+      });
+    } else {
+      peerUnreachable = liveness === "unknown";
+    }
+  }
+
   return client;
+}
+
+/**
+ * Ping the peer over the relay with a short timeout. WC's ping resolves when
+ * the peer acknowledges; it rejects promptly if the peer has no matching
+ * session (explicit "dead"); and it hangs if the peer is offline (we surface
+ * that as "unknown" via the timeout branch, so callers can distinguish it
+ * from a confirmed rejection).
+ */
+async function verifySessionAlive(
+  c: InstanceType<typeof SignClient>,
+  topic: string
+): Promise<"alive" | "dead" | "unknown"> {
+  const PING_TIMEOUT_MS = 5_000;
+  let timedOut = false;
+  try {
+    await Promise.race([
+      c.ping({ topic }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => {
+          timedOut = true;
+          reject(new Error("ping timeout"));
+        }, PING_TIMEOUT_MS)
+      ),
+    ]);
+    return "alive";
+  } catch {
+    return timedOut ? "unknown" : "dead";
+  }
 }
 
 export interface PairResult {
