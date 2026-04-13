@@ -15,10 +15,28 @@ export interface ContractInfo {
   isVerified: boolean;
   isProxy: boolean;
   implementation?: `0x${string}`;
+  /**
+   * Etherscan-reported contract name. This is attacker-controllable at deploy
+   * time — a malicious contract can set ContractName = "Aave V3 Pool" or bury
+   * prompt-injection payloads in it. We sanitize to a short, safe subset
+   * (alphanumerics / dots / underscores / dashes, ≤64 chars) and callers
+   * should NOT display this field without that sanitization.
+   */
   contractName?: string;
   compilerVersion?: string;
   abi?: unknown[];
-  sourceCode?: string;
+}
+
+/**
+ * Sanitize a free-form name from Etherscan for agent/user display. Strips
+ * anything that could carry a newline or steer the model (markdown fences,
+ * angle brackets, braces, quotes) and caps length. We never want the raw
+ * string hitting the agent transcript — it's attacker-controlled.
+ */
+function sanitizeContractName(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const cleaned = raw.replace(/[^A-Za-z0-9._\-]/g, "").slice(0, 64);
+  return cleaned.length > 0 ? cleaned : undefined;
 }
 
 interface EtherscanSourceCodeItem {
@@ -94,10 +112,17 @@ export async function getContractInfo(
     implementation: item.Implementation && /^0x[0-9a-fA-F]{40}$/.test(item.Implementation)
       ? (item.Implementation as `0x${string}`)
       : undefined,
-    contractName: item.ContractName || undefined,
-    compilerVersion: item.CompilerVersion || undefined,
+    contractName: sanitizeContractName(item.ContractName),
+    // Restrict compiler version to the safe pattern (e.g. v0.8.17+commit.8df45f5f)
+    // so an attacker can't embed control characters or URLs in this field either.
+    compilerVersion:
+      item.CompilerVersion && /^[A-Za-z0-9.+_\-]+$/.test(item.CompilerVersion)
+        ? item.CompilerVersion
+        : undefined,
     abi,
-    sourceCode: isVerified ? item.SourceCode : undefined,
+    // sourceCode is attacker-controllable and huge; we never hand it to the
+    // agent. Dropped entirely at the source rather than hoping downstream
+    // code remembers not to surface it.
   };
 
   cache.set(key, info, CACHE_TTL.SECURITY_VERIFICATION);
