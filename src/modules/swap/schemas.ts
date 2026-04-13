@@ -34,9 +34,22 @@ const baseSwapSchema = z.object({
     .number()
     .int()
     .min(1)
-    .max(5000)
+    .max(500)
     .optional()
-    .describe("Slippage tolerance in basis points (50 = 0.5%, 100 = 1%). Default ~50."),
+    .describe(
+      "Slippage tolerance in basis points (50 = 0.5%, 100 = 1%). Default ~50. " +
+        "Hard-capped at 500 (5%) — anything higher is almost always a sandwich-bait " +
+        "misconfiguration. If a legitimate thin-liquidity route genuinely needs >1%, " +
+        "also pass `acknowledgeHighSlippage: true`."
+    ),
+  acknowledgeHighSlippage: z
+    .boolean()
+    .optional()
+    .describe(
+      "Opt-in flag required when slippageBps > 100 (1%). Forces the caller to state " +
+        "that an unusually-high slippage is intentional — the default rejects the tx " +
+        "to protect the user from MEV sandwich attacks."
+    ),
 });
 
 export const getSwapQuoteInput = baseSwapSchema;

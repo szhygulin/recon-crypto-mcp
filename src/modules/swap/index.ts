@@ -101,7 +101,26 @@ async function readOnchainDecimals(
   }
 }
 
+/**
+ * Reject slippage configurations that are almost certainly user/agent error.
+ * The schema already caps at 500 bps (5%); this adds a soft-cap at 100 bps
+ * (1%) that requires an explicit ack. MEV sandwich bots target open-slippage
+ * txs, so every unnecessary basis point is paid straight to a searcher.
+ */
+function assertSlippageOk(slippageBps: number | undefined, ack: boolean | undefined): void {
+  if (slippageBps === undefined) return;
+  if (slippageBps > 100 && !ack) {
+    throw new Error(
+      `Requested slippage is ${slippageBps} bps (${(slippageBps / 100).toFixed(2)}%). ` +
+        `The default cap is 100 bps (1%) because anything higher is almost always a ` +
+        `sandwich-bait misconfiguration. If a thin-liquidity route genuinely needs this, ` +
+        `retry with \`acknowledgeHighSlippage: true\` and confirm with the user first.`
+    );
+  }
+}
+
 export async function getSwapQuote(args: GetSwapQuoteArgs) {
+  assertSlippageOk(args.slippageBps, args.acknowledgeHighSlippage);
   const chain = args.fromChain as SupportedChain;
   const toChain = args.toChain as SupportedChain;
   const fromDecimals = await resolveDecimals(chain, args.fromToken as `0x${string}` | "native", args.fromTokenDecimals);
@@ -247,6 +266,7 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
 }
 
 export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
+  assertSlippageOk(args.slippageBps, args.acknowledgeHighSlippage);
   const chain = args.fromChain as SupportedChain;
   const fromDecimals = await resolveDecimals(chain, args.fromToken as `0x${string}` | "native", args.fromTokenDecimals);
   const fromAmountWei = parseUnits(args.amount, fromDecimals).toString();
