@@ -6,6 +6,7 @@ import {
 } from "../../signing/walletconnect.js";
 import { getSessionStatus } from "../../signing/session.js";
 import { consumeHandle } from "../../signing/tx-store.js";
+import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import {
@@ -264,6 +265,10 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   // Last-line check: refuse to sign against an RPC that's pointing at the
   // wrong chain. See verifyChainId() for the threat model.
   await verifyChainId(tx.chain);
+  // Independent of the prepare_* pipeline: validate destination + selector +
+  // (for approve) spender allowlist. A compromised agent can't slip an
+  // "approve(attacker, MAX)" past this, even if the handle system were bypassed.
+  await assertTransactionSafe(tx);
   const hash = await requestSendTransaction(tx);
   return {
     txHash: hash,
