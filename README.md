@@ -5,24 +5,22 @@ An MCP server that gives AI agents (Claude Code, Claude Desktop, Cursor) real-ti
 ## Features
 
 - **Positions** — lending/borrowing (Aave, Compound, Morpho), LP positions, and health-factor alerts
-- **Portfolio** — cross-chain balances, DeFi position aggregation, USD-denominated summaries; optionally folds Bitcoin holdings in alongside EVM
+- **Portfolio** — cross-chain balances, DeFi position aggregation, USD-denominated summaries
 - **Staking** — Lido, EigenLayer, reward aggregation, yield estimation
 - **Security** — contract verification, upgradeability checks, privileged-role enumeration, protocol risk scoring
 - **Swaps** — LiFi-routed intra-chain and cross-chain quotes; intra-chain routes are also cross-checked against 1inch (when an API key is configured) with a `bestSource` hint and output-delta savings
-- **Bitcoin** — read-only balances via mempool.space, plus unsigned-send preparation with a consolidation-oriented UTXO selection (spends every spendable UTXO, dust-absorbing) and raw-tx broadcast. Trades a higher one-time fee for a cleaner wallet (0 or 1 UTXO remaining post-confirmation). No PSBT — the returned plan is signed externally (Sparrow, Electrum, hardware wallet)
 - **Execution** — tx preparation for Aave, Compound, Morpho, Lido, EigenLayer, native/token sends, swaps; signing via Ledger Live (WalletConnect) for EVM chains
 - **Utilities** — ENS forward/reverse resolution, token balances, transaction status
 
 ## Supported chains
 
-EVM: Ethereum, Arbitrum, Polygon. Bitcoin mainnet (read + send preparation, no on-device signing yet).
+EVM: Ethereum, Arbitrum, Polygon.
 
 ## Requirements
 
 - Node.js >= 18.17
 - An RPC provider (Infura, Alchemy, or custom) for the EVM chains
 - Optional: Etherscan API key, 1inch Developer Portal API key (enables swap-quote comparison), WalletConnect Cloud project ID (required for Ledger signing)
-- No API key required for Bitcoin — mempool.space is used directly
 
 ## Install
 

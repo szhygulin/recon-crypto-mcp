@@ -127,27 +127,6 @@ export interface SecurityReport {
   privilegedRoles: PrivilegedRole[];
 }
 
-/**
- * Read-only Bitcoin balance slice carried inside a PortfolioSummary.
- * Kept separate from TokenAmount so the EVM types don't leak into BTC (different
- * address format, different decimals precedent, no ERC-20 semantics).
- */
-export interface BitcoinBalanceSummary {
-  address: string;
-  amountSats: string;
-  formattedBtc: string;
-  valueUsd?: number;
-}
-
-export interface BitcoinPortfolioSlice {
-  addresses: string[];
-  balances: BitcoinBalanceSummary[];
-  totalSats: string;
-  totalBtc: string;
-  totalUsd: number;
-  priceUsd?: number;
-}
-
 /** Per-wallet slice of a multi-wallet portfolio, or a stand-alone single-wallet summary. */
 export interface PortfolioSummary {
   wallet: `0x${string}`;
@@ -156,12 +135,8 @@ export interface PortfolioSummary {
   lendingNetUsd: number;
   lpUsd: number;
   stakingUsd: number;
-  /** USD value of Bitcoin holdings (0 when no Bitcoin addresses were queried). */
-  bitcoinUsd: number;
   totalUsd: number;
   perChain: Record<SupportedChain, number>;
-  /** Only present when `bitcoinAddresses` was supplied. */
-  bitcoin?: BitcoinPortfolioSlice;
   breakdown: {
     native: TokenAmount[];
     erc20: TokenAmount[];
@@ -180,9 +155,7 @@ export interface MultiWalletPortfolioSummary {
   lendingNetUsd: number;
   lpUsd: number;
   stakingUsd: number;
-  bitcoinUsd: number;
   perChain: Record<SupportedChain, number>;
-  bitcoin?: BitcoinPortfolioSlice;
   perWallet: PortfolioSummary[];
 }
 

@@ -81,15 +81,6 @@ import {
   reverseResolveInput,
 } from "./modules/balances/schemas.js";
 
-import { getBitcoinBalance, getBitcoinPortfolio } from "./modules/bitcoin/index.js";
-import { prepareBitcoinSend, broadcastBitcoinTx } from "./modules/bitcoin/send.js";
-import {
-  getBitcoinBalanceInput,
-  getBitcoinPortfolioInput,
-  prepareBitcoinSendInput,
-  broadcastBitcoinTxInput,
-} from "./modules/bitcoin/schemas.js";
-
 import { getCompoundPositions } from "./modules/compound/index.js";
 import {
   buildCompoundSupply,
@@ -280,7 +271,7 @@ async function main() {
     "get_portfolio_summary",
     {
       description:
-        "Aggregate a complete portfolio view: native balances, top ERC-20 holdings, Aave V3 positions, Uniswap V3 LP positions, and staking — with USD totals and per-chain breakdown. Pass `bitcoinAddresses` to also include Bitcoin holdings (via mempool.space).",
+        "Aggregate a complete portfolio view: native balances, top ERC-20 holdings, Aave V3 positions, Uniswap V3 LP positions, and staking — with USD totals and per-chain breakdown.",
       inputSchema: getPortfolioSummaryInput.shape,
     },
     handler(getPortfolioSummary)
@@ -468,47 +459,6 @@ async function main() {
       inputSchema: prepareTokenSendInput.shape,
     },
     handler(prepareTokenSend)
-  );
-
-  // ---- Module: Bitcoin (read-only, mempool.space) ----
-  server.registerTool(
-    "get_bitcoin_balance",
-    {
-      description:
-        "Fetch the confirmed + unconfirmed balance of a Bitcoin mainnet address via mempool.space. Supports legacy (1…), P2SH (3…), SegWit / Taproot (bc1…). Returns sats, BTC, and USD value (priced via DefiLlama).",
-      inputSchema: getBitcoinBalanceInput.shape,
-    },
-    handler(getBitcoinBalance)
-  );
-
-  server.registerTool(
-    "get_bitcoin_portfolio",
-    {
-      description:
-        "Fetch confirmed BTC balances for a batch of up to 20 Bitcoin mainnet addresses. Returns per-address balances and aggregated totals in sats, BTC, and USD.",
-      inputSchema: getBitcoinPortfolioInput.shape,
-    },
-    handler(getBitcoinPortfolio)
-  );
-
-  server.registerTool(
-    "prepare_bitcoin_send",
-    {
-      description:
-        "Prepare a Bitcoin send using a consolidation strategy: spends every spendable UTXO at the source address so the wallet is left with 0 (change absorbed as fee) or 1 (change output) UTXOs after confirmation. Returns the selection plan — inputs, outputs (recipient + optional change), estimated vsize, fee in sats/BTC, and fee rate used. No PSBT or signed transaction is produced; sign externally (Sparrow, Electrum, hardware wallet) and broadcast via broadcast_bitcoin_tx. Tradeoff: fee scales with input count, but consolidating now saves the cost of spending many small UTXOs later.",
-      inputSchema: prepareBitcoinSendInput.shape,
-    },
-    handler(prepareBitcoinSend)
-  );
-
-  server.registerTool(
-    "broadcast_bitcoin_tx",
-    {
-      description:
-        "Broadcast a fully signed raw Bitcoin transaction (hex) to mempool.space. Returns the txid on success. The caller is responsible for producing a valid signed tx.",
-      inputSchema: broadcastBitcoinTxInput.shape,
-    },
-    handler(broadcastBitcoinTx)
   );
 
   // ---- Module 8: Compound V3 ----
