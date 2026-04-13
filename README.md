@@ -1,6 +1,18 @@
 # Recon MCP
 
-An MCP server that gives AI agents (Claude Code, Claude Desktop, Cursor) real-time intelligence about DeFi positions, protocol security, staking, and multi-chain portfolios — plus transaction signing through Ledger Live over WalletConnect.
+**Manage your crypto portfolio with AI agents — through your Ledger hardware wallet.**
+
+Recon MCP is a Model Context Protocol server that lets AI agents (Claude Code, Claude Desktop, Cursor) read your on-chain positions and prepare transactions that you sign on your Ledger device via WalletConnect. Your private keys never leave the hardware wallet, and every transaction is previewed in human-readable form before you approve it on the device.
+
+Use it when you want to:
+
+- Ask an agent "what are my DeFi positions across Ethereum, Arbitrum, and Polygon?" and get a unified portfolio view (wallet balances + Aave/Compound/Morpho lending + Uniswap V3 LP + Lido/EigenLayer staking).
+- Get liquidation-risk alerts ("any position below health factor 1.5?") without manually checking dashboards.
+- Swap or bridge tokens — the agent prepares the route via LiFi, you sign on Ledger.
+- Supply/borrow/repay on lending protocols, stake ETH on Lido, deposit into EigenLayer strategies, send tokens — all through Ledger-signed transactions.
+- Assess protocol security (contract verification, proxy admin keys, privileged roles) before interacting with it.
+
+This is an **agent-driven portfolio management** tool, not a wallet replacement. The MCP never holds keys or broadcasts anything you haven't approved on your device.
 
 ## Features
 
