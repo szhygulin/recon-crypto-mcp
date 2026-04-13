@@ -13,11 +13,16 @@ export const getCompoundPositionsInput = z.object({
 const baseCometAction = z.object({
   wallet: walletSchema,
   chain: chainEnum.default("ethereum"),
-  /** Comet market address (e.g. cUSDCv3) — use get_compound_positions or the contract registry to find these. */
-  market: addressSchema,
+  market: addressSchema.describe(
+    "Comet market address (e.g. cUSDCv3). Discover via get_compound_positions or the Compound registry."
+  ),
   asset: addressSchema,
-  /** Human-readable amount, or "max" for withdraw. */
-  amount: z.string(),
+  amount: z
+    .string()
+    .describe(
+      'Human-readable decimal amount of `asset`, NOT raw wei/base units. ' +
+        'Example: "10" for 10 USDC. Pass "max" for full-balance withdraw.'
+    ),
 });
 
 export const prepareCompoundSupplyInput = baseCometAction;
@@ -28,7 +33,11 @@ export const prepareCompoundBorrowInput = z.object({
   wallet: walletSchema,
   chain: chainEnum.default("ethereum"),
   market: addressSchema,
-  amount: z.string(),
+  amount: z
+    .string()
+    .describe(
+      'Human-readable decimal amount of the market base token, NOT raw wei/base units. Example: "100" for 100 USDC.'
+    ),
 });
 export const prepareCompoundRepayInput = prepareCompoundBorrowInput;
 

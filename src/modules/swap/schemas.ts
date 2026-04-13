@@ -14,11 +14,29 @@ const baseSwapSchema = z.object({
   toChain: chainEnum,
   fromToken: tokenSchema,
   toToken: tokenSchema,
-  /** Human-readable amount (e.g. "1.5"); the tool will resolve decimals. */
-  amount: z.string(),
-  /** Fallback decimals in case the tool can't resolve them (rare — native is 18). */
-  fromTokenDecimals: z.number().int().min(0).max(36).optional(),
-  slippageBps: z.number().int().min(1).max(5000).optional(),
+  amount: z
+    .string()
+    .describe(
+      'Human-readable decimal amount of fromToken, NOT raw wei/base units. ' +
+        'Example: "1.5" for 1.5 USDC, "0.01" for 0.01 ETH. The tool resolves ' +
+        'decimals on-chain and converts internally.'
+    ),
+  fromTokenDecimals: z
+    .number()
+    .int()
+    .min(0)
+    .max(36)
+    .optional()
+    .describe(
+      "Optional decimals hint for fromToken if on-chain lookup fails (rare). Native is 18."
+    ),
+  slippageBps: z
+    .number()
+    .int()
+    .min(1)
+    .max(5000)
+    .optional()
+    .describe("Slippage tolerance in basis points (50 = 0.5%, 100 = 1%). Default ~50."),
 });
 
 export const getSwapQuoteInput = baseSwapSchema;

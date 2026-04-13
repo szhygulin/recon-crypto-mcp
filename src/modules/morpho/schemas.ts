@@ -16,8 +16,12 @@ const baseMarketAction = z.object({
   wallet: walletSchema,
   chain: chainEnum.default("ethereum"),
   marketId: marketIdSchema,
-  /** Human-readable amount. "max" supported for withdraw/repay. */
-  amount: z.string(),
+  amount: z
+    .string()
+    .describe(
+      'Human-readable decimal amount, NOT raw wei/base units. ' +
+        'Example: "10" for 10 USDC. Pass "max" for full-balance withdraw/repay.'
+    ),
 });
 
 export const prepareMorphoSupplyInput = baseMarketAction;

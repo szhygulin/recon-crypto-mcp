@@ -16,7 +16,12 @@ export const getStakingRewardsInput = z.object({
 
 export const estimateStakingYieldInput = z.object({
   protocol: z.enum(["lido", "eigenlayer"]),
-  amount: z.number().positive(),
+  amount: z
+    .number()
+    .positive()
+    .describe(
+      "Human-readable decimal amount of the staked asset (ETH for lido, LST for eigenlayer). Example: 1.5 for 1.5 ETH."
+    ),
 });
 
 export type GetStakingPositionsArgs = z.infer<typeof getStakingPositionsInput>;

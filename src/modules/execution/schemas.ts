@@ -14,7 +14,12 @@ const baseAaveAction = z.object({
   wallet: walletSchema,
   chain: chainEnum.default("ethereum"),
   asset: addressSchema,
-  amount: z.string(), // "1.5" human-readable, or "max" for withdraw/repay
+  amount: z
+    .string()
+    .describe(
+      'Human-readable decimal amount of `asset`, NOT raw wei/base units. ' +
+        'Example: "1.5" for 1.5 USDC, "0.01" for 0.01 ETH. Pass "max" for full-balance withdraw/repay.'
+    ),
 });
 
 export const prepareAaveSupplyInput = baseAaveAction;
@@ -28,26 +33,39 @@ export const prepareAaveRepayInput = baseAaveAction.extend({
 
 export const prepareLidoStakeInput = z.object({
   wallet: walletSchema,
-  amountEth: z.string(),
+  amountEth: z
+    .string()
+    .describe('Human-readable ETH amount, NOT raw wei. Example: "0.5" for 0.5 ETH.'),
 });
 export const prepareLidoUnstakeInput = z.object({
   wallet: walletSchema,
-  amountStETH: z.string(),
+  amountStETH: z
+    .string()
+    .describe(
+      'Human-readable stETH amount, NOT raw wei. Example: "0.5" for 0.5 stETH (18 decimals).'
+    ),
 });
 
 export const prepareEigenLayerDepositInput = z.object({
   wallet: walletSchema,
   strategy: addressSchema,
   token: addressSchema,
-  amount: z.string(),
+  amount: z
+    .string()
+    .describe(
+      'Human-readable decimal amount of `token`, NOT raw wei/base units. Example: "0.5" for 0.5 stETH.'
+    ),
 });
 
 export const prepareNativeSendInput = z.object({
   wallet: walletSchema,
   chain: chainEnum.default("ethereum"),
   to: addressSchema,
-  /** Human-readable amount in the native unit (e.g. "0.5" = 0.5 ETH). */
-  amount: z.string(),
+  amount: z
+    .string()
+    .describe(
+      'Human-readable native-asset amount, NOT raw wei. Example: "0.5" for 0.5 ETH (or 0.5 MATIC on polygon).'
+    ),
 });
 
 export const prepareTokenSendInput = z.object({
@@ -55,15 +73,25 @@ export const prepareTokenSendInput = z.object({
   chain: chainEnum.default("ethereum"),
   token: addressSchema,
   to: addressSchema,
-  /** Human-readable amount; decimals resolved from the token contract. "max" sends the full balance. */
-  amount: z.string(),
+  amount: z
+    .string()
+    .describe(
+      'Human-readable decimal amount, NOT raw wei/base units. Example: "10" for 10 USDC. ' +
+        'Decimals resolved from the token contract. Pass "max" to send the full balance.'
+    ),
 });
 
 export const sendTransactionInput = z.object({
   chain: chainEnum,
   to: addressSchema,
   data: dataSchema,
-  value: z.string().default("0"),
+  value: z
+    .string()
+    .default("0")
+    .describe(
+      'Native-asset value attached to the call, in raw wei as a decimal string (e.g. "1000000000000000000" = 1 ETH). ' +
+        "This is the raw calldata `value` field — not human-readable. Usually comes from a prepare_* tool verbatim."
+    ),
   from: walletSchema.optional(),
   /** Gate: the model must explicitly confirm on the user's behalf that the preview was acknowledged. */
   confirmed: z.literal(true),
