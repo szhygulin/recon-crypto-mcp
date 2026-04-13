@@ -6,8 +6,10 @@ import { getTokenPrice } from "../../data/prices.js";
 import { getLendingPositions, getLpPositions } from "../positions/index.js";
 import { getStakingPositions } from "../staking/index.js";
 import { getCompoundPositions } from "../compound/index.js";
+import { getBitcoinPortfolio } from "../bitcoin/index.js";
 import type { GetPortfolioSummaryArgs } from "./schemas.js";
 import type {
+  BitcoinPortfolioSlice,
   LendingPositionUnion,
   MultiWalletPortfolioSummary,
   PortfolioSummary,
@@ -76,21 +78,55 @@ async function fetchTopErc20Balances(
 export async function getPortfolioSummary(
   args: GetPortfolioSummaryArgs
 ): Promise<PortfolioSummary | MultiWalletPortfolioSummary> {
-  if (!args.wallet && !(args.wallets && args.wallets.length > 0)) {
-    throw new Error("Provide either `wallet` or a non-empty `wallets` array.");
+  if (!args.wallet && !(args.wallets && args.wallets.length > 0) && !(args.bitcoinAddresses && args.bitcoinAddresses.length > 0)) {
+    throw new Error("Provide at least one of `wallet`, `wallets`, or `bitcoinAddresses`.");
   }
   const chains = ((args.chains as SupportedChain[] | undefined) ?? [...SUPPORTED_CHAINS]);
   const wallets = args.wallets?.length
     ? (args.wallets as `0x${string}`[])
-    : [args.wallet as `0x${string}`];
+    : args.wallet
+    ? [args.wallet as `0x${string}`]
+    : [];
+  const bitcoinAddresses = args.bitcoinAddresses ?? [];
+
+  // Bitcoin is a single namespaced fetch shared across the whole report (it isn't
+  // per-EVM-wallet). Degrade to an empty slice if mempool.space is unreachable.
+  const bitcoinSlice: BitcoinPortfolioSlice | undefined =
+    bitcoinAddresses.length > 0
+      ? await buildBitcoinSlice(bitcoinAddresses).catch(() => undefined)
+      : undefined;
+  const bitcoinUsd = round(bitcoinSlice?.totalUsd ?? 0, 2);
+
+  // Bitcoin-only request: no EVM wallet provided, just BTC addresses.
+  if (wallets.length === 0) {
+    const fakeWallet = "0x0000000000000000000000000000000000000000" as `0x${string}`;
+    const perChain: Record<SupportedChain, number> = Object.fromEntries(
+      chains.map((c) => [c, 0])
+    ) as Record<SupportedChain, number>;
+    return {
+      wallet: fakeWallet,
+      chains,
+      walletBalancesUsd: 0,
+      lendingNetUsd: 0,
+      lpUsd: 0,
+      stakingUsd: 0,
+      bitcoinUsd,
+      totalUsd: bitcoinUsd,
+      perChain,
+      ...(bitcoinSlice ? { bitcoin: bitcoinSlice } : {}),
+      breakdown: { native: [], erc20: [], lending: [], lp: [], staking: [] },
+    };
+  }
 
   // Branch: single wallet returns the flat summary; multi-wallet aggregates.
   if (wallets.length === 1) {
-    return buildWalletSummary(wallets[0], chains);
+    const summary = await buildWalletSummary(wallets[0], chains);
+    return attachBitcoinToSingle(summary, bitcoinSlice, bitcoinUsd);
   }
 
   const perWallet = await Promise.all(wallets.map((w) => buildWalletSummary(w, chains)));
-  const totalUsd = round(perWallet.reduce((s, p) => s + p.totalUsd, 0), 2);
+  const evmTotal = perWallet.reduce((s, p) => s + p.totalUsd, 0);
+  const totalUsd = round(evmTotal + bitcoinUsd, 2);
   const walletBalancesUsd = round(perWallet.reduce((s, p) => s + p.walletBalancesUsd, 0), 2);
   const lendingNetUsd = round(perWallet.reduce((s, p) => s + p.lendingNetUsd, 0), 2);
   const lpUsd = round(perWallet.reduce((s, p) => s + p.lpUsd, 0), 2);
@@ -111,9 +147,39 @@ export async function getPortfolioSummary(
     lendingNetUsd,
     lpUsd,
     stakingUsd,
+    bitcoinUsd,
     perChain,
+    ...(bitcoinSlice ? { bitcoin: bitcoinSlice } : {}),
     perWallet,
   };
+}
+
+async function buildBitcoinSlice(addresses: string[]): Promise<BitcoinPortfolioSlice> {
+  const portfolio = await getBitcoinPortfolio({ addresses });
+  return {
+    addresses: portfolio.addresses,
+    balances: portfolio.balances.map((b) => ({
+      address: b.address,
+      amountSats: b.amountSats,
+      formattedBtc: b.formattedBtc,
+      valueUsd: b.valueUsd !== undefined ? round(b.valueUsd, 2) : undefined,
+    })),
+    totalSats: portfolio.totalSats,
+    totalBtc: portfolio.totalBtc,
+    totalUsd: round(portfolio.totalUsd ?? 0, 2),
+    priceUsd: portfolio.priceUsd,
+  };
+}
+
+function attachBitcoinToSingle(
+  summary: PortfolioSummary,
+  bitcoinSlice: BitcoinPortfolioSlice | undefined,
+  bitcoinUsd: number
+): PortfolioSummary {
+  summary.bitcoinUsd = bitcoinUsd;
+  summary.totalUsd = round(summary.totalUsd + bitcoinUsd, 2);
+  if (bitcoinSlice) summary.bitcoin = bitcoinSlice;
+  return summary;
 }
 
 async function buildWalletSummary(
@@ -187,6 +253,7 @@ async function buildWalletSummary(
     lendingNetUsd,
     lpUsd,
     stakingUsd,
+    bitcoinUsd: 0,
     totalUsd,
     perChain,
     breakdown: {

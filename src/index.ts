@@ -81,6 +81,12 @@ import {
   reverseResolveInput,
 } from "./modules/balances/schemas.js";
 
+import { getBitcoinBalance, getBitcoinPortfolio } from "./modules/bitcoin/index.js";
+import {
+  getBitcoinBalanceInput,
+  getBitcoinPortfolioInput,
+} from "./modules/bitcoin/schemas.js";
+
 import { getCompoundPositions } from "./modules/compound/index.js";
 import {
   buildCompoundSupply,
@@ -271,7 +277,7 @@ async function main() {
     "get_portfolio_summary",
     {
       description:
-        "Aggregate a complete portfolio view: native balances, top ERC-20 holdings, Aave V3 positions, Uniswap V3 LP positions, and staking — with USD totals and per-chain breakdown.",
+        "Aggregate a complete portfolio view: native balances, top ERC-20 holdings, Aave V3 positions, Uniswap V3 LP positions, and staking — with USD totals and per-chain breakdown. Pass `bitcoinAddresses` to also include Bitcoin holdings (via mempool.space).",
       inputSchema: getPortfolioSummaryInput.shape,
     },
     handler(getPortfolioSummary)
@@ -459,6 +465,27 @@ async function main() {
       inputSchema: prepareTokenSendInput.shape,
     },
     handler(prepareTokenSend)
+  );
+
+  // ---- Module: Bitcoin (read-only, mempool.space) ----
+  server.registerTool(
+    "get_bitcoin_balance",
+    {
+      description:
+        "Fetch the confirmed + unconfirmed balance of a Bitcoin mainnet address via mempool.space. Supports legacy (1…), P2SH (3…), SegWit / Taproot (bc1…). Returns sats, BTC, and USD value (priced via DefiLlama).",
+      inputSchema: getBitcoinBalanceInput.shape,
+    },
+    handler(getBitcoinBalance)
+  );
+
+  server.registerTool(
+    "get_bitcoin_portfolio",
+    {
+      description:
+        "Fetch confirmed BTC balances for a batch of up to 20 Bitcoin mainnet addresses. Returns per-address balances and aggregated totals in sats, BTC, and USD.",
+      inputSchema: getBitcoinPortfolioInput.shape,
+    },
+    handler(getBitcoinPortfolio)
   );
 
   // ---- Module 8: Compound V3 ----
