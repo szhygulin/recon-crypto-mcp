@@ -115,6 +115,8 @@ import {
   prepareMorphoWithdrawCollateralInput,
 } from "./modules/morpho/schemas.js";
 
+import { getTokenPriceInput, getTokenPriceTool } from "./modules/prices/index.js";
+
 import { readUserConfig } from "./config/user-config.js";
 
 /**
@@ -419,6 +421,16 @@ async function main() {
       inputSchema: getTokenBalanceInput.shape,
     },
     handler(getTokenBalance)
+  );
+
+  server.registerTool(
+    "get_token_price",
+    {
+      description:
+        "Fetch the USD price of a token via DefiLlama. Pass `token: \"native\"` for the chain's native asset (ETH on ethereum/arbitrum, MATIC on polygon) or an ERC-20 contract address. Prefer this over get_swap_quote for pure price lookups — no wallet or liquidity simulation needed.",
+      inputSchema: getTokenPriceInput.shape,
+    },
+    handler(getTokenPriceTool)
   );
 
   server.registerTool(
