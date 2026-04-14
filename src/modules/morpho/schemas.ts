@@ -9,8 +9,15 @@ const marketIdSchema = z.string().regex(/^0x[a-fA-F0-9]{64}$/);
 export const getMorphoPositionsInput = z.object({
   wallet: walletSchema,
   chain: chainEnum.default("ethereum"),
-  /** Morpho Blue market IDs (bytes32 each) to check. Discover via the Morpho app or subgraph. */
-  marketIds: z.array(marketIdSchema).min(1),
+  /**
+   * Morpho Blue market IDs (bytes32 each) to check. If omitted, the server
+   * discovers the wallet's markets by scanning Morpho Blue event logs
+   * (Supply / Borrow / SupplyCollateral with `onBehalf == wallet`). Pass this
+   * explicitly as a fast path when the set of markets is already known —
+   * discovery on cold lookups walks from Morpho's deploy block to head in
+   * ~10k-block chunks and can take several seconds.
+   */
+  marketIds: z.array(marketIdSchema).optional(),
 });
 
 const baseMarketAction = z.object({
