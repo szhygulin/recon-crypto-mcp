@@ -8,6 +8,7 @@ import { getStakingPositions } from "../staking/index.js";
 import { getCompoundPositions } from "../compound/index.js";
 import { getMorphoPositions } from "../morpho/index.js";
 import { getTronBalances } from "../tron/balances.js";
+import { getTronStaking } from "../tron/staking.js";
 import type { GetPortfolioSummaryArgs } from "./schemas.js";
 import type {
   LendingPositionUnion,
@@ -17,6 +18,7 @@ import type {
   SupportedChain,
   TokenAmount,
   TronPortfolioSlice,
+  TronStakingSlice,
 } from "../../types/index.js";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
 
@@ -171,9 +173,26 @@ async function buildWalletSummary(
   // Wrap each subquery so the portfolio can distinguish failure from empty. A
   // thrown fetch becomes errored:true so callers don't mistake "Aave down" for
   // "no Aave position".
-  const errors = { aave: false, compound: false, morpho: false, lp: false, staking: false, tron: false };
-  const [nativeAmounts, erc20Amounts, aave, compound, morphoByChain, lp, staking, tronSlice] =
-    await Promise.all([
+  const errors = {
+    aave: false,
+    compound: false,
+    morpho: false,
+    lp: false,
+    staking: false,
+    tron: false,
+    tronStaking: false,
+  };
+  const [
+    nativeAmounts,
+    erc20Amounts,
+    aave,
+    compound,
+    morphoByChain,
+    lp,
+    staking,
+    tronSlice,
+    tronStakingSlice,
+  ] = await Promise.all([
       Promise.all(
         chains.map((c) =>
           fetchNativeBalance(wallet, c).catch(() => zeroNative(wallet, c))
@@ -217,6 +236,16 @@ async function buildWalletSummary(
             return null as TronPortfolioSlice | null;
           })
         : (Promise.resolve(null) as Promise<TronPortfolioSlice | null>),
+      // TRON staking is fetched in parallel with balances (separate endpoints
+      // on TronGrid — getReward + v1/accounts) and coverage-tracked
+      // independently, so a staking failure doesn't mask a successful
+      // balance read. Same "not attempted" semantics as the balance slot.
+      tronAddress
+        ? getTronStaking(tronAddress).catch(() => {
+            errors.tronStaking = true;
+            return null as TronStakingSlice | null;
+          })
+        : (Promise.resolve(null) as Promise<TronStakingSlice | null>),
     ]);
   const morphoPositions = morphoByChain.flatMap((r) => r.positions);
 
@@ -233,6 +262,7 @@ async function buildWalletSummary(
   ];
 
   const tronBalancesUsd = tronSlice?.walletBalancesUsd ?? 0;
+  const tronStakingUsd = tronStakingSlice?.totalStakedUsd ?? 0;
   const walletBalancesUsd = round(
     [...native, ...erc20].reduce((sum, t) => sum + (t.valueUsd ?? 0), 0) + tronBalancesUsd,
     2
@@ -246,7 +276,10 @@ async function buildWalletSummary(
     staking.positions.reduce((sum, p) => sum + (p.stakedAmount.valueUsd ?? 0), 0),
     2
   );
-  const totalUsd = round(walletBalancesUsd + lendingNetUsd + lpUsd + stakingUsd, 2);
+  const totalUsd = round(
+    walletBalancesUsd + lendingNetUsd + lpUsd + stakingUsd + tronStakingUsd,
+    2
+  );
 
   // Per-chain breakdown (sums everything tagged to each chain).
   const perChain: Record<SupportedChain, number> = Object.fromEntries(
@@ -278,10 +311,33 @@ async function buildWalletSummary(
           tron: errors.tron
             ? { covered: false, errored: true, note: "TRON balance fetch failed (TronGrid) — TRX/TRC-20 not included in totals." }
             : { covered: true },
+          tronStaking: errors.tronStaking
+            ? { covered: false, errored: true, note: "TRON staking fetch failed (TronGrid getReward/accounts) — frozen + rewards not included in totals." }
+            : { covered: true },
         }
       : {}),
     unpricedAssets,
   };
+
+  // Merge balance + staking into a single TRON slice for the breakdown so
+  // consumers only see one `tron` block. If balances errored but staking
+  // succeeded (or vice versa) we still surface whichever loaded — each is
+  // independently coverage-tracked.
+  const tronBreakdown: TronPortfolioSlice | undefined =
+    tronSlice || tronStakingSlice
+      ? {
+          address: tronAddress ?? tronSlice?.address ?? tronStakingSlice?.address ?? "",
+          native: tronSlice?.native ?? [],
+          trc20: tronSlice?.trc20 ?? [],
+          walletBalancesUsd: tronSlice?.walletBalancesUsd ?? 0,
+          ...(tronStakingSlice ? { staking: tronStakingSlice } : {}),
+        }
+      : undefined;
+
+  // tronUsd rolls up balances + staking so the single-number view matches the
+  // sum a user sees in a block explorer. tronStakingUsd surfaces the staking
+  // portion separately for UI.
+  const tronUsdTotal = round(tronBalancesUsd + tronStakingUsd, 2);
 
   return {
     wallet,
@@ -292,14 +348,15 @@ async function buildWalletSummary(
     stakingUsd,
     totalUsd,
     perChain,
-    ...(tronSlice ? { tronUsd: round(tronBalancesUsd, 2) } : {}),
+    ...(tronBreakdown ? { tronUsd: tronUsdTotal } : {}),
+    ...(tronStakingSlice ? { tronStakingUsd: round(tronStakingUsd, 2) } : {}),
     breakdown: {
       native,
       erc20,
       lending: lendingPositions,
       lp: lp.positions,
       staking: staking.positions,
-      ...(tronSlice ? { tron: tronSlice } : {}),
+      ...(tronBreakdown ? { tron: tronBreakdown } : {}),
     },
     coverage,
   };

@@ -16,6 +16,7 @@ import {
 } from "../src/config/tron.js";
 import { resolveTronApiKey } from "../src/config/user-config.js";
 import { getTronBalances, getTronTokenBalance } from "../src/modules/tron/balances.js";
+import { getTronStaking } from "../src/modules/tron/staking.js";
 import { getTokenBalance } from "../src/modules/balances/index.js";
 import { getPortfolioSummaryInput } from "../src/modules/portfolio/schemas.js";
 
@@ -364,5 +365,102 @@ describe("get_token_balance dispatches TRON to the TRON reader", () => {
     expect((res as { chain?: string }).chain).toBe("tron");
     expect(res.symbol).toBe("TRX");
     expect(res.formatted).toBe("1");
+  });
+});
+
+describe("getTronStaking (network stubbed)", () => {
+  const addr = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.startsWith("https://api.trongrid.io/v1/accounts/")) {
+          return new Response(
+            JSON.stringify({
+              data: [
+                {
+                  frozenV2: [
+                    { amount: 100_000_000, type: "BANDWIDTH" }, // 100 TRX frozen for bandwidth
+                    { amount: 50_000_000, type: "ENERGY" }, // 50 TRX frozen for energy
+                  ],
+                  unfrozenV2: [
+                    {
+                      unfreeze_amount: 25_000_000, // 25 TRX pending
+                      type: "BANDWIDTH",
+                      unfreeze_expire_time: 1_800_000_000_000, // some future ms
+                    },
+                  ],
+                },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        if (url === "https://api.trongrid.io/wallet/getReward") {
+          // Sanity-check body shape: the post body must include the base58 address.
+          expect(init?.method).toBe("POST");
+          return new Response(JSON.stringify({ reward: 1_500_000 }), { status: 200 }); // 1.5 TRX claimable
+        }
+        if (url.startsWith("https://coins.llama.fi/prices/current/")) {
+          return new Response(
+            JSON.stringify({ coins: { "coingecko:tron": { price: 0.1 } } }),
+            { status: 200 }
+          );
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      })
+    );
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns frozen + pending + claimable with USD, at 6-decimal TRX", async () => {
+    const s = await getTronStaking(addr);
+    expect(s.address).toBe(addr);
+
+    expect(s.frozen).toHaveLength(2);
+    const bw = s.frozen.find((f) => f.type === "bandwidth")!;
+    expect(bw.formatted).toBe("100");
+    expect(bw.valueUsd).toBeCloseTo(10, 4); // 100 * 0.1
+    const en = s.frozen.find((f) => f.type === "energy")!;
+    expect(en.formatted).toBe("50");
+    expect(en.valueUsd).toBeCloseTo(5, 4);
+
+    expect(s.pendingUnfreezes).toHaveLength(1);
+    expect(s.pendingUnfreezes[0].formatted).toBe("25");
+    expect(s.pendingUnfreezes[0].unlockAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    expect(s.claimableRewards.formatted).toBe("1.5");
+    expect(s.claimableRewards.valueUsd).toBeCloseTo(0.15, 4);
+
+    // 100 + 50 + 25 + 1.5 = 176.5 TRX → 17.65 USD
+    expect(s.totalStakedTrx).toBe("176.5");
+    expect(s.totalStakedUsd).toBeCloseTo(17.65, 2);
+  });
+
+  it("returns zero staking for an inactive address (no frozenV2, no reward)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.startsWith("https://api.trongrid.io/v1/accounts/")) {
+          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        }
+        if (url === "https://api.trongrid.io/wallet/getReward") {
+          return new Response(JSON.stringify({ reward: 0 }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ coins: {} }), { status: 200 });
+      })
+    );
+    const s = await getTronStaking(addr);
+    expect(s.frozen).toHaveLength(0);
+    expect(s.pendingUnfreezes).toHaveLength(0);
+    expect(s.claimableRewards.amount).toBe("0");
+    expect(s.totalStakedUsd).toBe(0);
+  });
+
+  it("throws on malformed wallet address", async () => {
+    await expect(getTronStaking("0xdeadbeef")).rejects.toThrow(/TRON mainnet address/);
   });
 });

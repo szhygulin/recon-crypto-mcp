@@ -107,6 +107,11 @@ export interface PortfolioCoverage {
    * means a TronGrid call failed and TRX/TRC-20 are missing from totals.
    */
   tron?: CoverageStatus;
+  /**
+   * TRON staking fetch coverage — independent of the balance fetch so a
+   * getReward/account outage doesn't mask that balances loaded fine.
+   */
+  tronStaking?: CoverageStatus;
   /** Number of token balances whose USD valuation could not be resolved. */
   unpricedAssets: number;
 }
@@ -270,6 +275,65 @@ export interface TronPortfolioSlice {
   native: TronBalance[];
   trc20: TronBalance[];
   walletBalancesUsd: number;
+  /**
+   * Staking position (frozen TRX, pending unfreezes, claimable rewards).
+   * Absent when the portfolio aggregator chose not to fetch staking (or
+   * when the TRON staking fetch failed — see PortfolioCoverage.tronStaking).
+   */
+  staking?: TronStakingSlice;
+}
+
+/**
+ * A single "frozen for resource" entry under TRON's Stake 2.0 model. Users
+ * freeze TRX to obtain BANDWIDTH or ENERGY; the frozen TRX is what underlies
+ * their voting rights. Amount is reported in SUN (raw) + TRX (formatted).
+ */
+export interface TronFrozenEntry {
+  type: "bandwidth" | "energy";
+  /** Raw SUN (1 TRX = 1_000_000 SUN). */
+  amount: string;
+  /** Human-formatted TRX. */
+  formatted: string;
+  valueUsd?: number;
+}
+
+/**
+ * A pending unfreeze — the user initiated unstaking but the lockup window
+ * (14 days on mainnet) hasn't elapsed yet. `unlockAt` is the ISO timestamp
+ * after which `withdrawExpireUnfreeze` can claim the TRX back to liquid.
+ */
+export interface TronPendingUnfreeze {
+  type: "bandwidth" | "energy";
+  amount: string;
+  formatted: string;
+  /** ISO 8601 timestamp when the TRX becomes withdrawable. */
+  unlockAt: string;
+  valueUsd?: number;
+}
+
+/**
+ * Claimable voting rewards (distributed by the Super Representative the user
+ * voted for). Claiming requires a WithdrawBalance tx, landing in Phase 2.
+ */
+export interface TronClaimableReward {
+  amount: string;
+  formatted: string;
+  valueUsd?: number;
+}
+
+/**
+ * TRON staking view: frozen resources, pending unfreezes, claimable rewards.
+ * Totals roll up into the portfolio's `tronUsd` via `totalStakedUsd`.
+ */
+export interface TronStakingSlice {
+  address: string;
+  claimableRewards: TronClaimableReward;
+  frozen: TronFrozenEntry[];
+  pendingUnfreezes: TronPendingUnfreeze[];
+  /** Frozen + pending-unfreeze + claimable, in TRX (formatted). */
+  totalStakedTrx: string;
+  /** USD value of everything above at current TRX price. */
+  totalStakedUsd: number;
 }
 
 /** Per-wallet slice of a multi-wallet portfolio, or a stand-alone single-wallet summary. */
@@ -288,6 +352,12 @@ export interface PortfolioSummary {
    * address was resolvable).
    */
   tronUsd?: number;
+  /**
+   * TRON staking USD (frozen + pending-unfreeze + claimable). Already included
+   * in `tronUsd` — this field surfaces it separately for UI. Present only when
+   * staking was fetched successfully.
+   */
+  tronStakingUsd?: number;
   breakdown: {
     native: TokenAmount[];
     erc20: TokenAmount[];

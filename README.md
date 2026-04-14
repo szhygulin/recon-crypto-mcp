@@ -36,9 +36,9 @@ This is an **agent-driven portfolio management** tool, not a wallet replacement.
 
 EVM: Ethereum, Arbitrum, Polygon, Base.
 
-Non-EVM: TRON (phase 1 — balance reads only; transaction preparation and Ledger signing land in follow-up phases).
+Non-EVM: TRON (phase 1 — balance + staking reads; transaction preparation and Ledger signing land in follow-up phases).
 
-Not every protocol is on every chain. Lido and EigenLayer are L1-only (Ethereum). Morpho Blue is currently enabled on Ethereum only — it is deployed on Base at the same address but the discovery scan needs a pinned deployment block, tracked as a follow-up. TRON has no DeFi/LP/staking coverage in this server (none of Aave/Compound/Morpho/Uniswap/Lido/EigenLayer are deployed there); balance reads return TRX + canonical TRC-20 stablecoins (USDT, USDC, USDD, TUSD) that together cover the vast majority of TRON token volume. Readers short-circuit cleanly on chains where a protocol isn't deployed.
+Not every protocol is on every chain. Lido and EigenLayer are L1-only (Ethereum). Morpho Blue is currently enabled on Ethereum only — it is deployed on Base at the same address but the discovery scan needs a pinned deployment block, tracked as a follow-up. TRON has no lending/LP coverage in this server (none of Aave/Compound/Morpho/Uniswap are deployed there); balance reads return TRX + canonical TRC-20 stablecoins (USDT, USDC, USDD, TUSD) that together cover the vast majority of TRON token volume, and TRON-native staking (frozen TRX under Stake 2.0, pending unfreezes, claimable voting rewards) is surfaced via `get_tron_staking` and folded into the portfolio summary. Readers short-circuit cleanly on chains where a protocol isn't deployed.
 
 ## Roadmap
 
@@ -50,7 +50,7 @@ Not every protocol is on every chain. Lido and EigenLayer are L1-only (Ethereum)
 
 Read-only (no Ledger pairing required):
 
-- `get_portfolio_summary` — cross-chain portfolio aggregation with USD totals; pass an optional `tronAddress` (base58, prefix T) alongside an EVM `wallet` to fold TRX + TRC-20 balances into the same total (returned under `breakdown.tron` and `tronUsd`)
+- `get_portfolio_summary` — cross-chain portfolio aggregation with USD totals; pass an optional `tronAddress` (base58, prefix T) alongside an EVM `wallet` to fold TRX + TRC-20 balances + TRON staking (frozen + pending-unfreeze + claimable rewards) into the same total (returned under `breakdown.tron`, `tronUsd`, and `tronStakingUsd`)
 - `get_lending_positions` — Aave V3 collateral/debt/health-factor per wallet
 - `get_compound_positions` — Compound V3 (Comet) base + collateral positions
 - `get_morpho_positions` — Morpho Blue positions; auto-discovers the wallet's markets via event-log scan when `marketIds` is omitted (pass explicit ids for a fast path)
@@ -60,6 +60,7 @@ Read-only (no Ledger pairing required):
 - `simulate_position_change` — projected Aave health factor for a hypothetical action
 - `simulate_transaction` — run `eth_call` against a prepared or arbitrary tx to preview success/revert before signing; prepared txs are re-simulated automatically at send time
 - `get_token_balance`, `get_token_price` — balances and DefiLlama prices; `get_token_balance` accepts `chain: "tron"` with a base58 wallet and a base58 TRC-20 address (or `token: "native"` for TRX), returning a `TronBalance` shape
+- `get_tron_staking` — TRON-native staking state for a base58 address: claimable voting rewards (WithdrawBalance-ready), frozen TRX under Stake 2.0 (bandwidth + energy), and pending unfreezes with ISO unlock timestamps. Read-only; the actual claim/withdraw transactions land in TRON Phase 2.
 - `resolve_ens_name`, `reverse_resolve_ens` — ENS forward/reverse
 - `get_swap_quote` — LiFi quote (optionally cross-checked against 1inch)
 - `check_contract_security`, `check_permission_risks`, `get_protocol_risk_score` — risk tooling
