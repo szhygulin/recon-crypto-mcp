@@ -277,6 +277,10 @@ describe("pair_ledger_tron + get_ledger_status", () => {
   beforeEach(() => installStubs());
 
   it("populates the tron section of getSessionStatus after pairing", async () => {
+    // Reset the module cache so `session.ts`'s transitive import of
+    // `walletconnect.js` (already resolved by earlier tests via execution/index)
+    // is re-evaluated and picks up the doMock below.
+    vi.resetModules();
     vi.doMock("../src/signing/walletconnect.js", () => ({
       getSignClient: async () => ({}),
       getCurrentSession: () => null,
