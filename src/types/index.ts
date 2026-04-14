@@ -336,6 +336,62 @@ export interface TronStakingSlice {
   totalStakedUsd: number;
 }
 
+/**
+ * A single Super Representative / SR candidate entry from TronGrid's
+ * `/wallet/listwitnesses`. Ranks are 1-based by voteCount DESC; active SRs
+ * are rank ≤ 27 (those that actually produce blocks and distribute voter
+ * rewards). Candidates have rank > 27 and receive no voter rewards.
+ */
+export interface TronWitnessInfo {
+  /** Base58 TRON address (prefix T). */
+  address: string;
+  /** SR operator URL (self-declared; not validated). */
+  url?: string;
+  /** Total vote weight for this SR, as a decimal string (1 frozen TRX = 1 vote). */
+  voteCount: string;
+  /** True iff rank ≤ 27 — this SR produces blocks. */
+  isActive: boolean;
+  /** 1-based rank by voteCount DESC. */
+  rank: number;
+  totalProduced?: number;
+  totalMissed?: number;
+  /**
+   * Rough annualised voter APR estimate as a decimal fraction (0.04 = 4 %).
+   * Computed from mainnet reward constants (160 TRX/block voter pool, ~28 800
+   * blocks/day, 365 days/year) divided by the total vote weight across the
+   * top 127 witnesses — the APR is therefore roughly uniform for every
+   * witness in the top 127. Witnesses ranked > 127 get 0. This is an
+   * ESTIMATE — actual rewards depend on per-SR commission, missed blocks,
+   * chain-param changes, and competing voters joining/leaving between your
+   * vote tx and reward claim.
+   */
+  estVoterApr?: number;
+}
+
+/** The wallet's current vote allocation from `account.votes`. */
+export interface TronVoteAllocation {
+  /** Base58 SR address the vote is cast for. */
+  address: string;
+  /** Integer vote count (1 vote = 1 frozen TRX of TRON Power). */
+  count: number;
+}
+
+export interface TronWitnessList {
+  witnesses: TronWitnessInfo[];
+  /** Present only when the caller passed `address`. */
+  userVotes?: TronVoteAllocation[];
+  /**
+   * Total TRON Power available to the caller's wallet (= integer TRX frozen
+   * under Stake 2.0, summed across bandwidth + energy). Set when `address`
+   * is passed.
+   */
+  totalTronPower?: number;
+  /** Sum of userVotes[].count. Set when `address` is passed. */
+  totalVotesCast?: number;
+  /** totalTronPower − totalVotesCast, floored at 0. Set when `address` is passed. */
+  availableVotes?: number;
+}
+
 /** Per-wallet slice of a multi-wallet portfolio, or a stand-alone single-wallet summary. */
 export interface PortfolioSummary {
   wallet: `0x${string}`;
@@ -405,7 +461,8 @@ export interface UnsignedTronTx {
     | "claim_rewards"
     | "freeze"
     | "unfreeze"
-    | "withdraw_expire_unfreeze";
+    | "withdraw_expire_unfreeze"
+    | "vote";
   /** Base58 owner address (prefix T). */
   from: string;
   /** TronGrid-returned transaction ID (sha256 of raw_data_hex, hex string). */

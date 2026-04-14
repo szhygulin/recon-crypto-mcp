@@ -83,3 +83,39 @@ export const prepareTronWithdrawExpireUnfreezeInput = z.object({
 export type PrepareTronWithdrawExpireUnfreezeArgs = z.infer<
   typeof prepareTronWithdrawExpireUnfreezeInput
 >;
+
+export const listTronWitnessesInput = z.object({
+  address: tronAddress
+    .optional()
+    .describe(
+      "Optional base58 TRON address. When provided, the response also includes the wallet's current vote allocation, total TRON Power (frozenV2 sum in whole TRX), and remaining available votes — diff these against your target allocation before building `prepare_tron_vote`."
+    ),
+  includeCandidates: z
+    .boolean()
+    .optional()
+    .describe(
+      "Include SR candidates (rank > 27) alongside the active top 27. Candidates don't produce blocks so their voter APR is 0. Defaults to false."
+    ),
+});
+
+export type ListTronWitnessesArgs = z.infer<typeof listTronWitnessesInput>;
+
+export const prepareTronVoteInput = z.object({
+  from: tronAddress.describe("Base58 TRON owner address (prefix T)."),
+  votes: z
+    .array(
+      z.object({
+        address: tronAddress.describe("Base58 SR or candidate address to vote for."),
+        count: z
+          .number()
+          .int()
+          .positive()
+          .describe("Integer vote count — 1 vote consumes 1 TRX of TRON Power."),
+      })
+    )
+    .describe(
+      "Full vote allocation. VoteWitness REPLACES all prior votes atomically — pass every SR you intend to back, not just the delta. An empty array clears all votes. Sum of counts must not exceed the wallet's available TRON Power (see `list_tron_witnesses` → `availableVotes`); TronGrid rejects otherwise."
+    ),
+});
+
+export type PrepareTronVoteArgs = z.infer<typeof prepareTronVoteInput>;
