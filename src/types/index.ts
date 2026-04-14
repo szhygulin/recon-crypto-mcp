@@ -527,7 +527,7 @@ export interface UnsignedTx {
   handle?: string;
 }
 
-/** Shape of ~/.recon-crypto-mcp/config.json. */
+/** Shape of ~/.vaultpilot-mcp/config.json. */
 export interface UserConfig {
   rpc: {
     provider: RpcProvider;
