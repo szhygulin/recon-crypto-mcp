@@ -635,7 +635,7 @@ async function main() {
     "get_morpho_positions",
     {
       description:
-        "Fetch Morpho Blue positions for a wallet across a given list of market IDs. Each market is identified by a bytes32 id (keccak256 of its MarketParams). Returns per-market supplied/borrowed assets and collateral.",
+        "Fetch Morpho Blue positions for a wallet. If `marketIds` is omitted, the server auto-discovers the wallet's markets by scanning Morpho Blue event logs (may take several seconds on a cold call). Pass explicit `marketIds` (bytes32 each, keccak256 of MarketParams) as a fast path. Returns per-market supplied/borrowed assets and collateral.",
       inputSchema: getMorphoPositionsInput.shape,
     },
     handler(getMorphoPositions)

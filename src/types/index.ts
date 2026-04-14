@@ -102,8 +102,32 @@ export interface CompoundLendingPosition {
   netValueUsd: number;
 }
 
+/**
+ * A Morpho Blue position, flattened enough to slot alongside Aave and Compound in a
+ * unified lending bucket. Thin projection of modules/morpho/index.ts#MorphoPosition
+ * so the types module doesn't need to pull in morpho internals.
+ */
+export interface MorphoLendingPosition {
+  protocol: "morpho-blue";
+  chain: SupportedChain;
+  marketId: `0x${string}`;
+  loanToken: `0x${string}`;
+  collateralToken: `0x${string}`;
+  lltv: string;
+  supplied: TokenAmount | null;
+  borrowed: TokenAmount | null;
+  collateral: TokenAmount | null;
+  totalCollateralUsd: number;
+  totalDebtUsd: number;
+  totalSuppliedUsd: number;
+  netValueUsd: number;
+}
+
 /** Any lending/borrowing position reported by the portfolio aggregator. */
-export type LendingPositionUnion = LendingPosition | CompoundLendingPosition;
+export type LendingPositionUnion =
+  | LendingPosition
+  | CompoundLendingPosition
+  | MorphoLendingPosition;
 
 export interface LPPosition {
   protocol: "uniswap-v3";

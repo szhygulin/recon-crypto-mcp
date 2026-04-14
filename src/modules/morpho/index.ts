@@ -3,6 +3,7 @@ import { CONTRACTS } from "../../config/contracts.js";
 import { morphoBlueAbi } from "../../abis/morpho-blue.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { makeTokenAmount, priceTokenAmounts, round } from "../../data/format.js";
+import { discoverMorphoMarketIds } from "./discover.js";
 import type { GetMorphoPositionsArgs } from "./schemas.js";
 import type { SupportedChain, TokenAmount } from "../../types/index.js";
 
@@ -141,7 +142,11 @@ export async function getMorphoPositions(
   if (!morpho) {
     return { wallet, positions: [] };
   }
-  const marketIds = args.marketIds as `0x${string}`[];
+  const marketIds = (args.marketIds as `0x${string}`[] | undefined) ??
+    (await discoverMorphoMarketIds(wallet, chain));
+  if (marketIds.length === 0) {
+    return { wallet, positions: [] };
+  }
   const results = await Promise.all(
     marketIds.map((id) => readMarketPosition(wallet, chain, morpho, id))
   );

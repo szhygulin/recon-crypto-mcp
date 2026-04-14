@@ -6,6 +6,7 @@ import { getTokenPrice } from "../../data/prices.js";
 import { getLendingPositions, getLpPositions } from "../positions/index.js";
 import { getStakingPositions } from "../staking/index.js";
 import { getCompoundPositions } from "../compound/index.js";
+import { getMorphoPositions } from "../morpho/index.js";
 import type { GetPortfolioSummaryArgs } from "./schemas.js";
 import type {
   LendingPositionUnion,
@@ -112,10 +113,7 @@ export async function getPortfolioSummary(
   const mergedCoverage: PortfolioCoverage = {
     aave: mergeCoverage(perWallet.map((p) => p.coverage.aave)),
     compound: mergeCoverage(perWallet.map((p) => p.coverage.compound)),
-    morpho: perWallet[0]?.coverage.morpho ?? {
-      covered: false,
-      note: "Morpho Blue requires caller-supplied marketIds.",
-    },
+    morpho: mergeCoverage(perWallet.map((p) => p.coverage.morpho)),
     uniswapV3: mergeCoverage(perWallet.map((p) => p.coverage.uniswapV3)),
     staking: mergeCoverage(perWallet.map((p) => p.coverage.staking)),
     unpricedAssets: perWallet.reduce((s, p) => s + p.coverage.unpricedAssets, 0),
@@ -152,48 +150,62 @@ async function buildWalletSummary(
   // Each subquery is independent — one failing shouldn't kill the summary. We swap
   // Promise.all for per-task catchers that return empty payloads on error, so a flaky
   // Aave read (say, "returned no data") still lets us report native + ERC-20 + LP totals.
-  // Morpho Blue is deliberately NOT included here: it requires caller-supplied marketIds
-  // (Blue has no on-chain enumeration of a user's markets). Surface Morpho via the
-  // dedicated get_morpho_positions tool instead.
+  // Morpho Blue is discovered per-chain via event-log scan (onBehalf==wallet) since
+  // Blue has no on-chain enumeration; discovery is the slowest subquery here on a
+  // cold RPC, so it's wrapped in the same catch-and-continue pattern as the others.
   const emptyPositions = { wallet, positions: [] as never[] };
   // Wrap each subquery so the portfolio can distinguish failure from empty. A
   // thrown fetch becomes errored:true so callers don't mistake "Aave down" for
   // "no Aave position".
-  const errors = { aave: false, compound: false, lp: false, staking: false };
-  const [nativeAmounts, erc20Amounts, aave, compound, lp, staking] = await Promise.all([
-    Promise.all(
-      chains.map((c) =>
-        fetchNativeBalance(wallet, c).catch(() => zeroNative(wallet, c))
-      )
-    ),
-    Promise.all(chains.map((c) => fetchTopErc20Balances(wallet, c).catch(() => []))),
-    getLendingPositions({ wallet, chains }).catch(() => {
-      errors.aave = true;
-      return emptyPositions as never;
-    }),
-    getCompoundPositions({ wallet, chains }).catch(() => {
-      errors.compound = true;
-      return emptyPositions as never;
-    }),
-    getLpPositions({ wallet, chains }).catch(() => {
-      errors.lp = true;
-      return emptyPositions as never;
-    }),
-    getStakingPositions({ wallet, chains }).catch(() => {
-      errors.staking = true;
-      return emptyPositions as never;
-    }),
-  ]);
+  const errors = { aave: false, compound: false, morpho: false, lp: false, staking: false };
+  const [nativeAmounts, erc20Amounts, aave, compound, morphoByChain, lp, staking] =
+    await Promise.all([
+      Promise.all(
+        chains.map((c) =>
+          fetchNativeBalance(wallet, c).catch(() => zeroNative(wallet, c))
+        )
+      ),
+      Promise.all(chains.map((c) => fetchTopErc20Balances(wallet, c).catch(() => []))),
+      getLendingPositions({ wallet, chains }).catch(() => {
+        errors.aave = true;
+        return emptyPositions as never;
+      }),
+      getCompoundPositions({ wallet, chains }).catch(() => {
+        errors.compound = true;
+        return emptyPositions as never;
+      }),
+      // Morpho has no multi-chain list endpoint; fan out per-chain and swallow
+      // per-chain failures individually so one bad RPC doesn't drop the whole
+      // Morpho bucket. If any chain throws, the overall coverage is errored.
+      Promise.all(
+        chains.map((c) =>
+          getMorphoPositions({ wallet, chain: c }).catch(() => {
+            errors.morpho = true;
+            return { wallet, positions: [] };
+          })
+        )
+      ),
+      getLpPositions({ wallet, chains }).catch(() => {
+        errors.lp = true;
+        return emptyPositions as never;
+      }),
+      getStakingPositions({ wallet, chains }).catch(() => {
+        errors.staking = true;
+        return emptyPositions as never;
+      }),
+    ]);
+  const morphoPositions = morphoByChain.flatMap((r) => r.positions);
 
   // Filter zero native balances out.
   const native = nativeAmounts.filter((a) => a.amount !== "0");
   const erc20 = erc20Amounts.flat();
 
-  // Merge Aave + Compound into a single lending bucket — they both carry `chain` and
-  // `netValueUsd`, which is all the summary math needs.
+  // Merge Aave + Compound + Morpho into a single lending bucket — they all carry
+  // `chain` and `netValueUsd`, which is all the summary math needs.
   const lendingPositions: LendingPositionUnion[] = [
     ...aave.positions,
     ...compound.positions,
+    ...morphoPositions,
   ];
 
   const walletBalancesUsd = round(
@@ -229,10 +241,7 @@ async function buildWalletSummary(
   const coverage: PortfolioCoverage = {
     aave: { covered: !errors.aave, ...(errors.aave ? { errored: true, note: "Aave fetch failed — positions not included in totals." } : {}) },
     compound: { covered: !errors.compound, ...(errors.compound ? { errored: true, note: "Compound V3 fetch failed — positions not included in totals." } : {}) },
-    morpho: {
-      covered: false,
-      note: "Morpho Blue positions require caller-supplied marketIds (no on-chain enumeration from a wallet). Call get_morpho_positions separately if the user has Morpho exposure.",
-    },
+    morpho: { covered: !errors.morpho, ...(errors.morpho ? { errored: true, note: "Morpho Blue event-log discovery failed on at least one chain — some positions may be missing from totals." } : {}) },
     uniswapV3: { covered: !errors.lp, ...(errors.lp ? { errored: true, note: "Uniswap V3 LP fetch failed — positions not included." } : {}) },
     staking: { covered: !errors.staking, ...(errors.staking ? { errored: true, note: "Staking (Lido/EigenLayer) fetch failed — positions not included." } : {}) },
     unpricedAssets,
