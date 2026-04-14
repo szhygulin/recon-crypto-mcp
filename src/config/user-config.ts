@@ -1,30 +1,47 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, lstatSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, lstatSync, cpSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import type { UserConfig } from "../types/index.js";
 
-const CONFIG_DIR = join(homedir(), ".recon-crypto-mcp");
+const CONFIG_DIR = join(homedir(), ".vaultpilot-mcp");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
+// Pre-rename path. We still read from here if the new dir doesn't exist, and
+// copy the legacy dir on first write so existing users keep their WC pairing
+// state (walletconnect.db) across the rename.
+const LEGACY_CONFIG_DIR = join(homedir(), ".recon-crypto-mcp");
+const LEGACY_CONFIG_PATH = join(LEGACY_CONFIG_DIR, "config.json");
 
 /** Read the user config file; returns null if it doesn't exist. Throws on malformed JSON. */
 export function readUserConfig(): UserConfig | null {
-  if (!existsSync(CONFIG_PATH)) return null;
-  const raw = readFileSync(CONFIG_PATH, "utf8");
+  const path = existsSync(CONFIG_PATH)
+    ? CONFIG_PATH
+    : existsSync(LEGACY_CONFIG_PATH)
+      ? LEGACY_CONFIG_PATH
+      : null;
+  if (!path) return null;
+  const raw = readFileSync(path, "utf8");
   try {
     return JSON.parse(raw) as UserConfig;
   } catch (err) {
     throw new Error(
-      `~/.recon-crypto-mcp/config.json is malformed: ${(err as Error).message}. Delete it or re-run \`recon-crypto-mcp-setup\`.`
+      `~/.vaultpilot-mcp/config.json is malformed: ${(err as Error).message}. Delete it or re-run \`vaultpilot-mcp-setup\`.`
     );
   }
 }
 
 export function writeUserConfig(config: UserConfig): void {
+  // Migrate the legacy `.recon-crypto-mcp` dir to the new `.vaultpilot-mcp`
+  // location on first write after upgrade. We `cp -r` rather than rename so the
+  // user can roll back if something goes sideways. The legacy dir stays put;
+  // a future release can drop it.
+  if (!existsSync(CONFIG_DIR) && existsSync(LEGACY_CONFIG_DIR)) {
+    cpSync(LEGACY_CONFIG_DIR, CONFIG_DIR, { recursive: true, preserveTimestamps: true });
+  }
   if (!existsSync(CONFIG_DIR)) {
     mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   }
   // Refuse to follow symlinks or hardlinks when writing the config. A local
-  // attacker with write access to ~/.recon-crypto-mcp (or with a race-window before
+  // attacker with write access to ~/.vaultpilot-mcp (or with a race-window before
   // first-run setup creates the dir) could pre-place config.json as a symlink
   // to another file (~/.ssh/authorized_keys, ~/.bashrc, etc.) so the next
   // writeFileSync clobbers it. lstatSync on the path (not following the link)

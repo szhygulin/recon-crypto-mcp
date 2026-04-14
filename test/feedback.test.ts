@@ -12,12 +12,12 @@ let stateFile: string;
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "recon-feedback-"));
   stateFile = join(tmpDir, "feedback-log.json");
-  process.env.RECON_FEEDBACK_STATE_FILE = stateFile;
-  delete process.env.RECON_FEEDBACK_ENDPOINT;
+  process.env.VAULTPILOT_FEEDBACK_STATE_FILE = stateFile;
+  delete process.env.VAULTPILOT_FEEDBACK_ENDPOINT;
 });
 
 afterEach(() => {
-  delete process.env.RECON_FEEDBACK_STATE_FILE;
+  delete process.env.VAULTPILOT_FEEDBACK_STATE_FILE;
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -135,8 +135,8 @@ describe("requestCapability (prefilled URL mode)", () => {
       description: "User asked for Pendle positions; no existing tool reads them.",
     })) as { status: string; issueUrl: string; repo: string; rateLimit: unknown };
     expect(res.status).toBe("prefilled_url");
-    expect(res.issueUrl).toMatch(/^https:\/\/github\.com\/szhygulin\/recon-crypto-mcp\/issues\/new\?/);
-    expect(res.repo).toBe("szhygulin/recon-crypto-mcp");
+    expect(res.issueUrl).toMatch(/^https:\/\/github\.com\/szhygulin\/vaultpilot-mcp\/issues\/new\?/);
+    expect(res.repo).toBe("szhygulin/vaultpilot-mcp");
     expect(res.rateLimit).toEqual(RATE_LIMITS);
   });
 
@@ -203,8 +203,8 @@ describe("requestCapability (prefilled URL mode)", () => {
     ).rejects.toThrow(/between calls/i);
   });
 
-  it("rejects a non-https RECON_FEEDBACK_ENDPOINT", async () => {
-    process.env.RECON_FEEDBACK_ENDPOINT = "http://insecure.example/hook";
+  it("rejects a non-https VAULTPILOT_FEEDBACK_ENDPOINT", async () => {
+    process.env.VAULTPILOT_FEEDBACK_ENDPOINT = "http://insecure.example/hook";
     try {
       await expect(
         requestCapability({
@@ -213,7 +213,7 @@ describe("requestCapability (prefilled URL mode)", () => {
         })
       ).rejects.toThrow(/https:\/\//i);
     } finally {
-      delete process.env.RECON_FEEDBACK_ENDPOINT;
+      delete process.env.VAULTPILOT_FEEDBACK_ENDPOINT;
     }
   });
 });

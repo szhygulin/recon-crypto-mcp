@@ -1,19 +1,19 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.szhygulin/recon-crypto-mcp",
-  "title": "Recon Crypto MCP",
+  "name": "io.github.szhygulin/vaultpilot-mcp",
+  "title": "VaultPilot MCP",
   "description": "Self-custodial crypto portfolio: read EVM DeFi, sign on Ledger via WalletConnect.",
   "version": "0.3.1",
-  "websiteUrl": "https://github.com/szhygulin/recon-crypto-mcp",
+  "websiteUrl": "https://github.com/szhygulin/vaultpilot-mcp",
   "repository": {
-    "url": "https://github.com/szhygulin/recon-crypto-mcp",
+    "url": "https://github.com/szhygulin/vaultpilot-mcp",
     "source": "github"
   },
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "recon-crypto-mcp",
+      "identifier": "vaultpilot-mcp",
       "version": "0.3.1",
       "transport": { "type": "stdio" },
       "environmentVariables": [

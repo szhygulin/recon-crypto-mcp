@@ -48,23 +48,29 @@ export class RpcConfigError extends Error {
  *    got mis-pasted (e.g. a neighbour's dev box) and we'd rather fail loud
  *    than exfiltrate wallet addresses to an unexpected host.
  * Callers who intentionally want to hit a local forked node (anvil, hardhat,
- * etc.) can opt out with RECON_ALLOW_INSECURE_RPC=1.
+ * etc.) can opt out with VAULTPILOT_ALLOW_INSECURE_RPC=1 (legacy alias
+ * RECON_ALLOW_INSECURE_RPC is still honored for one release).
  */
 export function validateRpcUrl(chain: SupportedChain, url: string): void {
-  if (process.env.RECON_ALLOW_INSECURE_RPC === "1") return;
+  if (
+    process.env.VAULTPILOT_ALLOW_INSECURE_RPC === "1" ||
+    process.env.RECON_ALLOW_INSECURE_RPC === "1"
+  ) {
+    return;
+  }
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     throw new RpcConfigError(
-      `RPC URL for ${chain} is not a valid URL: ${url}. Fix it via \`recon-crypto-mcp-setup\` or the relevant env var.`
+      `RPC URL for ${chain} is not a valid URL: ${url}. Fix it via \`vaultpilot-mcp-setup\` or the relevant env var.`
     );
   }
   if (parsed.protocol !== "https:") {
     throw new RpcConfigError(
       `RPC URL for ${chain} must use https (got ${parsed.protocol}//). ` +
         `Plaintext RPCs leak wallet addresses to anyone on the network path. ` +
-        `Set RECON_ALLOW_INSECURE_RPC=1 only if you're pointing at a local anvil/hardhat fork.`
+        `Set VAULTPILOT_ALLOW_INSECURE_RPC=1 only if you're pointing at a local anvil/hardhat fork.`
     );
   }
   const host = parsed.hostname.toLowerCase();
@@ -72,7 +78,7 @@ export function validateRpcUrl(chain: SupportedChain, url: string): void {
     throw new RpcConfigError(
       `RPC URL for ${chain} points at a private/loopback host (${host}). ` +
         `This is almost always a mis-pasted config. ` +
-        `Set RECON_ALLOW_INSECURE_RPC=1 if you intend to hit a local fork.`
+        `Set VAULTPILOT_ALLOW_INSECURE_RPC=1 if you intend to hit a local fork.`
     );
   }
 }
@@ -129,7 +135,7 @@ function isPrivateOrLoopbackIPv4(a: number, b: number): boolean {
 
 /**
  * Resolve the RPC URL for a given chain based on env vars (highest priority)
- * then the user's ~/.recon-crypto-mcp/config.json.
+ * then the user's ~/.vaultpilot-mcp/config.json.
  */
 export function resolveRpcUrl(chain: SupportedChain, userConfig: UserConfig | null): string {
   const url = resolveRpcUrlRaw(chain, userConfig);
@@ -159,13 +165,13 @@ function resolveRpcUrlRaw(chain: SupportedChain, userConfig: UserConfig | null):
       const url = customUrls?.[chain];
       if (url) return url;
       throw new RpcConfigError(
-        `No custom RPC URL configured for chain "${chain}". Re-run \`recon-crypto-mcp-setup\`.`
+        `No custom RPC URL configured for chain "${chain}". Re-run \`vaultpilot-mcp-setup\`.`
       );
     }
     if (provider === "infura" || provider === "alchemy") {
       if (!apiKey) {
         throw new RpcConfigError(
-          `Missing API key for RPC provider "${provider}". Re-run \`recon-crypto-mcp-setup\`.`
+          `Missing API key for RPC provider "${provider}". Re-run \`vaultpilot-mcp-setup\`.`
         );
       }
       return PROVIDER_URL_TEMPLATES[provider][chain](apiKey);
@@ -174,6 +180,6 @@ function resolveRpcUrlRaw(chain: SupportedChain, userConfig: UserConfig | null):
 
   throw new RpcConfigError(
     `No RPC provider configured for chain "${chain}". ` +
-      `Run \`recon-crypto-mcp-setup\` to configure Infura, Alchemy, or a custom endpoint.`
+      `Run \`vaultpilot-mcp-setup\` to configure Infura, Alchemy, or a custom endpoint.`
   );
 }

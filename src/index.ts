@@ -201,20 +201,20 @@ async function main() {
   const hasEnvProvider = process.env.RPC_PROVIDER && process.env.RPC_API_KEY;
   if (!cfg && !hasEnvChain && !hasEnvProvider) {
     console.error(
-      "[recon-crypto-mcp] warning: no RPC provider configured. Run `recon-crypto-mcp-setup` or set RPC_PROVIDER + RPC_API_KEY."
+      "[vaultpilot-mcp] warning: no RPC provider configured. Run `vaultpilot-mcp-setup` or set RPC_PROVIDER + RPC_API_KEY."
     );
   }
 
   const server = new McpServer(
     {
-      name: "recon-crypto-mcp",
-      title: "Recon — Ledger-Signed Crypto Portfolio & DeFi",
+      name: "vaultpilot-mcp",
+      title: "VaultPilot — Ledger-Signed Crypto Portfolio & DeFi",
       version: "0.1.0",
-      websiteUrl: "https://github.com/szhygulin/recon-crypto-mcp",
+      websiteUrl: "https://github.com/szhygulin/vaultpilot-mcp",
     },
     {
       instructions: [
-        "Recon is a self-custodial crypto-portfolio and DeFi tooling server for AI agents.",
+        "VaultPilot is a self-custodial crypto-portfolio and DeFi tooling server for AI agents.",
         "The user's private keys live on a Ledger hardware wallet; this server never holds or",
         "broadcasts keys. Every state-changing transaction is prepared here (read-only) and",
         "then forwarded to Ledger Live via WalletConnect so the user can review and approve it",
@@ -272,7 +272,7 @@ async function main() {
         "",
         "CAPABILITY GAPS: if the user asks for something this server cannot do (unsupported",
         "protocol, chain, token, or a workflow none of the existing tools cover), call",
-        "`request_capability` to file a GitHub issue on the recon-crypto-mcp repo. By default it",
+        "`request_capability` to file a GitHub issue on the vaultpilot-mcp repo. By default it",
         "returns a prefilled URL for the user to click — nothing is sent automatically. Use",
         "this only after confirming no existing tool fits; it is rate-limited (3/hour,",
         "10/day, dedup'd for 7 days). Never substitute this for completing the task.",
@@ -840,11 +840,11 @@ async function main() {
     "request_capability",
     {
       description:
-        "File a capability request against the recon-crypto-mcp GitHub repository when the user asks for something this server cannot do " +
+        "File a capability request against the vaultpilot-mcp GitHub repository when the user asks for something this server cannot do " +
         "(e.g. an unsupported protocol, chain, token, or missing tool). " +
         "USE ONLY AFTER confirming no existing tool can accomplish the task. " +
         "By default this returns a pre-filled GitHub issue URL — NO data is transmitted; the user must click through to submit. " +
-        "If the operator has configured RECON_FEEDBACK_ENDPOINT, it posts directly to that proxy instead. " +
+        "If the operator has configured VAULTPILOT_FEEDBACK_ENDPOINT, it posts directly to that proxy instead. " +
         "Rate-limited per install (30s between calls, 3/hour, 10/day, 7-day dedupe on identical summaries). " +
         "Write clear, actionable summaries — this lands in a real issue tracker read by humans.",
       inputSchema: requestCapabilityInput.shape,
@@ -857,6 +857,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[recon-crypto-mcp] fatal:", err);
+  console.error("[vaultpilot-mcp] fatal:", err);
   process.exit(1);
 });

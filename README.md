@@ -1,13 +1,13 @@
-# Recon Crypto MCP
+# VaultPilot MCP
 
-[![npm version](https://img.shields.io/npm/v/recon-crypto-mcp.svg)](https://www.npmjs.com/package/recon-crypto-mcp)
-[![license](https://img.shields.io/npm/l/recon-crypto-mcp.svg)](./LICENSE)
-[![node](https://img.shields.io/node/v/recon-crypto-mcp.svg)](package.json)
-[![recon-crypto-mcp MCP server](https://glama.ai/mcp/servers/szhygulin/recon-crypto-mcp/badges/score.svg)](https://glama.ai/mcp/servers/szhygulin/recon-crypto-mcp)
+[![npm version](https://img.shields.io/npm/v/vaultpilot-mcp.svg)](https://www.npmjs.com/package/vaultpilot-mcp)
+[![license](https://img.shields.io/npm/l/vaultpilot-mcp.svg)](./LICENSE)
+[![node](https://img.shields.io/node/v/vaultpilot-mcp.svg)](package.json)
+[![vaultpilot-mcp MCP server](https://glama.ai/mcp/servers/szhygulin/vaultpilot-mcp/badges/score.svg)](https://glama.ai/mcp/servers/szhygulin/vaultpilot-mcp)
 
 **Self-custodial crypto portfolio and DeFi, managed by AI agents — signed on your Ledger hardware wallet.**
 
-Recon Crypto MCP is a Model Context Protocol server that lets AI agents — **Claude Code, Claude Desktop, Cursor**, and any MCP-compatible client — read your on-chain positions across **Ethereum, Arbitrum, Polygon, Base**, and **TRON** and prepare EVM transactions that you sign on your **Ledger device via WalletConnect**. Your private keys never leave the hardware wallet, and every transaction is previewed in human-readable form before you approve it on the device.
+VaultPilot MCP is a Model Context Protocol server that lets AI agents — **Claude Code, Claude Desktop, Cursor**, and any MCP-compatible client — read your on-chain positions across **Ethereum, Arbitrum, Polygon, Base**, and **TRON** and prepare EVM transactions that you sign on your **Ledger device via WalletConnect**. Your private keys never leave the hardware wallet, and every transaction is previewed in human-readable form before you approve it on the device.
 
 Supported protocols: **Aave V3, Compound V3 (Comet), Morpho Blue, Uniswap V3 LP, Lido (stETH/wstETH), EigenLayer**, plus **LiFi** for swap/bridge aggregation and **1inch** for optional intra-chain quote comparison.
 
@@ -69,7 +69,7 @@ Read-only (no Ledger pairing required):
 
 Meta:
 
-- `request_capability` — agent-facing escape hatch: files a GitHub issue on this repo when the user asks for something recon-crypto-mcp can't do (new protocol, new chain, missing tool). Default mode returns a pre-filled issue URL (zero spam risk — user must click to submit). Operators can set `RECON_FEEDBACK_ENDPOINT` to a proxy that posts directly. Rate-limited: 30s between calls, 3/hour, 10/day, 7-day dedupe on identical summaries.
+- `request_capability` — agent-facing escape hatch: files a GitHub issue on this repo when the user asks for something vaultpilot-mcp can't do (new protocol, new chain, missing tool). Default mode returns a pre-filled issue URL (zero spam risk — user must click to submit). Operators can set `VAULTPILOT_FEEDBACK_ENDPOINT` to a proxy that posts directly. Rate-limited: 30s between calls, 3/hour, 10/day, 7-day dedupe on identical summaries.
 
 Execution (Ledger-signed via WalletConnect):
 
@@ -95,22 +95,22 @@ Execution (Ledger-signed via WalletConnect):
 ### From npm (recommended)
 
 ```bash
-npm install -g recon-crypto-mcp
-recon-crypto-mcp-setup
+npm install -g vaultpilot-mcp
+vaultpilot-mcp-setup
 ```
 
 ### From source
 
 ```bash
-git clone https://github.com/szhygulin/recon-crypto-mcp.git
-cd recon-crypto-mcp
+git clone https://github.com/szhygulin/vaultpilot-mcp.git
+cd vaultpilot-mcp
 npm install
 npm run build
 ```
 
 ## Setup
 
-Run the interactive setup to pick an RPC provider, validate the key, optionally pair Ledger Live, and write `~/.recon-crypto-mcp/config.json`:
+Run the interactive setup to pick an RPC provider, validate the key, optionally pair Ledger Live, and write `~/.vaultpilot-mcp/config.json`:
 
 ```bash
 npm run setup
@@ -125,20 +125,20 @@ Add to `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "recon-crypto-mcp": {
-      "command": "recon-crypto-mcp"
+    "vaultpilot-mcp": {
+      "command": "vaultpilot-mcp"
     }
   }
 }
 ```
 
-(If you installed from source rather than via `npm i -g`, swap `"command": "recon-crypto-mcp"` for `"command": "node"` and `"args": ["/absolute/path/to/recon-crypto-mcp/dist/index.js"]`.)
+(If you installed from source rather than via `npm i -g`, swap `"command": "vaultpilot-mcp"` for `"command": "node"` and `"args": ["/absolute/path/to/vaultpilot-mcp/dist/index.js"]`.)
 
 The setup script prints a ready-to-paste snippet.
 
 ## Environment variables
 
-All are optional if the matching field is in `~/.recon-crypto-mcp/config.json`; env vars take precedence when both are set.
+All are optional if the matching field is in `~/.vaultpilot-mcp/config.json`; env vars take precedence when both are set.
 
 - `ETHEREUM_RPC_URL`, `ARBITRUM_RPC_URL`, `POLYGON_RPC_URL`, `BASE_RPC_URL` — custom RPC endpoints
 - `RPC_PROVIDER` (`infura` | `alchemy`) + `RPC_API_KEY` — alternative to custom URLs
@@ -147,8 +147,8 @@ All are optional if the matching field is in `~/.recon-crypto-mcp/config.json`; 
 - `TRON_API_KEY` — TronGrid API key (sent as `TRON-PRO-API-KEY`). Required in practice to read TRON balances — anonymous TronGrid calls are capped at ~15 req/min, which the portfolio fan-out exceeds. Free to create at [trongrid.io](https://www.trongrid.io).
 - `WALLETCONNECT_PROJECT_ID` — required for Ledger Live signing
 - `RPC_BATCH=1` — opt into JSON-RPC batching (off by default; many public endpoints mishandle batched POSTs)
-- `RECON_ALLOW_INSECURE_RPC=1` — opt out of the https/private-IP check on RPC URLs. Only set this when pointing at a local anvil/hardhat fork; never in production.
-- `RECON_FEEDBACK_ENDPOINT` — optional https URL for `request_capability` to POST directly (e.g. a maintainer-operated proxy that creates GitHub issues with a bot token). When unset (the default), `request_capability` returns a pre-filled GitHub issue URL for the user to click through; nothing is transmitted automatically. **Operator responsibility:** the recon-crypto-mcp client does not sign or authenticate POST requests. If you set this endpoint, the proxy MUST enforce its own auth (IP allowlist, Cloudflare Access, HMAC header validation, etc.) — otherwise any caller who learns the URL can submit to it. The on-process rate limiter (3/hour, 10/day) is a courtesy, not a security control.
+- `VAULTPILOT_ALLOW_INSECURE_RPC=1` — opt out of the https/private-IP check on RPC URLs. Only set this when pointing at a local anvil/hardhat fork; never in production. (Old name `RECON_ALLOW_INSECURE_RPC` is still honored for one release.)
+- `VAULTPILOT_FEEDBACK_ENDPOINT` — optional https URL for `request_capability` to POST directly (e.g. a maintainer-operated proxy that creates GitHub issues with a bot token). When unset (the default), `request_capability` returns a pre-filled GitHub issue URL for the user to click through; nothing is transmitted automatically. **Operator responsibility:** the vaultpilot-mcp client does not sign or authenticate POST requests. If you set this endpoint, the proxy MUST enforce its own auth (IP allowlist, Cloudflare Access, HMAC header validation, etc.) — otherwise any caller who learns the URL can submit to it. The on-process rate limiter (3/hour, 10/day) is a courtesy, not a security control. (Old name `RECON_FEEDBACK_ENDPOINT` is still honored for one release.)
 
 ## Development
 

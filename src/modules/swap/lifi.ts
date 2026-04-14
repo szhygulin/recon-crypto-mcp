@@ -7,7 +7,7 @@ let initialized = false;
 export function initLifi(): void {
   if (initialized) return;
   createConfig({
-    integrator: "recon-crypto-mcp",
+    integrator: "vaultpilot-mcp",
     // We don't execute routes through LiFi — we just fetch tx data and hand it to WalletConnect.
   });
   initialized = true;

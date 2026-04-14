@@ -13,13 +13,18 @@ type FeedbackEvent = { ts: number; hash: string };
 
 /**
  * The state-file path is computed lazily from an env-var override so tests can
- * redirect writes into a temp dir. Default: `~/.recon-crypto-mcp/feedback-log.json`.
+ * redirect writes into a temp dir. Default: `~/.vaultpilot-mcp/feedback-log.json`,
+ * with back-compat fallback to `~/.recon-crypto-mcp/feedback-log.json` if that's
+ * the only one that exists (pre-rename users).
  */
 function getStateFilePath(): string {
-  return (
-    process.env.RECON_FEEDBACK_STATE_FILE ??
-    join(homedir(), ".recon-crypto-mcp", "feedback-log.json")
-  );
+  const envOverride =
+    process.env.VAULTPILOT_FEEDBACK_STATE_FILE ?? process.env.RECON_FEEDBACK_STATE_FILE;
+  if (envOverride) return envOverride;
+  const newPath = join(homedir(), ".vaultpilot-mcp", "feedback-log.json");
+  const legacyPath = join(homedir(), ".recon-crypto-mcp", "feedback-log.json");
+  if (!existsSync(newPath) && existsSync(legacyPath)) return legacyPath;
+  return newPath;
 }
 
 const MIN_INTERVAL_MS = 30_000;

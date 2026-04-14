@@ -456,13 +456,17 @@ describe("H9: Etherscan field sanitization", () => {
 // H10 — RPC URLs validated (https, no RFC1918/loopback) + chainId check.
 // ====================================================================
 describe("H10: RPC URL validation", () => {
-  const savedAllow = process.env.RECON_ALLOW_INSECURE_RPC;
+  const savedAllow = process.env.VAULTPILOT_ALLOW_INSECURE_RPC;
+  const savedLegacy = process.env.RECON_ALLOW_INSECURE_RPC;
   beforeEach(() => {
+    delete process.env.VAULTPILOT_ALLOW_INSECURE_RPC;
     delete process.env.RECON_ALLOW_INSECURE_RPC;
   });
   afterAll(() => {
-    if (savedAllow === undefined) delete process.env.RECON_ALLOW_INSECURE_RPC;
-    else process.env.RECON_ALLOW_INSECURE_RPC = savedAllow;
+    if (savedAllow === undefined) delete process.env.VAULTPILOT_ALLOW_INSECURE_RPC;
+    else process.env.VAULTPILOT_ALLOW_INSECURE_RPC = savedAllow;
+    if (savedLegacy === undefined) delete process.env.RECON_ALLOW_INSECURE_RPC;
+    else process.env.RECON_ALLOW_INSECURE_RPC = savedLegacy;
   });
 
   it("rejects plaintext http:// URLs", async () => {
@@ -507,7 +511,13 @@ describe("H10: RPC URL validation", () => {
     ).not.toThrow();
   });
 
-  it("RECON_ALLOW_INSECURE_RPC=1 opts out (for anvil/hardhat forks)", async () => {
+  it("VAULTPILOT_ALLOW_INSECURE_RPC=1 opts out (for anvil/hardhat forks)", async () => {
+    const { validateRpcUrl } = await import("../src/config/chains.js");
+    process.env.VAULTPILOT_ALLOW_INSECURE_RPC = "1";
+    expect(() => validateRpcUrl("ethereum", "http://127.0.0.1:8545")).not.toThrow();
+  });
+
+  it("legacy RECON_ALLOW_INSECURE_RPC=1 still works (back-compat)", async () => {
     const { validateRpcUrl } = await import("../src/config/chains.js");
     process.env.RECON_ALLOW_INSECURE_RPC = "1";
     expect(() => validateRpcUrl("ethereum", "http://127.0.0.1:8545")).not.toThrow();
