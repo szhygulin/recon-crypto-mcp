@@ -3,7 +3,7 @@
   "name": "io.github.szhygulin/recon-crypto-mcp",
   "title": "Recon Crypto MCP",
   "description": "Self-custodial crypto portfolio: read EVM DeFi, sign on Ledger via WalletConnect.",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "websiteUrl": "https://github.com/szhygulin/recon-crypto-mcp",
   "repository": {
     "url": "https://github.com/szhygulin/recon-crypto-mcp",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "recon-crypto-mcp",
-      "version": "0.2.3",
+      "version": "0.3.0",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
@@ -32,6 +32,12 @@
         {
           "name": "POLYGON_RPC_URL",
           "description": "Custom Polygon RPC endpoint.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "BASE_RPC_URL",
+          "description": "Custom Base RPC endpoint.",
           "isRequired": false,
           "isSecret": false
         },
