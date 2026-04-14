@@ -45,7 +45,9 @@ export async function requestCapability(args: RequestCapabilityArgs) {
     throw err;
   }
 
-  const title = `[agent-request] ${summary}`;
+  // Titles parse @-mentions too — a prompt-injected summary containing
+  // `@someuser` would ping arbitrary GitHub users when the issue is opened.
+  const title = `[agent-request] ${neutralizeMentions(summary)}`;
   const body = buildIssueBody({ description, category, context, agentName });
   const labels = [ISSUE_LABEL, category].filter((v): v is string => Boolean(v));
   const payload: IssuePayload = { title, body, labels };

@@ -7,6 +7,11 @@ import {
   buildTronClaimRewards,
 } from "../src/modules/tron/actions.js";
 import { hasTronHandle, consumeTronHandle } from "../src/signing/tron-tx-store.js";
+import {
+  encodeTransferRawData,
+  encodeTriggerSmartContractRawData,
+  encodeOwnerOnlyRawData,
+} from "./helpers/tron-raw-data-encode.js";
 
 /**
  * Phase-2 (TRON tx preparation) tests. Network IO against TronGrid is stubbed
@@ -81,7 +86,11 @@ describe("buildTronNativeSend (network stubbed)", () => {
         JSON.stringify({
           txID: "deadbeef".repeat(8),
           raw_data: { expiration: 0 },
-          raw_data_hex: "0a02",
+          raw_data_hex: encodeTransferRawData({
+            from: ADDR_FROM,
+            to: ADDR_TO,
+            amountSun: 1_500_000n,
+          }),
           visible: true,
         }),
         { status: 200 }
@@ -163,7 +172,12 @@ describe("buildTronTokenSend (network stubbed)", () => {
           transaction: {
             txID: "cafebabe".repeat(8),
             raw_data: { expiration: 0 },
-            raw_data_hex: "0a03",
+            raw_data_hex: encodeTriggerSmartContractRawData({
+              from: ADDR_FROM,
+              contract: ADDR_USDT,
+              dataHex: "a9059cbb" + body.parameter,
+              feeLimitSun: BigInt(body.fee_limit),
+            }),
             visible: true,
           },
         }),
@@ -198,7 +212,17 @@ describe("buildTronTokenSend (network stubbed)", () => {
       return new Response(
         JSON.stringify({
           result: { result: true },
-          transaction: { txID: "f".repeat(64), raw_data: {}, raw_data_hex: "00", visible: true },
+          transaction: {
+            txID: "f".repeat(64),
+            raw_data: {},
+            raw_data_hex: encodeTriggerSmartContractRawData({
+              from: ADDR_FROM,
+              contract: ADDR_USDT,
+              dataHex: "a9059cbb" + body.parameter,
+              feeLimitSun: BigInt(body.fee_limit),
+            }),
+            visible: true,
+          },
         }),
         { status: 200 }
       );
@@ -250,7 +274,10 @@ describe("buildTronClaimRewards (network stubbed)", () => {
         JSON.stringify({
           txID: "aa".repeat(32),
           raw_data: { expiration: 0 },
-          raw_data_hex: "0a04",
+          raw_data_hex: encodeOwnerOnlyRawData({
+            kind: "claim_rewards",
+            from: ADDR_FROM,
+          }),
           visible: true,
         }),
         { status: 200 }

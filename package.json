@@ -131,7 +131,7 @@
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.4"
   },
   "engines": {
     "node": ">=18.17.0"

@@ -62,8 +62,11 @@ export function validateRpcUrl(chain: SupportedChain, url: string): void {
   try {
     parsed = new URL(url);
   } catch {
+    // Do NOT echo the URL back — configured RPC URLs often contain a provider
+    // API key in the path (e.g. .../v3/<key>). A malformed URL may still carry
+    // one, and error messages end up in logs / stderr where keys leak.
     throw new RpcConfigError(
-      `RPC URL for ${chain} is not a valid URL: ${url}. Fix it via \`vaultpilot-mcp-setup\` or the relevant env var.`
+      `RPC URL for ${chain} is not a valid URL. Fix it via \`vaultpilot-mcp-setup\` or the relevant env var.`
     );
   }
   if (parsed.protocol !== "https:") {
