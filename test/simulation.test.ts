@@ -88,6 +88,14 @@ describe("send_transaction re-simulates before signing", () => {
     }));
     vi.doMock("../src/signing/pre-sign-check.js", () => ({
       assertTransactionSafe: vi.fn().mockResolvedValue(undefined),
+      classifyEvmTrust: () => ({
+        mode: "clear-signable",
+        details: {
+          reason: "test",
+          payloadHash: "0x" + "00".repeat(32),
+          payloadHashShort: "0x00000000",
+        },
+      }),
     }));
 
     const { issueHandles } = await import("../src/signing/tx-store.js");
@@ -126,6 +134,14 @@ describe("send_transaction re-simulates before signing", () => {
     }));
     vi.doMock("../src/signing/pre-sign-check.js", () => ({
       assertTransactionSafe: vi.fn().mockResolvedValue(undefined),
+      classifyEvmTrust: () => ({
+        mode: "clear-signable",
+        details: {
+          reason: "test",
+          payloadHash: "0x" + "00".repeat(32),
+          payloadHashShort: "0x00000000",
+        },
+      }),
     }));
 
     const { issueHandles } = await import("../src/signing/tx-store.js");

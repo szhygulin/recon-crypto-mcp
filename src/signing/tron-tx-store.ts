@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { UnsignedTronTx } from "../types/index.js";
+import { hexToBytes, toHex } from "viem";
+import type { TrustDetails, UnsignedTronTx } from "../types/index.js";
+import { tronPayloadFingerprint } from "./pre-sign-check.js";
 
 /**
  * In-memory registry of prepared TRON transactions. Parallel to
@@ -29,8 +31,31 @@ function prune(now = Date.now()): void {
 
 export function issueTronHandle(tx: UnsignedTronTx): UnsignedTronTx {
   prune();
+  // Every action we build for TRON is first verified byte-for-byte against
+  // the local protobuf decoder (`assertTronRawDataMatches`), and the TRON
+  // Ledger app natively decodes TransferContract / TriggerSmartContract /
+  // VoteWitnessContract / FreezeBalanceV2 / UnfreezeBalanceV2 /
+  // WithdrawBalance / WithdrawExpireUnfreeze on-device. So the trust
+  // classification is unconditional: clear-signable.
+  //
+  // Caveat documented in README: this assumes the user has the TRON Ledger
+  // app loaded, not Ethereum. Wrong app is a connection-layer failure, not
+  // a classification failure — the device will refuse to sign.
+  const payloadHash = tronPayloadFingerprint(tx.rawDataHex);
+  const payloadHashShort = toHex(hexToBytes(payloadHash).subarray(0, 4));
+  const trustDetails: TrustDetails = tx.trustDetails ?? {
+    reason: `TRON ${tx.action} — on-device decode via TRON Ledger app; protobuf verified locally`,
+    ledgerPlugin: "TRON",
+    payloadHash,
+    payloadHashShort,
+  };
+  const classified: UnsignedTronTx = {
+    ...tx,
+    trustMode: tx.trustMode ?? "clear-signable",
+    trustDetails,
+  };
   const handle = randomUUID();
-  const withHandle: UnsignedTronTx = { ...tx, handle };
+  const withHandle: UnsignedTronTx = { ...classified, handle };
   const { handle: _h, ...stored } = withHandle;
   store.set(handle, { tx: stored as UnsignedTronTx, expiresAt: Date.now() + TX_TTL_MS });
   return withHandle;

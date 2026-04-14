@@ -83,6 +83,22 @@ Execution (Ledger-signed):
 - `prepare_tron_native_send`, `prepare_tron_token_send`, `prepare_tron_claim_rewards`, `prepare_tron_freeze`, `prepare_tron_unfreeze`, `prepare_tron_withdraw_expire_unfreeze`, `prepare_tron_vote` — TRON tx builders (native TRX send, canonical TRC-20 transfer, WithdrawBalance claim, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze, VoteWitness)
 - `send_transaction` — forwards a prepared tx for user approval. EVM handles go to Ledger Live via WalletConnect; TRON handles go to the USB-connected Ledger via `@ledgerhq/hw-app-trx` and are broadcast via TronGrid
 
+## Trust model
+
+VaultPilot never holds a private key — every state-changing transaction is prepared here and signed on your Ledger. The remaining question at signing time is: *can your Ledger show you, on its own screen, what you're about to approve?* That's what the trust classifier on every prepared tx answers.
+
+Each prepared transaction carries a `trustMode`:
+
+- **`clear-signable`** — the Ledger hardware app decodes the call on-device ("Supply 1 USDC to Aave V3"). The device is the final trust anchor; neither the agent nor VaultPilot can tamper with what appears on its screen. Approve as usual.
+- **`blind-sign`** — the Ledger shows raw calldata hex, but the destination contract is public and its ABI decodes via [swiss-knife.xyz](https://calldata.swiss-knife.xyz/decoder). The prepared tx ships with a `decoderUrl` pointing at swiss-knife with the calldata preloaded. Open it, confirm the decoded function + arguments match the preview VaultPilot showed you, then approve. The `payloadHashShort` fingerprint ties the decoder result to the exact bytes your Ledger will sign — if it matches at prepare time *and* at send time, nothing in between has been swapped.
+- **`blind-sign-unavoidable`** — unknown contract, exotic selector, or cross-chain bridge. Even swiss-knife may not decode it. Cross-chain bridges land here structurally: you cannot verify destination-chain execution locally at sign time. **Strongly consider rejecting** if you can't independently verify the call on the decoder.
+
+Coverage today: native sends, ERC-20 transfer/approve, Aave V3 supply/withdraw/borrow/repay, Compound V3 supply/withdraw, Morpho Blue supply/withdraw/borrow/repay/supplyCollateral/withdrawCollateral, Lido `submit`/`requestWithdrawals`/`claimWithdrawal`, EigenLayer `depositIntoStrategy`, and Uniswap V3 SwapRouter02 (`exactInputSingle`/`exactInput`/`multicall`) are all clear-signable. LiFi aggregator calls are blind-sign (same-chain) or blind-sign-unavoidable (cross-chain).
+
+**Swap routing.** `prepare_swap` tries a direct Uniswap V3 route in parallel with LiFi. If the direct route's minOut is within **1.0%** (Ethereum) or **0.5%** (Arbitrum/Polygon/Base) of LiFi's, VaultPilot prefers direct so the user gets clear-signing on-device. Otherwise it falls back to LiFi and surfaces the quote gap via `rejectedAlternative` so the agent can explain why.
+
+**Ledger app caveat.** Classification assumes you have the right Ledger app loaded — **Ethereum** for EVM chains, **Tron** for TRON. A wrong-app condition surfaces as a connection-layer failure (the device refuses to sign), not as an incorrect trust classification.
+
 ## Requirements
 
 - Node.js >= 18.17

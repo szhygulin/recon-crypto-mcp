@@ -18,6 +18,17 @@ export const CONTRACTS = {
     uniswap: {
       positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
       factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      // SwapRouter02 — the routing entrypoint our direct-V3 swap builder
+      // targets. Its `exactInputSingle` / `exactInput` / `multicall` selectors
+      // are Ledger clear-sign covered (see pre-sign-check.ts), so same-chain
+      // swaps that pick this path get hardware-verified on-device.
+      swapRouter02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      // QuoterV2 — read-only quoting with tick-math baked in. Used to price
+      // direct-V3 routes before committing to them.
+      quoterV2: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+      // WETH9 — canonical wrapper used by SwapRouter02's wrapETH/unwrapWETH9
+      // steps when the user is swapping to/from native ETH.
+      weth9: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
     },
     lido: {
       stETH: "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
@@ -62,6 +73,9 @@ export const CONTRACTS = {
     uniswap: {
       positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
       factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      swapRouter02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      quoterV2: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+      weth9: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
     },
     lido: {
       wstETH: "0x5979D7b546E38E414F7E9822514be443A4800529",
@@ -94,6 +108,12 @@ export const CONTRACTS = {
     uniswap: {
       positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
       factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      swapRouter02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      quoterV2: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+      // On Polygon the native wrapper is WMATIC — SwapRouter02's multicall
+      // wraps/unwraps the chain's native asset, so this is where "native in/out"
+      // routes through.
+      weth9: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
     },
     // Lido has no native deployment on Polygon (stMATIC is a separate protocol
     // from a different team); we intentionally omit the `lido` entry so the
@@ -127,6 +147,12 @@ export const CONTRACTS = {
       // cross-chain address; PositionManager too.
       positionManager: "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1",
       factory: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+      // Base uses a different SwapRouter02 and QuoterV2 than the other chains —
+      // Base's Uniswap V3 was deployed after the cross-chain deterministic
+      // rollout, so these are chain-specific addresses (see Uniswap deployments).
+      swapRouter02: "0x2626664c2603336E57B271c5C0b26F421741e481",
+      quoterV2: "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+      weth9: "0x4200000000000000000000000000000000000006",
     },
     // Lido and EigenLayer are L1-only — no `lido`/`eigenlayer` keys means the
     // staking reader short-circuits for Base, matching how Polygon is handled.

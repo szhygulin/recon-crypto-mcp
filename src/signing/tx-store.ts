@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { UnsignedTx } from "../types/index.js";
+import { classifyEvmTrust } from "./pre-sign-check.js";
 
 /**
  * In-memory registry of prepared transactions keyed by an opaque handle.
@@ -44,10 +45,22 @@ export function issueHandles(tx: UnsignedTx): UnsignedTx {
   const now = Date.now();
   const expiresAt = now + TX_TTL_MS;
 
-  const nextWithHandles = tx.next ? issueHandles(tx.next) : undefined;
+  // Classify trust BEFORE stamping the handle, so every stored tx tree node
+  // — including nested `.next` steps like approve→swap — carries its own
+  // per-node trust metadata. Upstream callers (e.g. prepareSwap) may have
+  // already set `trustMode` to override the default classification (for
+  // instance: LiFi bridges → blind-sign-unavoidable). Respect that if set.
+  const classified = tx.trustMode && tx.trustDetails
+    ? tx
+    : (() => {
+        const { mode, details } = classifyEvmTrust(tx);
+        return { ...tx, trustMode: mode, trustDetails: details };
+      })();
+
+  const nextWithHandles = classified.next ? issueHandles(classified.next) : undefined;
   const handle = randomUUID();
   const withHandle: UnsignedTx = {
-    ...tx,
+    ...classified,
     handle,
     ...(nextWithHandles ? { next: nextWithHandles } : {}),
   };

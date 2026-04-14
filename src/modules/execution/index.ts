@@ -346,6 +346,8 @@ export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<Unsi
 async function sendTronTransaction(args: SendTransactionArgs): Promise<{
   txHash: string;
   chain: "tron";
+  trustMode?: string;
+  payloadHashShort?: string;
 }> {
   const tx: UnsignedTronTx = consumeTronHandle(args.handle);
   // If the user paired this `from` via `pair_ledger_tron`, use the path they
@@ -365,7 +367,14 @@ async function sendTronTransaction(args: SendTransactionArgs): Promise<{
   // TronGrid error), the handle stays valid and the caller can retry
   // within the 15-min TTL without re-preparing.
   retireTronHandle(args.handle);
-  return { txHash: txID, chain: "tron" };
+  return {
+    txHash: txID,
+    chain: "tron",
+    ...(tx.trustMode ? { trustMode: tx.trustMode } : {}),
+    ...(tx.trustDetails?.payloadHashShort
+      ? { payloadHashShort: tx.trustDetails.payloadHashShort }
+      : {}),
+  };
 }
 
 /**
@@ -382,6 +391,10 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   txHash: `0x${string}` | string;
   chain: SupportedChain | "tron";
   nextHandle?: string;
+  /** Trust classification echoed back so the user can cross-check with what they approved at prepare time. */
+  trustMode?: string;
+  /** First 8 hex chars of the payload fingerprint — state this back to the user before they approve on device. */
+  payloadHashShort?: string;
 }> {
   if (hasTronHandle(args.handle)) {
     return sendTronTransaction(args);
@@ -440,6 +453,10 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
     txHash: hash,
     chain: tx.chain,
     ...(tx.next?.handle ? { nextHandle: tx.next.handle } : {}),
+    ...(tx.trustMode ? { trustMode: tx.trustMode } : {}),
+    ...(tx.trustDetails?.payloadHashShort
+      ? { payloadHashShort: tx.trustDetails.payloadHashShort }
+      : {}),
   };
 }
 

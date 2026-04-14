@@ -242,7 +242,9 @@ describe("sendTransaction — TRON handle routing", () => {
     expect(hasTronHandle(tx.handle!)).toBe(true);
 
     const result = await sendTransaction({ handle: tx.handle!, confirmed: true });
-    expect(result).toEqual({ txHash: "ab".repeat(32), chain: "tron" });
+    expect(result).toMatchObject({ txHash: "ab".repeat(32), chain: "tron" });
+    expect(result.trustMode).toBe("clear-signable");
+    expect(result.payloadHashShort).toMatch(/^0x[0-9a-f]{8}$/);
     expect(hasTronHandle(tx.handle!)).toBe(false);
     expect(trxInstance.signTransaction).toHaveBeenCalledWith(
       "44'/195'/0'/0/0",

@@ -39,6 +39,49 @@ export function isEvmChain(c: AnyChain): c is SupportedChain {
 
 export type RpcProvider = "infura" | "alchemy" | "custom";
 
+/**
+ * Trust classification for a prepared transaction, from the user's point of
+ * view at signing time:
+ *
+ *   - `clear-signable`: the Ledger hardware app decodes this call to plain
+ *     language on-device (e.g. "Supply 1 USDC to Aave V3"). Hardware is the
+ *     final trust anchor — neither the agent nor VaultPilot can tamper with
+ *     what appears on the device screen, so the user can approve directly.
+ *   - `blind-sign`: the Ledger shows raw calldata hex only, but the call
+ *     targets a contract whose ABI is public and decodable via
+ *     swiss-knife.xyz. The user should open the decoder URL, verify the
+ *     decoded call matches the previewed description, and only then approve.
+ *   - `blind-sign-unavoidable`: unknown contract, exotic selector, or
+ *     cross-chain bridge. Even swiss-knife may not decode it usefully. The
+ *     user should strongly consider rejecting if they can't independently
+ *     verify the call.
+ */
+export type TrustMode = "clear-signable" | "blind-sign" | "blind-sign-unavoidable";
+
+/**
+ * Supporting metadata for a `TrustMode` classification. Returned on every
+ * prepared tx so the agent can format the right message for the user.
+ */
+export interface TrustDetails {
+  /** Short human-readable reason, e.g. "Aave V3 Pool supply()" or "LiFi cross-chain bridge". */
+  reason: string;
+  /** Which Ledger app/plugin is expected to decode this. Omitted for blind-sign cases. */
+  ledgerPlugin?: string;
+  /** swiss-knife.xyz URL with calldata preloaded. Omitted when calldata is too large for a URL. */
+  decoderUrl?: string;
+  /** Fallback when calldata exceeds the URL size budget. */
+  decoderPasteInstructions?: string;
+  /**
+   * keccak256 fingerprint over a domain-tagged encoding of
+   * (chainId, to, value, data). Ties the decoder result to the exact bytes
+   * the Ledger will sign — if the user sees the same `payloadHashShort` at
+   * prepare time and at send time, the tx can't have been swapped in between.
+   */
+  payloadHash: `0x${string}`;
+  /** First 8 hex chars of `payloadHash`, for quick visual cross-check. */
+  payloadHashShort: string;
+}
+
 /** Numeric chain IDs for the chains we support. */
 export const CHAIN_IDS: Record<SupportedChain, number> = {
   ethereum: 1,
@@ -485,6 +528,9 @@ export interface UnsignedTronTx {
   feeLimitSun?: string;
   /** Opaque handle — see tron-tx-store.ts. Phase 3 signer consumes this. */
   handle?: string;
+  /** Trust classification — see TrustMode. Always `clear-signable` for TRON actions we build. */
+  trustMode?: TrustMode;
+  trustDetails?: TrustDetails;
 }
 
 /** Unsigned transaction, ready to be sent to Ledger Live for signing. */
@@ -525,6 +571,12 @@ export interface UnsignedTx {
    * the prompt-injection → arbitrary-signing path.
    */
   handle?: string;
+  /**
+   * Trust classification — see TrustMode. Populated by `issueHandles()` so
+   * every EVM builder gets classified at a single call site.
+   */
+  trustMode?: TrustMode;
+  trustDetails?: TrustDetails;
 }
 
 /** Shape of ~/.vaultpilot-mcp/config.json. */
