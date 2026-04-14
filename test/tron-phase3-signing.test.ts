@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { encodeTransferRawData } from "./helpers/tron-raw-data-encode.js";
 
 /**
  * Phase-3 (TRON USB HID signing) tests.
@@ -27,6 +28,18 @@ vi.mock("../src/signing/tron-usb-loader.js", () => ({
 const DEVICE_ADDRESS = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7";
 const OTHER_ADDRESS = "TMuA6YqfCeX8EhbfYEg5y7S4DqzSJireY9";
 const RAW_HEX = "0a02487b2208b6f0a4c9dd5b6c";
+// Realistic Transfer protobuf for flows that exercise buildTronNativeSend +
+// the verifier. Tests not going through the builder can keep using RAW_HEX.
+const TRANSFER_1TRX_DEVICE_TO_OTHER = encodeTransferRawData({
+  from: DEVICE_ADDRESS,
+  to: OTHER_ADDRESS,
+  amountSun: 1_000_000n,
+});
+const TRANSFER_1TRX_OTHER_TO_DEVICE = encodeTransferRawData({
+  from: OTHER_ADDRESS,
+  to: DEVICE_ADDRESS,
+  amountSun: 1_000_000n,
+});
 const GOOD_SIG = "a".repeat(130);
 
 function makeTrxStub(overrides: Partial<TrxStub> = {}): TrxStub {
@@ -202,7 +215,7 @@ describe("sendTransaction — TRON handle routing", () => {
           JSON.stringify({
             txID: "ab".repeat(32),
             raw_data: { expiration: 1 },
-            raw_data_hex: RAW_HEX,
+            raw_data_hex: TRANSFER_1TRX_DEVICE_TO_OTHER,
             visible: true,
           }),
           { status: 200 }
@@ -231,7 +244,11 @@ describe("sendTransaction — TRON handle routing", () => {
     const result = await sendTransaction({ handle: tx.handle!, confirmed: true });
     expect(result).toEqual({ txHash: "ab".repeat(32), chain: "tron" });
     expect(hasTronHandle(tx.handle!)).toBe(false);
-    expect(trxInstance.signTransaction).toHaveBeenCalledWith("44'/195'/0'/0/0", RAW_HEX, []);
+    expect(trxInstance.signTransaction).toHaveBeenCalledWith(
+      "44'/195'/0'/0/0",
+      TRANSFER_1TRX_DEVICE_TO_OTHER,
+      []
+    );
   });
 
   it("keeps the handle alive when signing fails so the caller can retry", async () => {
@@ -241,7 +258,7 @@ describe("sendTransaction — TRON handle routing", () => {
           JSON.stringify({
             txID: "cd".repeat(32),
             raw_data: { expiration: 1 },
-            raw_data_hex: RAW_HEX,
+            raw_data_hex: TRANSFER_1TRX_DEVICE_TO_OTHER,
             visible: true,
           }),
           { status: 200 }
@@ -378,7 +395,7 @@ describe("pair_ledger_tron + get_ledger_status", () => {
           JSON.stringify({
             txID: "ef".repeat(32),
             raw_data: { expiration: 1 },
-            raw_data_hex: RAW_HEX,
+            raw_data_hex: TRANSFER_1TRX_OTHER_TO_DEVICE,
             visible: true,
           }),
           { status: 200 }
@@ -408,7 +425,7 @@ describe("pair_ledger_tron + get_ledger_status", () => {
     expect(result.txHash).toBe("ef".repeat(32));
     expect(trxInstance.signTransaction).toHaveBeenCalledWith(
       "44'/195'/1'/0/0",
-      RAW_HEX,
+      TRANSFER_1TRX_OTHER_TO_DEVICE,
       []
     );
   });

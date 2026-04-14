@@ -5,6 +5,11 @@ import {
   buildTronWithdrawExpireUnfreeze,
 } from "../src/modules/tron/actions.js";
 import { hasTronHandle } from "../src/signing/tron-tx-store.js";
+import {
+  encodeFreezeV2RawData,
+  encodeUnfreezeV2RawData,
+  encodeOwnerOnlyRawData,
+} from "./helpers/tron-raw-data-encode.js";
 
 /**
  * Phase-2b (TRON Stake 2.0 writes) tests. Network IO is stubbed via
@@ -17,12 +22,12 @@ import { hasTronHandle } from "../src/signing/tron-tx-store.js";
 
 const ADDR = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7";
 
-function directTxResponse(txID = "ab".repeat(32)): Response {
+function directTxResponse(rawDataHex: string, txID = "ab".repeat(32)): Response {
   return new Response(
     JSON.stringify({
       txID,
       raw_data: { expiration: 0 },
-      raw_data_hex: "0a05",
+      raw_data_hex: rawDataHex,
       visible: true,
     }),
     { status: 200 }
@@ -40,7 +45,13 @@ describe("buildTronFreeze (network stubbed)", () => {
       expect(body.frozen_balance).toBe(100_000_000); // 100 TRX in SUN
       expect(body.resource).toBe("BANDWIDTH"); // uppercased at edge
       expect(body.visible).toBe(true);
-      return directTxResponse();
+      return directTxResponse(
+        encodeFreezeV2RawData({
+          from: ADDR,
+          frozenBalanceSun: BigInt(body.frozen_balance),
+          resource: "bandwidth",
+        })
+      );
     });
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -60,7 +71,13 @@ describe("buildTronFreeze (network stubbed)", () => {
     fetchMock.mockImplementationOnce(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(init!.body as string);
       expect(body.resource).toBe("ENERGY");
-      return directTxResponse();
+      return directTxResponse(
+        encodeFreezeV2RawData({
+          from: ADDR,
+          frozenBalanceSun: BigInt(body.frozen_balance),
+          resource: "energy",
+        })
+      );
     });
     const tx = await buildTronFreeze({ from: ADDR, amount: "50", resource: "energy" });
     expect(tx.decoded.args.resource).toBe("energy"); // preserved lowercase on preview
@@ -104,7 +121,13 @@ describe("buildTronUnfreeze (network stubbed)", () => {
         expect(body.owner_address).toBe(ADDR);
         expect(body.unfreeze_balance).toBe(75_000_000); // 75 TRX
         expect(body.resource).toBe("ENERGY");
-        return directTxResponse();
+        return directTxResponse(
+          encodeUnfreezeV2RawData({
+            from: ADDR,
+            unfreezeBalanceSun: BigInt(body.unfreeze_balance),
+            resource: "energy",
+          })
+        );
       })
     );
   });
@@ -154,7 +177,9 @@ describe("buildTronWithdrawExpireUnfreeze (network stubbed)", () => {
       const body = JSON.parse(init!.body as string);
       expect(body.owner_address).toBe(ADDR);
       expect(body.visible).toBe(true);
-      return directTxResponse();
+      return directTxResponse(
+        encodeOwnerOnlyRawData({ kind: "withdraw_expire_unfreeze", from: ADDR })
+      );
     });
     vi.stubGlobal("fetch", fetchMock);
   });

@@ -7,6 +7,7 @@ import {
 import { resolveTronApiKey, readUserConfig } from "../../config/user-config.js";
 import { issueTronHandle } from "../../signing/tron-tx-store.js";
 import { encodeTrc20TransferParam } from "./address.js";
+import { assertTronRawDataMatches } from "./verify-raw-data.js";
 import type { UnsignedTronTx } from "../../types/index.js";
 
 /**
@@ -134,6 +135,13 @@ export async function buildTronNativeSend(
     throw new Error("TronGrid createtransaction returned no transaction — unexpected shape.");
   }
 
+  assertTronRawDataMatches(res.raw_data_hex, {
+    kind: "native_send",
+    from: args.from,
+    to: args.to,
+    amountSun,
+  });
+
   const tx: UnsignedTronTx = {
     chain: "tron",
     action: "native_send",
@@ -222,6 +230,15 @@ export async function buildTronTokenSend(
   if (!ttx?.txID || !ttx.raw_data_hex) {
     throw new Error("TronGrid triggersmartcontract returned no transaction — unexpected shape.");
   }
+
+  assertTronRawDataMatches(ttx.raw_data_hex, {
+    kind: "trc20_send",
+    from: args.from,
+    contract: args.token,
+    parameterHex: parameter,
+    feeLimitSun,
+    callValue: 0n,
+  });
 
   const tx: UnsignedTronTx = {
     chain: "tron",
@@ -319,6 +336,12 @@ export async function buildTronVote(args: BuildTronVoteArgs): Promise<UnsignedTr
           args.votes.length === 1 ? "" : "s"
         } (replaces any prior votes)`;
 
+  assertTronRawDataMatches(res.raw_data_hex, {
+    kind: "vote",
+    from: args.from,
+    votes: args.votes.map((v) => ({ address: v.address, count: v.count })),
+  });
+
   const tx: UnsignedTronTx = {
     chain: "tron",
     action: "vote",
@@ -384,6 +407,13 @@ export async function buildTronFreeze(
     throw new Error("TronGrid freezebalancev2 returned no transaction — unexpected shape.");
   }
 
+  assertTronRawDataMatches(res.raw_data_hex, {
+    kind: "freeze",
+    from: args.from,
+    frozenBalanceSun: amountSun,
+    resource: args.resource,
+  });
+
   const tx: UnsignedTronTx = {
     chain: "tron",
     action: "freeze",
@@ -439,6 +469,13 @@ export async function buildTronUnfreeze(
     throw new Error("TronGrid unfreezebalancev2 returned no transaction — unexpected shape.");
   }
 
+  assertTronRawDataMatches(res.raw_data_hex, {
+    kind: "unfreeze",
+    from: args.from,
+    unfreezeBalanceSun: amountSun,
+    resource: args.resource,
+  });
+
   const tx: UnsignedTronTx = {
     chain: "tron",
     action: "unfreeze",
@@ -480,6 +517,11 @@ export async function buildTronWithdrawExpireUnfreeze(
   if (!res.txID || !res.raw_data_hex) {
     throw new Error("TronGrid withdrawexpireunfreeze returned no transaction — unexpected shape.");
   }
+
+  assertTronRawDataMatches(res.raw_data_hex, {
+    kind: "withdraw_expire_unfreeze",
+    from: args.from,
+  });
 
   const tx: UnsignedTronTx = {
     chain: "tron",
@@ -524,6 +566,11 @@ export async function buildTronClaimRewards(
   if (!res.txID || !res.raw_data_hex) {
     throw new Error("TronGrid withdrawbalance returned no transaction — unexpected shape.");
   }
+
+  assertTronRawDataMatches(res.raw_data_hex, {
+    kind: "claim_rewards",
+    from: args.from,
+  });
 
   const tx: UnsignedTronTx = {
     chain: "tron",

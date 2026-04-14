@@ -151,6 +151,20 @@ describe("requestCapability (prefilled URL mode)", () => {
     expect(body).toContain("@\u200Bfake-admin");
   });
 
+  it("neutralizes @-mentions in the issue title (S1b)", async () => {
+    // GitHub parses @-mentions in titles too — a prompt-injected summary
+    // containing "@someone" would ping arbitrary users at open-issue time.
+    const res = (await requestCapability({
+      summary: "Ping @octocat and @fake-admin about this",
+      description: "Body content long enough to satisfy the zod min-length check.",
+    })) as { issueUrl: string; title: string };
+    const title = new URL(res.issueUrl).searchParams.get("title") ?? "";
+    expect(title).not.toMatch(/@[a-zA-Z0-9_-]/);
+    expect(title).toContain("@\u200Boctocat");
+    expect(title).toContain("@\u200Bfake-admin");
+    expect(res.title).toContain("@\u200Boctocat");
+  });
+
   it("escapes embedded triple-backticks in errorObserved (B4)", async () => {
     const res = (await requestCapability({
       summary: "Error report with fenced block",

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { listTronWitnesses } from "../src/modules/tron/witnesses.js";
 import { buildTronVote } from "../src/modules/tron/actions.js";
 import { hasTronHandle } from "../src/signing/tron-tx-store.js";
+import { encodeVoteWitnessRawData } from "./helpers/tron-raw-data-encode.js";
 
 /**
  * Phase-2c (TRON voting) tests. Covers:
@@ -170,7 +171,12 @@ describe("buildTronVote (network stubbed)", () => {
         JSON.stringify({
           txID: "cc".repeat(32),
           raw_data: { expiration: 0 },
-          raw_data_hex: "0a06",
+          raw_data_hex: encodeVoteWitnessRawData({
+            from: OWNER,
+            votes: (body.votes as Array<{ vote_address: string; vote_count: number }>).map(
+              (v) => ({ address: v.vote_address, count: v.vote_count })
+            ),
+          }),
           visible: true,
         }),
         { status: 200 }
