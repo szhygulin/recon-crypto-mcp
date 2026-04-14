@@ -82,6 +82,7 @@ import {
 } from "./modules/balances/schemas.js";
 
 import { getTronStaking } from "./modules/tron/staking.js";
+import { listTronWitnesses } from "./modules/tron/witnesses.js";
 import {
   buildTronNativeSend,
   buildTronTokenSend,
@@ -89,6 +90,7 @@ import {
   buildTronFreeze,
   buildTronUnfreeze,
   buildTronWithdrawExpireUnfreeze,
+  buildTronVote,
 } from "./modules/tron/actions.js";
 import {
   getTronStakingInput,
@@ -98,6 +100,8 @@ import {
   prepareTronFreezeInput,
   prepareTronUnfreezeInput,
   prepareTronWithdrawExpireUnfreezeInput,
+  listTronWitnessesInput,
+  prepareTronVoteInput,
 } from "./modules/tron/schemas.js";
 
 import { getCompoundPositions } from "./modules/compound/index.js";
@@ -641,7 +645,7 @@ async function main() {
     "prepare_tron_freeze",
     {
       description:
-        "Build an unsigned TRON Stake 2.0 FreezeBalanceV2 transaction. Locks TRX to earn `bandwidth` (fuels plain transfers) or `energy` (fuels smart-contract calls) and gains proportional voting power. IMPORTANT: freezing alone does NOT accrue TRX rewards — `claimableRewards` (see `get_tron_staking`) only grows after the user also votes for a Super Representative, and VoteWitness is not yet exposed as a tool in this server. Unlocking requires a 14-day cooldown via `prepare_tron_unfreeze` + `prepare_tron_withdraw_expire_unfreeze`. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY until the USB HID signer lands.",
+        "Build an unsigned TRON Stake 2.0 FreezeBalanceV2 transaction. Locks TRX to earn `bandwidth` (fuels plain transfers) or `energy` (fuels smart-contract calls) and gains proportional voting power. IMPORTANT: freezing alone does NOT accrue TRX rewards — `claimableRewards` (see `get_tron_staking`) only grows after the user also votes for a Super Representative. Pair this tool with `list_tron_witnesses` + `prepare_tron_vote` for the full reward-earning flow. Unlocking requires a 14-day cooldown via `prepare_tron_unfreeze` + `prepare_tron_withdraw_expire_unfreeze`. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY until the USB HID signer lands.",
       inputSchema: prepareTronFreezeInput.shape,
     },
     handler(buildTronFreeze)
@@ -665,6 +669,28 @@ async function main() {
       inputSchema: prepareTronWithdrawExpireUnfreezeInput.shape,
     },
     handler(buildTronWithdrawExpireUnfreeze)
+  );
+
+  server.registerTool(
+    "list_tron_witnesses",
+    {
+      description:
+        "List TRON Super Representatives (SRs) + SR candidates, ranked by total vote count. Active SRs (rank ≤ 27, `isActive: true`) produce blocks and distribute the 160 TRX/block voter-reward pool pro-rata to their voters; every witness in the top 127 shares the same APR estimate (pro-rata split of the pool); witnesses ranked > 127 get `estVoterApr: 0`. APR estimates assume current mainnet constants (3-second blocks, 27 active SRs, 365 days/year) and are best-effort — actual rewards depend on missed blocks and competing voters shifting between your vote tx and reward claim. When `address` is passed, also returns `userVotes`, `totalTronPower`, `totalVotesCast`, and `availableVotes` so you can diff against a target allocation before calling `prepare_tron_vote`. Defaults to top-27 only; pass `includeCandidates: true` for the long tail.",
+      inputSchema: listTronWitnessesInput.shape,
+    },
+    handler((args: { address?: string; includeCandidates?: boolean }) =>
+      listTronWitnesses(args.address, args.includeCandidates ?? false)
+    )
+  );
+
+  server.registerTool(
+    "prepare_tron_vote",
+    {
+      description:
+        "Build an unsigned TRON VoteWitnessContract transaction — casts votes for Super Representatives to earn voting rewards on frozen TRX. IMPORTANT: VoteWitness REPLACES the wallet's entire prior vote allocation atomically. Pass every SR you intend to back (not just a delta); an empty `votes` array clears all votes. Sum of `count` values must not exceed the wallet's available TRON Power — check `list_tron_witnesses(address)` → `availableVotes` first. `count` is an integer (1 vote = 1 TRX of TRON Power). Rewards accrue per block and are harvested via `prepare_tron_claim_rewards` (24h cooldown). Returns a preview + opaque handle. NOTE: PREVIEW-ONLY until the USB HID signer lands.",
+      inputSchema: prepareTronVoteInput.shape,
+    },
+    handler(buildTronVote)
   );
 
   server.registerTool(

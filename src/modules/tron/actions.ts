@@ -245,6 +245,100 @@ export async function buildTronTokenSend(
   return issueTronHandle(tx);
 }
 
+// ----- VoteWitness (cast/replace all votes atomically) -----
+
+export interface TronVoteEntry {
+  /** Base58 SR address to vote for. */
+  address: string;
+  /** Integer vote count — 1 vote requires 1 TRX of frozen TRON Power. */
+  count: number;
+}
+
+export interface BuildTronVoteArgs {
+  from: string;
+  votes: TronVoteEntry[];
+}
+
+/**
+ * Build a VoteWitnessContract tx. This REPLACES the wallet's entire vote
+ * allocation atomically — TRON has no delta/patch endpoint. The caller must
+ * pass the full intended allocation; passing `votes: []` clears all votes.
+ *
+ * We enforce unique `vote_address` entries (TronGrid accepts duplicates but
+ * silently collapses them, which confuses downstream previews) and positive
+ * integer counts. The sum of counts must not exceed the wallet's TRON Power
+ * (frozen TRX) — we don't pre-check that here because it requires a second
+ * TronGrid round-trip; TronGrid rejects with a clear message in that case and
+ * `list_tron_witnesses(address)` exposes `availableVotes` for the caller.
+ */
+export async function buildTronVote(args: BuildTronVoteArgs): Promise<UnsignedTronTx> {
+  if (!isTronAddress(args.from)) {
+    throw new Error(`"from" is not a valid TRON mainnet address: ${args.from}`);
+  }
+  const seen = new Set<string>();
+  for (const v of args.votes) {
+    if (!isTronAddress(v.address)) {
+      throw new Error(`Vote target "${v.address}" is not a valid TRON base58 address.`);
+    }
+    if (!Number.isInteger(v.count) || v.count <= 0) {
+      throw new Error(
+        `Vote count must be a positive integer (got ${v.count} for ${v.address}).`
+      );
+    }
+    if (seen.has(v.address)) {
+      throw new Error(`Duplicate vote target in allocation: ${v.address}`);
+    }
+    seen.add(v.address);
+  }
+
+  const apiKey = resolveTronApiKey(readUserConfig());
+  const body = {
+    owner_address: args.from,
+    votes: args.votes.map((v) => ({ vote_address: v.address, vote_count: v.count })),
+    visible: true,
+  };
+  const res = await trongridPost<TrongridDirectTx>(
+    "/wallet/votewitnessaccount",
+    body,
+    apiKey
+  );
+  if (res.Error) {
+    // Common: "Not enough tron power" when sum > availableVotes; "witness not
+    // exists" if the address isn't an active SR or candidate. Surface verbatim.
+    throw new Error(`TronGrid votewitnessaccount failed: ${res.Error}`);
+  }
+  if (!res.txID || !res.raw_data_hex) {
+    throw new Error("TronGrid votewitnessaccount returned no transaction — unexpected shape.");
+  }
+
+  const totalVotes = args.votes.reduce((s, v) => s + v.count, 0);
+  const description =
+    args.votes.length === 0
+      ? `Clear all SR votes for ${args.from}`
+      : `Cast ${totalVotes} TRON Power across ${args.votes.length} SR${
+          args.votes.length === 1 ? "" : "s"
+        } (replaces any prior votes)`;
+
+  const tx: UnsignedTronTx = {
+    chain: "tron",
+    action: "vote",
+    from: args.from,
+    txID: res.txID,
+    rawData: res.raw_data,
+    rawDataHex: res.raw_data_hex,
+    description,
+    decoded: {
+      functionName: "VoteWitnessContract",
+      args: {
+        owner: args.from,
+        totalVotes: totalVotes.toString(),
+        allocation: JSON.stringify(args.votes),
+      },
+    },
+  };
+  return issueTronHandle(tx);
+}
+
 // ----- Stake 2.0: Freeze / Unfreeze / WithdrawExpireUnfreeze -----
 
 /**

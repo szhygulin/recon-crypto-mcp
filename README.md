@@ -36,7 +36,7 @@ This is an **agent-driven portfolio management** tool, not a wallet replacement.
 
 EVM: Ethereum, Arbitrum, Polygon, Base.
 
-Non-EVM: TRON (phases 1 + 2 + 2b — balance + staking reads, tx preparation for native TRX sends, canonical TRC-20 transfers, voting-reward claims, and Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze; Ledger signing lands in a follow-up phase).
+Non-EVM: TRON (phases 1 + 2 + 2b + 2c — balance + staking reads, SR listing, and tx preparation for native TRX sends, canonical TRC-20 transfers, voting-reward claims, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze, and VoteWitness; Ledger signing lands in a follow-up phase).
 
 Not every protocol is on every chain. Lido and EigenLayer are L1-only (Ethereum). Morpho Blue is currently enabled on Ethereum only — it is deployed on Base at the same address but the discovery scan needs a pinned deployment block, tracked as a follow-up. TRON has no lending/LP coverage in this server (none of Aave/Compound/Morpho/Uniswap are deployed there); balance reads return TRX + canonical TRC-20 stablecoins (USDT, USDC, USDD, TUSD) that together cover the vast majority of TRON token volume, and TRON-native staking (frozen TRX under Stake 2.0, pending unfreezes, claimable voting rewards) is surfaced via `get_tron_staking` and folded into the portfolio summary. Readers short-circuit cleanly on chains where a protocol isn't deployed.
 
@@ -61,6 +61,7 @@ Read-only (no Ledger pairing required):
 - `simulate_transaction` — run `eth_call` against a prepared or arbitrary tx to preview success/revert before signing; prepared txs are re-simulated automatically at send time
 - `get_token_balance`, `get_token_price` — balances and DefiLlama prices; `get_token_balance` accepts `chain: "tron"` with a base58 wallet and a base58 TRC-20 address (or `token: "native"` for TRX), returning a `TronBalance` shape
 - `get_tron_staking` — TRON-native staking state for a base58 address: claimable voting rewards (WithdrawBalance-ready), frozen TRX under Stake 2.0 (bandwidth + energy), and pending unfreezes with ISO unlock timestamps. Pair with `prepare_tron_claim_rewards` to actually withdraw accumulated rewards.
+- `list_tron_witnesses` — TRON Super Representatives + SR candidates, ranked by vote weight, with a rough voter-APR estimate per SR. Optionally augments with the caller's current vote allocation, total TRON Power, and available (unused) votes — pair with `prepare_tron_vote`.
 - `resolve_ens_name`, `reverse_resolve_ens` — ENS forward/reverse
 - `get_swap_quote` — LiFi quote (optionally cross-checked against 1inch)
 - `check_contract_security`, `check_permission_risks`, `get_protocol_risk_score` — risk tooling
@@ -80,7 +81,7 @@ Execution (Ledger-signed via WalletConnect):
 - `prepare_eigenlayer_deposit`
 - `prepare_swap` — LiFi-routed intra- or cross-chain swap/bridge
 - `prepare_native_send`, `prepare_token_send`
-- `prepare_tron_native_send`, `prepare_tron_token_send`, `prepare_tron_claim_rewards`, `prepare_tron_freeze`, `prepare_tron_unfreeze`, `prepare_tron_withdraw_expire_unfreeze` — TRON tx builders (native TRX send, canonical TRC-20 transfer, WithdrawBalance claim, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze). Preview-only in this release; `send_transaction` still refuses TRON handles until the USB HID signer lands.
+- `prepare_tron_native_send`, `prepare_tron_token_send`, `prepare_tron_claim_rewards`, `prepare_tron_freeze`, `prepare_tron_unfreeze`, `prepare_tron_withdraw_expire_unfreeze`, `prepare_tron_vote` — TRON tx builders (native TRX send, canonical TRC-20 transfer, WithdrawBalance claim, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze, VoteWitness). Preview-only in this release; `send_transaction` still refuses TRON handles until the USB HID signer lands.
 - `send_transaction` — forwards a prepared EVM tx to Ledger Live for user approval
 
 ## Requirements
