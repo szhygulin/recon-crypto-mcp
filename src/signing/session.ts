@@ -1,13 +1,28 @@
 import {
-  getConnectedAccounts,
+  getConnectedAccountsDetailed,
   getCurrentSession,
   getSignClient,
   isPeerUnreachable,
 } from "./walletconnect.js";
+import type { SupportedChain } from "../types/index.js";
+
+export interface SessionAccount {
+  address: `0x${string}`;
+  /** Supported chains this address is exposed on (mapped from chainIds). */
+  chains: SupportedChain[];
+  /** Every eip155 chainId advertised for this address, including ones the server does not support. */
+  chainIds: number[];
+}
 
 export interface SessionStatus {
   paired: boolean;
+  /**
+   * Deduplicated list of addresses. An address that appears on multiple chains
+   * shows up once here; use `accountDetails` for the per-chain breakdown.
+   */
   accounts: `0x${string}`[];
+  /** Per-address chain exposure — addresses paired with the networks they're advertised on. */
+  accountDetails: SessionAccount[];
   topic?: string;
   expiresAt?: number;
   /** Peer-advertised app name (e.g. "Ledger Live"). Self-reported — NOT a trusted identity. */
@@ -42,13 +57,20 @@ export async function getSessionStatus(): Promise<SessionStatus> {
   await getSignClient(); // triggers restore + liveness check
   const session = getCurrentSession();
   if (!session)
-    return { paired: false, accounts: [], peerTrustWarning: PEER_TRUST_WARNING };
-  const accounts = await getConnectedAccounts();
+    return {
+      paired: false,
+      accounts: [],
+      accountDetails: [],
+      peerTrustWarning: PEER_TRUST_WARNING,
+    };
+  const accountDetails = await getConnectedAccountsDetailed();
+  const accounts = accountDetails.map((a) => a.address);
   const meta = session.peer?.metadata;
   const unreachable = isPeerUnreachable();
   return {
     paired: true,
     accounts,
+    accountDetails,
     topic: session.topic,
     expiresAt: session.expiry * 1000,
     ...(meta?.name ? { wallet: meta.name } : {}),
