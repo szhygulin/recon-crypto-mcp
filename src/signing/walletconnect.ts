@@ -2,7 +2,7 @@ import { SignClient } from "@walletconnect/sign-client";
 import type { SessionTypes } from "@walletconnect/types";
 import { getSdkError } from "@walletconnect/utils";
 import { join } from "node:path";
-import { CHAIN_IDS, type SupportedChain, type UnsignedTx } from "../types/index.js";
+import { CHAIN_IDS, CHAIN_ID_TO_NAME, type SupportedChain, type UnsignedTx } from "../types/index.js";
 import {
   readUserConfig,
   patchUserConfig,
@@ -189,21 +189,54 @@ export function getCurrentSession(): SessionTypes.Struct | null {
   return currentSession;
 }
 
-/** Return the list of EVM accounts exposed by the connected wallet (across all namespaces). */
+/**
+ * Return the deduplicated list of EVM addresses exposed by the connected
+ * wallet across all chain namespaces. WalletConnect advertises accounts as
+ * `eip155:<chainId>:<address>` — the same address typically appears once per
+ * chain the wallet has exposed, so a flat list of raw entries looks like
+ * duplicates from the agent's perspective. Callers that care which chains an
+ * address is exposed on should use `getConnectedAccountsDetailed`.
+ */
 export async function getConnectedAccounts(): Promise<`0x${string}`[]> {
+  const detailed = await getConnectedAccountsDetailed();
+  return detailed.map((a) => a.address);
+}
+
+/**
+ * Return per-address chain exposure. Addresses are deduplicated; `chainIds`
+ * lists every eip155 chainId the address was advertised for, and `chains`
+ * maps those to the server's SupportedChain names where recognized.
+ */
+export async function getConnectedAccountsDetailed(): Promise<
+  { address: `0x${string}`; chainIds: number[]; chains: SupportedChain[] }[]
+> {
   if (!currentSession) await getSignClient(); // ensure restoration attempted
   if (!currentSession) return [];
-  const accounts: `0x${string}`[] = [];
   const ns = currentSession.namespaces.eip155;
   if (!ns) return [];
+
+  // Preserve the first-seen order of addresses so the list is deterministic
+  // across calls — a Map iterates in insertion order.
+  const byAddress = new Map<`0x${string}`, Set<number>>();
   for (const entry of ns.accounts) {
-    // format: "eip155:1:0xabc..."
     const parts = entry.split(":");
-    if (parts.length === 3 && /^0x[a-fA-F0-9]{40}$/.test(parts[2])) {
-      accounts.push(parts[2] as `0x${string}`);
-    }
+    if (parts.length !== 3) continue;
+    const chainId = Number(parts[1]);
+    const addr = parts[2];
+    if (!Number.isFinite(chainId) || !/^0x[a-fA-F0-9]{40}$/.test(addr)) continue;
+    const address = addr as `0x${string}`;
+    const existing = byAddress.get(address);
+    if (existing) existing.add(chainId);
+    else byAddress.set(address, new Set([chainId]));
   }
-  return accounts;
+
+  return Array.from(byAddress.entries()).map(([address, chainIdSet]) => {
+    const chainIds = Array.from(chainIdSet).sort((a, b) => a - b);
+    const chains = chainIds
+      .map((id) => CHAIN_ID_TO_NAME[id])
+      .filter((c): c is SupportedChain => c !== undefined);
+    return { address, chainIds, chains };
+  });
 }
 
 /** Send an `eth_sendTransaction` request. Ledger Live shows it, user signs on device, we get tx hash back. */
