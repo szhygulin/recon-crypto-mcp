@@ -471,7 +471,7 @@ async function main() {
     "get_swap_quote",
     {
       description:
-        "Get a LiFi aggregator quote for a token swap (same-chain) or bridge (cross-chain). Returns expected output, fees, execution time, and the underlying tool selected. No transaction is built.",
+        "Get a LiFi aggregator quote for a token swap (same-chain) or bridge (cross-chain). Returns expected output, fees, execution time, and the underlying tool selected. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out quotes (`amount` = target toToken output). No transaction is built.",
       inputSchema: getSwapQuoteInput.shape,
     },
     handler(getSwapQuote)
@@ -481,7 +481,7 @@ async function main() {
     "prepare_swap",
     {
       description:
-        "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. The returned tx can be sent via `send_transaction`.",
+        "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out (`amount` = target toToken output, e.g. \"I want 100 USDC out\"). The returned tx can be sent via `send_transaction`.",
       inputSchema: prepareSwapInput.shape,
     },
     txHandler(prepareSwap)

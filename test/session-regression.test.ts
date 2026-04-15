@@ -1073,3 +1073,245 @@ describe("Feature: intra-chain swap quote compares LiFi against 1inch", () => {
     expect(quote.bestSource).toBeUndefined();
   });
 });
+
+describe("Bug 13: exact-out swap quotes (amountSide: 'to')", () => {
+  // When the user asks for "~100 USDC output", the schema's `amount` is interpreted
+  // as the toToken amount and passed to LiFi's toAmount endpoint. The 1inch comparison
+  // is skipped because 1inch v6 has no exact-out route — comparing apples to oranges
+  // would mislead route-selection. Approval sizing must come from the quote's
+  // returned fromAmount, not the user-supplied (toToken) amount.
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../src/modules/compound/index.js");
+    vi.doMock("../src/config/user-config.js", () => ({
+      readUserConfig: () => ({ apiKeys: { oneinch: "test-key" } }),
+      resolveOneInchApiKey: () => "test-key",
+    }));
+  });
+
+  it("passes toAmount (not fromAmount) to LiFi and skips the 1inch comparison", async () => {
+    const lifiCalls: unknown[] = [];
+    const oneInchCalls: unknown[] = [];
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async (req: unknown) => {
+        lifiCalls.push(req);
+        return {
+          tool: "uniswap",
+          action: {
+            fromToken: {
+              symbol: "WETH",
+              decimals: 18,
+              address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              priceUSD: "2800",
+            },
+            toToken: {
+              symbol: "USDC",
+              decimals: 6,
+              address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              priceUSD: "1",
+            },
+            fromAmount: "35714285714285714", // ~0.0357 WETH
+          },
+          estimate: {
+            fromAmount: "35714285714285714",
+            toAmount: "100000000", // 100 USDC
+            toAmountMin: "99500000",
+            executionDuration: 30,
+            feeCosts: [],
+            gasCosts: [],
+          },
+        };
+      },
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/modules/swap/oneinch.js", () => ({
+      fetchOneInchQuote: async (req: unknown) => {
+        oneInchCalls.push(req);
+        return {};
+      },
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({ readContract: async () => 6 }),
+      resetClients: () => {},
+    }));
+
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    const quote = await getSwapQuote({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      toToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      amount: "100",
+      amountSide: "to",
+    });
+
+    expect(lifiCalls).toHaveLength(1);
+    const lifiReq = lifiCalls[0] as { toAmount?: string; fromAmount?: string };
+    expect(lifiReq.toAmount).toBe("100000000");
+    expect(lifiReq.fromAmount).toBeUndefined();
+    // 1inch has no exact-out endpoint → comparison must be skipped.
+    expect(oneInchCalls).toHaveLength(0);
+    expect(quote.alternatives).toBeUndefined();
+    expect(Number(quote.toAmountExpected)).toBeCloseTo(100, 6);
+  });
+
+  it("sizes the ERC-20 approval from the quote's fromAmount padded by slippage, not the user-supplied toAmount", async () => {
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => ({
+        tool: "uniswap",
+        action: {
+          fromToken: {
+            symbol: "USDC",
+            decimals: 6,
+            address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            priceUSD: "1",
+          },
+          toToken: {
+            symbol: "WETH",
+            decimals: 18,
+            address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            priceUSD: "2800",
+          },
+          // Need ~280 USDC to produce 0.1 WETH.
+          fromAmount: "280000000",
+        },
+        estimate: {
+          fromAmount: "280000000",
+          toAmount: "100000000000000000", // 0.1 WETH
+          toAmountMin: "99500000000000000",
+          approvalAddress: "0x1111111254EEB25477B68fb85Ed929f73A960582",
+          executionDuration: 30,
+          feeCosts: [],
+          gasCosts: [],
+        },
+        transactionRequest: {
+          to: "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE",
+          data: "0xdeadbeef",
+          value: "0x0",
+          gasLimit: "0x30d40",
+        },
+      }),
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        readContract: async ({
+          functionName,
+          address,
+        }: {
+          functionName: string;
+          address: string;
+        }) => {
+          if (functionName === "decimals") {
+            // USDC=6, WETH=18.
+            return address.toLowerCase() ===
+              "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+              ? 6
+              : 18;
+          }
+          if (functionName === "allowance") return 0n;
+          return 0;
+        },
+      }),
+      resetClients: () => {},
+    }));
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    const tx = await prepareSwap({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      amount: "0.1",
+      amountSide: "to",
+      slippageBps: 100, // 1%
+    });
+
+    // First tx in the chain is the approval (ERC-20 input, no existing allowance).
+    expect(tx.decoded?.functionName).toBe("approve");
+    // Approval must cover quote.fromAmount * (1 + slippage). At 1% slippage: 280 → 282.8.
+    // The cap is shown with a ≤ prefix so the user knows it is a ceiling, not an exact pull.
+    expect(tx.decoded?.args?.amount).toBe("≤282.8 USDC");
+    // Swap tx description still shows the *expected* input (not the cap) so the user sees
+    // the route's quoted price, with the approval cap separately on the approve tx.
+    expect(tx.next?.description).toContain("~280 USDC → 0.1 WETH");
+  });
+
+  it("exact-in approval sizing is unchanged (exact amount, no slippage padding)", async () => {
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => ({
+        tool: "uniswap",
+        action: {
+          fromToken: {
+            symbol: "USDC",
+            decimals: 6,
+            address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            priceUSD: "1",
+          },
+          toToken: {
+            symbol: "WETH",
+            decimals: 18,
+            address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            priceUSD: "2800",
+          },
+          fromAmount: "280000000",
+        },
+        estimate: {
+          fromAmount: "280000000",
+          toAmount: "100000000000000000",
+          toAmountMin: "99500000000000000",
+          approvalAddress: "0x1111111254EEB25477B68fb85Ed929f73A960582",
+          executionDuration: 30,
+          feeCosts: [],
+          gasCosts: [],
+        },
+        transactionRequest: {
+          to: "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE",
+          data: "0xdeadbeef",
+          value: "0x0",
+          gasLimit: "0x30d40",
+        },
+      }),
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        readContract: async ({
+          functionName,
+          address,
+        }: {
+          functionName: string;
+          address: string;
+        }) => {
+          if (functionName === "decimals") {
+            return address.toLowerCase() ===
+              "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+              ? 6
+              : 18;
+          }
+          if (functionName === "allowance") return 0n;
+          return 0;
+        },
+      }),
+      resetClients: () => {},
+    }));
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    const tx = await prepareSwap({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      amount: "280",
+      slippageBps: 100,
+    });
+
+    expect(tx.decoded?.functionName).toBe("approve");
+    // Exact-in: the approval equals the user-specified input exactly — no slippage pad.
+    expect(tx.decoded?.args?.amount).toBe("280 USDC");
+    expect(tx.description).toContain("(exact amount)");
+  });
+});

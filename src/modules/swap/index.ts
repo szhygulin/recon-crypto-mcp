@@ -123,30 +123,40 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
   assertSlippageOk(args.slippageBps, args.acknowledgeHighSlippage);
   const chain = args.fromChain as SupportedChain;
   const toChain = args.toChain as SupportedChain;
-  const fromDecimals = await resolveDecimals(chain, args.fromToken as `0x${string}` | "native", args.fromTokenDecimals);
-  const fromAmountWei = parseUnits(args.amount, fromDecimals).toString();
+  const amountSide = args.amountSide ?? "from";
+  const isExactOut = amountSide === "to";
+
+  const sideDecimals = isExactOut
+    ? await resolveDecimals(toChain, args.toToken as `0x${string}` | "native", args.toTokenDecimals)
+    : await resolveDecimals(chain, args.fromToken as `0x${string}` | "native", args.fromTokenDecimals);
+  const amountWei = parseUnits(args.amount, sideDecimals).toString();
 
   // Intra-chain only: 1inch has no cross-chain aggregator. Skip silently when no
   // API key is configured so users without a 1inch portal account still get LiFi.
+  // Also skip for exact-out: 1inch v6 has no toAmount/exact-out endpoint, so a
+  // fromAmount comparison would be against a different quantity entirely.
   const intraChain = args.fromChain === args.toChain;
-  const oneInchApiKey = intraChain ? resolveOneInchApiKey(readUserConfig()) : undefined;
+  const oneInchApiKey =
+    intraChain && !isExactOut ? resolveOneInchApiKey(readUserConfig()) : undefined;
+
+  const lifiReq = {
+    fromChain: chain,
+    toChain,
+    fromToken: args.fromToken as `0x${string}` | "native",
+    toToken: args.toToken as `0x${string}` | "native",
+    fromAddress: args.wallet as `0x${string}`,
+    slippage: args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined,
+    ...(isExactOut ? { toAmount: amountWei } : { fromAmount: amountWei }),
+  } as Parameters<typeof fetchQuote>[0];
 
   const [quote, oneInchRaw] = await Promise.all([
-    fetchQuote({
-      fromChain: chain,
-      toChain,
-      fromToken: args.fromToken as `0x${string}` | "native",
-      toToken: args.toToken as `0x${string}` | "native",
-      fromAmount: fromAmountWei,
-      fromAddress: args.wallet as `0x${string}`,
-      slippage: args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined,
-    }),
+    fetchQuote(lifiReq),
     oneInchApiKey
       ? fetchOneInchQuote({
           chain,
           fromToken: args.fromToken as `0x${string}` | "native",
           toToken: args.toToken as `0x${string}` | "native",
-          fromAmount: fromAmountWei,
+          fromAmount: amountWei,
           apiKey: oneInchApiKey,
         }).catch((err: unknown) => ({ __error: (err as Error).message }) as const)
       : Promise.resolve(undefined),
@@ -268,18 +278,25 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
 export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
   assertSlippageOk(args.slippageBps, args.acknowledgeHighSlippage);
   const chain = args.fromChain as SupportedChain;
-  const fromDecimals = await resolveDecimals(chain, args.fromToken as `0x${string}` | "native", args.fromTokenDecimals);
-  const fromAmountWei = parseUnits(args.amount, fromDecimals).toString();
+  const toChain = args.toChain as SupportedChain;
+  const amountSide = args.amountSide ?? "from";
+  const isExactOut = amountSide === "to";
 
-  const quote = await fetchQuote({
+  const sideDecimals = isExactOut
+    ? await resolveDecimals(toChain, args.toToken as `0x${string}` | "native", args.toTokenDecimals)
+    : await resolveDecimals(chain, args.fromToken as `0x${string}` | "native", args.fromTokenDecimals);
+  const amountWei = parseUnits(args.amount, sideDecimals).toString();
+
+  const lifiReq = {
     fromChain: chain,
-    toChain: args.toChain as SupportedChain,
+    toChain,
     fromToken: args.fromToken as `0x${string}` | "native",
     toToken: args.toToken as `0x${string}` | "native",
-    fromAmount: fromAmountWei,
     fromAddress: args.wallet as `0x${string}`,
     slippage: args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined,
-  });
+    ...(isExactOut ? { toAmount: amountWei } : { fromAmount: amountWei }),
+  } as Parameters<typeof fetchQuote>[0];
+  const quote = await fetchQuote(lifiReq);
 
   const txRequest = quote.transactionRequest;
   if (!txRequest || !txRequest.to || !txRequest.data) {
@@ -351,9 +368,19 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
   const fromSym = quote.action.fromToken.symbol;
   const toSym = quote.action.toToken.symbol;
   const crossChain = args.fromChain !== args.toChain;
+  const quotedFromAmount = formatUnits(
+    BigInt(quote.action.fromAmount),
+    quote.action.fromToken.decimals
+  );
+  const quotedToAmount = formatUnits(
+    BigInt(quote.estimate.toAmount),
+    quote.action.toToken.decimals
+  );
+  const fromDisplay = isExactOut ? `~${quotedFromAmount}` : args.amount;
+  const toDisplay = isExactOut ? args.amount : `~${quotedToAmount}`;
   const description = crossChain
-    ? `Bridge ${args.amount} ${fromSym} from ${args.fromChain} to ${toSym} on ${args.toChain} via ${quote.tool}`
-    : `Swap ${args.amount} ${fromSym} → ${toSym} on ${args.fromChain} via ${quote.tool}`;
+    ? `Bridge ${fromDisplay} ${fromSym} from ${args.fromChain} to ${toDisplay} ${toSym} on ${args.toChain} via ${quote.tool}`
+    : `Swap ${fromDisplay} ${fromSym} → ${toDisplay} ${toSym} on ${args.fromChain} via ${quote.tool}`;
 
   const swapTx: UnsignedTx = {
     chain,
@@ -366,8 +393,8 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
       functionName: "lifi",
       args: {
         tool: quote.tool,
-        from: `${args.amount} ${fromSym}`,
-        expectedOut: `${formatUnits(BigInt(quote.estimate.toAmount), quote.action.toToken.decimals)} ${toSym}`,
+        from: `${fromDisplay} ${fromSym}`,
+        expectedOut: `${quotedToAmount} ${toSym}`,
         minOut: `${formatUnits(BigInt(quote.estimate.toAmountMin), quote.action.toToken.decimals)} ${toSym}`,
       },
     },
@@ -389,7 +416,25 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
       args: [args.wallet as `0x${string}`, approvalAddress],
     })) as bigint;
 
-    const amountWeiBig = BigInt(fromAmountWei);
+    // Approval sizing:
+    //  - exact-in: `quote.action.fromAmount` is exactly what the router will pull.
+    //  - exact-out: the router may need up to ~fromAmount*(1+slippage) if the pool
+    //    state drifts between quote and execution (inverse of toAmountMin protection
+    //    on the exact-in side). LiFi does not expose a fromAmountMax field, so we
+    //    derive the cap from the same slippageBps that was passed into the quote.
+    //    Under-approving here means the swap reverts on transferFrom for any pool
+    //    move against the user, even by 1 wei.
+    const slippageBpsEffective = args.slippageBps ?? 50; // LiFi default is 0.5% (50 bps)
+    const quotedFromWei = BigInt(quote.action.fromAmount);
+    const amountWeiBig = isExactOut
+      ? (quotedFromWei * BigInt(10_000 + slippageBpsEffective) + 9_999n) / 10_000n
+      : quotedFromWei;
+    const approvalDisplay = isExactOut
+      ? `≤${formatUnits(amountWeiBig, quote.action.fromToken.decimals)}`
+      : fromDisplay;
+    const approvalQualifier = isExactOut
+      ? `(covers up to ${slippageBpsEffective / 100}% input drift)`
+      : "(exact amount)";
     if (allowance < amountWeiBig) {
       const approveTx: UnsignedTx = {
         chain,
@@ -401,10 +446,10 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
         }),
         value: "0",
         from: args.wallet as `0x${string}`,
-        description: `Approve ${args.amount} ${fromSym} for ${quote.tool} via LiFi (exact amount)`,
+        description: `Approve ${approvalDisplay} ${fromSym} for ${quote.tool} via LiFi ${approvalQualifier}`,
         decoded: {
           functionName: "approve",
-          args: { spender: approvalAddress, amount: `${args.amount} ${fromSym}` },
+          args: { spender: approvalAddress, amount: `${approvalDisplay} ${fromSym}` },
         },
         next: swapTx,
       };
