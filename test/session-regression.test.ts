@@ -187,23 +187,22 @@ describe("Bug 4: EigenLayer revert does not crash getStakingPositions", () => {
   });
 });
 
-describe("Bug 3: Compound positions skip individual markets that revert", () => {
+describe("Bug 3: Compound positions isolate per-market read failures", () => {
   beforeEach(() => vi.resetModules());
   afterEach(() => vi.restoreAllMocks());
 
-  it("returns positions for healthy markets and silently skips failing ones", async () => {
-    // Simulate a multicall batch of 4 reads per market: first market fails (one of the
-    // four returns failure), second succeeds and shows a balance, third market has zero
-    // balance and should be filtered out by the null-position check.
+  it("reads healthy markets successfully while flagging the failing one via the errored list (one bad market doesn't nuke the whole call)", async () => {
+    // Market 1's baseToken read fails — previously we silently skipped this
+    // case, which was how issue #34 hid a six-figure cUSDCv3 supply. Now
+    // readMarketPosition throws on ANY of {baseToken, balanceOf,
+    // borrowBalanceOf} failing, getCompoundPositions collects the throw via
+    // allSettled, and healthy markets still return.
     let callCount = 0;
     const mockClient = {
       multicall: vi.fn(async ({ contracts }: { contracts: unknown[] }) => {
         callCount++;
-        // All multicalls in this flow have exactly 4 contracts (baseToken, numAssets,
-        // balanceOf, borrowBalanceOf) — except the metadata follow-up which has >=2.
         if (contracts.length === 4) {
           if (callCount === 1) {
-            // Market 1: baseToken call reverts (bad address in registry).
             return [
               { status: "failure", error: new Error("returned no data") },
               { status: "success", result: 0 },
@@ -212,15 +211,13 @@ describe("Bug 3: Compound positions skip individual markets that revert", () => 
             ];
           }
           if (callCount === 2) {
-            // Market 2: healthy with a supplied balance but no collateral assets.
             return [
               { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
-              { status: "success", result: 0 }, // numAssets = 0
-              { status: "success", result: 2_000_000_000n }, // 2000 USDC supplied
+              { status: "success", result: 0 },
+              { status: "success", result: 2_000_000_000n },
               { status: "success", result: 0n },
             ];
           }
-          // Market 3+: wallet has no position.
           return [
             { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
             { status: "success", result: 0 },
@@ -228,7 +225,6 @@ describe("Bug 3: Compound positions skip individual markets that revert", () => 
             { status: "success", result: 0n },
           ];
         }
-        // Metadata call: decimals, symbol for the base token (no collateral assets here).
         return [
           { status: "success", result: 6 },
           { status: "success", result: "USDC" },
@@ -240,7 +236,6 @@ describe("Bug 3: Compound positions skip individual markets that revert", () => 
       getClient: () => mockClient,
       resetClients: () => {},
     }));
-    // Price layer hits the network; stub it so tests are hermetic.
     vi.doMock("../src/data/format.js", async () => {
       const actual = await vi.importActual<typeof import("../src/data/format.js")>(
         "../src/data/format.js"
@@ -249,15 +244,18 @@ describe("Bug 3: Compound positions skip individual markets that revert", () => 
     });
 
     const { getCompoundPositions } = await import("../src/modules/compound/index.js");
-    const { positions } = await getCompoundPositions({
+    const result = await getCompoundPositions({
       wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
       chains: ["ethereum"],
     });
-    // At least one healthy market with a position should come back. Failing markets silently
-    // drop; empty markets drop via the null-filter.
-    expect(positions.length).toBeGreaterThanOrEqual(1);
-    expect(positions[0].baseSupplied?.symbol).toBe("USDC");
-    expect(positions[0].baseSupplied?.formatted).toBe("2000");
+    // Healthy market with a position still returns.
+    expect(result.positions.length).toBeGreaterThanOrEqual(1);
+    expect(result.positions[0].baseSupplied?.symbol).toBe("USDC");
+    expect(result.positions[0].baseSupplied?.formatted).toBe("2000");
+    // The failing market is surfaced rather than silently dropped.
+    expect(result.errored).toBe(true);
+    expect(result.erroredMarkets!.length).toBeGreaterThanOrEqual(1);
+    expect(result.erroredMarkets![0].error).toMatch(/baseToken/);
   });
 });
 
@@ -1384,13 +1382,16 @@ describe("Bug 14: Compound per-market RPC failures surface as coverage.errored (
     expect(result.erroredMarkets!.length).toBeGreaterThanOrEqual(1);
     // The error message should name the specific market that failed, not a
     // generic "compound failed" — useful for the user to know WHICH read blew up.
-    expect(result.erroredMarkets![0].error).toMatch(/balanceOf\/borrowBalanceOf/);
+    expect(result.erroredMarkets![0].error).toMatch(/balanceOf/);
+    expect(result.erroredMarkets![0].error).toMatch(/curated-registry/);
   });
 
-  it("getCompoundPositions stays errored:false when a market's baseToken fails (clean skip: market not deployed at that address)", async () => {
-    // Complement of the above: baseToken failing is the legitimate
-    // "market not on this chain / bad address in registry" case — should
-    // still skip silently, NOT flip the errored flag.
+  it("getCompoundPositions flags errored:true when baseToken fails too — registry is curated, so a baseToken read failure on a listed market is an RPC problem, not 'not deployed'", async () => {
+    // Rationale: CONTRACTS[chain].compound only lists known-deployed markets
+    // (cUSDCv3, cWETHv3 on ethereum, etc.). A baseToken read failing on one
+    // of those is an RPC flake, not an absent contract — so surface it
+    // rather than silently skipping. The user needs to distinguish "wallet
+    // has no position" from "an RPC blip hid my position."
     const mockClient = {
       multicall: vi.fn(async ({ contracts }: { contracts: unknown[] }) => {
         if (contracts.length === 4) {
@@ -1423,8 +1424,8 @@ describe("Bug 14: Compound per-market RPC failures surface as coverage.errored (
       wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
       chains: ["ethereum"],
     });
-    expect(result.errored).toBe(false);
-    expect(result.erroredMarkets).toBeUndefined();
+    expect(result.errored).toBe(true);
+    expect(result.erroredMarkets![0].error).toMatch(/baseToken/);
   });
 
   it("portfolio aggregator flips coverage.compound.errored when getCompoundPositions reports per-market failures", async () => {

@@ -45,9 +45,14 @@ async function readMarketPosition(
   const client = getClient(chain);
   const comet = market.address;
 
-  // Tolerate markets that aren't deployed / reverted — we silently skip them. Previously this
-  // used allowFailure:false which made ONE bad market address in the registry blow up the
-  // entire portfolio call.
+  // allowFailure:true so one weird sub-read doesn't nuke the batch. Previously
+  // we silently dropped any failed market to null; now we THROW on any of the
+  // three position-critical reads failing, because the registry is curated
+  // (every address in CONTRACTS[chain].compound is a known-deployed Comet
+  // proxy). A silent null-return here is how issue #34 hid a six-figure
+  // cUSDCv3 supply — a flaky RPC made the market invisible and the aggregator
+  // reported clean coverage. numAssets is the only sub-read allowed to fail
+  // silently: it just gates the collateral breakdown, not the base position.
   const results = await client.multicall({
     contracts: [
       { address: comet, abi: cometAbi, functionName: "baseToken" },
@@ -57,22 +62,13 @@ async function readMarketPosition(
     ],
     allowFailure: true,
   });
-  // If baseToken itself couldn't be read, the market isn't deployed at this
-  // address (or the proxy is broken) — treat as a clean skip, not a failure.
-  if (results[0].status !== "success") {
-    return null;
-  }
-  // baseToken succeeded but balanceOf / borrowBalanceOf didn't: the market IS
-  // there, but a flaky RPC / rate-limit dropped a live-position read. This is
-  // the failure class the portfolio aggregator needs to see — dropping it to
-  // null silently would let a six-figure position vanish from totals without
-  // any coverage-flag warning. (See issue #34.)
-  if (
-    results[2].status !== "success" ||
-    results[3].status !== "success"
-  ) {
+  const failed: string[] = [];
+  if (results[0].status !== "success") failed.push("baseToken");
+  if (results[2].status !== "success") failed.push("balanceOf");
+  if (results[3].status !== "success") failed.push("borrowBalanceOf");
+  if (failed.length > 0) {
     throw new Error(
-      `Compound V3 ${chain}:${market.name} — balanceOf/borrowBalanceOf read failed on a deployed market`,
+      `Compound V3 ${chain}:${market.name} — ${failed.join(", ")} read failed on a curated-registry market`,
     );
   }
   const baseToken = results[0].result;
