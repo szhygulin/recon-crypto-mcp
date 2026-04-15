@@ -599,14 +599,14 @@ describe("verifyEvmCalldata — independent cross-check via 4byte.directory", ()
     expect(result.reencodeCheck).toBe("pass");
     expect(result.independentFunctionName).toBe("transfer");
     expect(result.localFunctionName).toBe("transfer");
-    expect(result.summary).toMatch(/Independent cross-check passed/);
+    expect(result.summary).toMatch(/Cross-check passed/);
     expect(result.summary).toMatch(/re-encod/);
-    // Honesty about provenance: the server runs the same algorithm swiss-knife
-    // does in-browser, not a fetch of swiss-knife's output.
-    expect(result.summary).toMatch(/SAME algorithm/);
-    // Flag that this check shares a trust boundary with the MCP server itself,
-    // and nudge toward the out-of-boundary browser check.
+    // The phrasing the user specifically asked to keep.
+    expect(result.summary).toMatch(/mathematically implies/);
+    // Flag that this check shares a trust boundary with the MCP server itself.
     expect(result.summary).toMatch(/trust boundary/);
+    // Concise: summary stays well under the old ~900-char wall-of-text.
+    expect(result.summary.length).toBeLessThan(500);
     // Args are recovered positionally.
     expect(result.independentArgs).toHaveLength(2);
     expect(result.independentArgs?.[0].type).toBe("address");

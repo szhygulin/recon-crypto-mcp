@@ -249,22 +249,15 @@ export async function verifyEvmCalldata(
   }
 
   const summary = localFunctionName
-    ? `✓ Independent cross-check passed. I re-ran the SAME algorithm the swiss-knife decoder URL uses in your ` +
-      `browser — fetch the function signature from 4byte.directory (a public selector registry), decode the ` +
-      `calldata with viem, re-encode to confirm the bytes round-trip losslessly — but executed it server-side on ` +
-      `the MCP so you can see the result in chat without opening a browser. The signature fetched ` +
-      `("${chosen.signature}") produced the same function name my local ABI reported (${localFunctionName}), and ` +
-      `the re-encode matched the original calldata byte-for-byte, which mathematically implies every argument ` +
-      `value matches the one shown in the verification block above. Note: this check shares a trust boundary with ` +
-      `the MCP server itself. If you want a check outside that boundary, open the swiss-knife URL in your ` +
-      `browser — it runs this same algorithm in a context you fully control.`
-    : `✓ Independent decode succeeded. I re-ran the SAME algorithm the swiss-knife URL uses in your browser ` +
-      `(fetch signature from 4byte.directory, decode with viem, re-encode to verify bytes round-trip), but ` +
-      `executed it server-side on the MCP. The signature "${chosen.signature}" re-encodes to the exact original ` +
-      `calldata bytes. Your local ABI didn't recognize the destination contract, so no local comparison was ` +
-      `possible; the independentArgs field on this result lists the values recovered positionally — review them ` +
-      `against what you expected before approving. Note: this check shares a trust boundary with the MCP server. ` +
-      `Open the swiss-knife URL in your browser for a check outside that boundary.`;
+    ? `✓ Cross-check passed. I pulled the function signature for ${localFunctionName} from a public registry ` +
+      `(4byte.directory), decoded the calldata against it, and the result re-encodes to the original bytes ` +
+      `exactly — which mathematically implies every argument below matches what's actually in the transaction. ` +
+      `This runs on the MCP server; options for a check outside that trust boundary are shown below.`
+    : `✓ Cross-check passed. The calldata decodes cleanly against a 4byte.directory signature ` +
+      `("${chosen.signature}"), and the decoded args re-encode to the original bytes exactly — which ` +
+      `mathematically implies the values in independentArgs faithfully reflect the transaction. Your local ABI ` +
+      `didn't recognize this destination, so review those args before approving. For an out-of-boundary check, ` +
+      `see options below.`;
 
   return {
     status: "match",

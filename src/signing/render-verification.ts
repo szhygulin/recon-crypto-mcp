@@ -106,8 +106,8 @@ export function renderVerificationBlock(
       ? `  chainId=${chainId} ${tx.chain}  to=${tx.to}  value=${tx.value} wei  data=${truncateHex(tx.data, true)}`
       : `  chainId=${chainId} ${tx.chain}  to=${tx.to}  value=${tx.value} wei  (${dataByteLen(tx.data)} calldata bytes)`;
   return [
-    "VERIFY BEFORE SIGNING — open the decoder URL, confirm it decodes to the",
-    "same call shown below, and REJECT on Ledger if they differ.",
+    "VERIFY BEFORE SIGNING — check the decoded call below matches what you",
+    "asked for, and REJECT on Ledger if it doesn't.",
     formatDecoder(v),
     formatCall(v),
     ...formatArgs(v),
