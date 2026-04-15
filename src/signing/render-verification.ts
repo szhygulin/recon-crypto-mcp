@@ -32,16 +32,38 @@ function truncateHex(data: string, bytelenLabel: boolean): string {
   return bytelenLabel ? `${head}…${tail} (${byteLen} bytes)` : `${head}…${tail}`;
 }
 
-function formatArgs(v: TxVerification): string {
-  if (v.humanDecode.args.length === 0) {
-    if (v.humanDecode.source === "none") {
-      return "    (unknown destination — the decoder URL is your only decode)";
-    }
-    return "    (no arguments)";
+function formatArgs(v: TxVerification): string[] {
+  if (v.humanDecode.source === "none") {
+    // No local ABI — lean on swiss-knife. Skip the "Args:" line entirely
+    // (already covered by the decoder URL below).
+    return [];
   }
-  return v.humanDecode.args
-    .map((a) => `    - ${a.name}: ${a.valueHuman ?? a.value}`)
-    .join("\n");
+  if (v.humanDecode.args.length === 0) {
+    return ["  Args:    (none)"];
+  }
+  return [
+    "  Args:",
+    ...v.humanDecode.args.map((a) => `    - ${a.name}: ${a.valueHuman ?? a.value}`),
+  ];
+}
+
+function formatCall(v: TxVerification): string {
+  if (v.humanDecode.source === "none") {
+    return "  Call:    (decoded by swiss-knife only — open the link above)";
+  }
+  return `  Call:    ${v.humanDecode.signature ?? v.humanDecode.functionName}`;
+}
+
+/**
+ * Markdown-style clickable link for the decoder URL. Keeps the chat short
+ * (4 KB URLs no longer render as a wall of hex) while still exposing the
+ * raw URL inside the parens so non-markdown clients stay readable.
+ */
+function formatDecoder(v: TxVerification): string {
+  if (v.decoderUrl) {
+    return `  Decoder: [open in swiss-knife](${v.decoderUrl})`;
+  }
+  return `  Decoder: (paste manually) ${v.decoderPasteInstructions}`;
 }
 
 export function renderVerificationBlock(
@@ -49,15 +71,12 @@ export function renderVerificationBlock(
 ): string {
   const v = tx.verification;
   const chainId = CHAIN_IDS[tx.chain];
-  const decoder = v.decoderUrl ?? `(paste manually) ${v.decoderPasteInstructions}`;
-  const call = v.humanDecode.signature ?? v.humanDecode.functionName;
   return [
     "VERIFY BEFORE SIGNING — open the decoder URL, confirm it decodes to the",
     "same call shown below, and REJECT on Ledger if they differ.",
-    `  Decoder: ${decoder}`,
-    `  Call:    ${call}`,
-    "  Args:",
-    formatArgs(v),
+    formatDecoder(v),
+    formatCall(v),
+    ...formatArgs(v),
     `  chainId=${chainId} ${tx.chain}  to=${tx.to}  value=${tx.value} wei  data=${truncateHex(tx.data, true)}`,
     `  Hash: ${v.payloadHash}  (short ${v.payloadHashShort}, echoed at send time)`,
   ].join("\n");
@@ -70,8 +89,7 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
     "action + args below match what you intended, else REJECT on Ledger.",
     `  Action:  ${tx.action}`,
     `  Call:    ${v.humanDecode.functionName}`,
-    "  Args:",
-    formatArgs(v),
+    ...formatArgs(v),
     `  from=${tx.from}  txID=${tx.txID}  rawData=${truncateHex(tx.rawDataHex, true)}`,
     `  Hash: ${v.payloadHash}  (short ${v.payloadHashShort}, echoed at send time)`,
     "  After signing, paste txID into https://tronscan.org to cross-check.",

@@ -14,6 +14,7 @@ import {
   renderVerificationBlock,
   shouldRenderVerificationBlock,
 } from "../src/signing/render-verification.js";
+import { collectVerificationBlocks } from "../src/index.js";
 import { issueHandles } from "../src/signing/tx-store.js";
 import { issueTronHandle } from "../src/signing/tron-tx-store.js";
 import { CONTRACTS } from "../src/config/contracts.js";
@@ -143,6 +144,53 @@ describe("buildVerification (EVM)", () => {
   });
 });
 
+describe("collectVerificationBlocks — approve→action chain only renders the action block", () => {
+  it("skips the ERC-20 approve node and renders the swap node only", () => {
+    const swap: UnsignedTx = {
+      chain: "ethereum",
+      to: getAddress("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"), // LiFi Diamond
+      data: "0x2c57e88400000000" as `0x${string}`,
+      value: "0",
+      from: SENDER,
+      description: "LiFi swap",
+    };
+    const approve: UnsignedTx = {
+      chain: "ethereum",
+      to: USDC,
+      data: encodeFunctionData({
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [getAddress("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"), 100_000_000n],
+      }),
+      value: "0",
+      from: SENDER,
+      description: "Approve USDC to LiFi",
+      next: swap,
+    };
+    const stamped = issueHandles(approve);
+    const blocks = collectVerificationBlocks(stamped);
+    expect(blocks).toHaveLength(1);
+    // The single block is the swap, not the approval.
+    expect(blocks[0]).not.toContain("approve(address,uint256)");
+    // Still contains the swap destination in the Raw line.
+    expect(blocks[0]).toContain("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE");
+  });
+
+  it("renders the single block when there is no chain (supply without approval)", () => {
+    const supply: UnsignedTx = {
+      chain: "ethereum",
+      to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
+      data: "0x617ba0370000" as `0x${string}`,
+      value: "0",
+      from: SENDER,
+      description: "Aave supply",
+    };
+    const stamped = issueHandles(supply);
+    const blocks = collectVerificationBlocks(stamped);
+    expect(blocks).toHaveLength(1);
+  });
+});
+
 describe("issueHandles stamps verification on every node of approve→action chains", () => {
   it("stamps both the approve and the action", () => {
     const action: UnsignedTx = {
@@ -207,15 +255,34 @@ describe("renderVerificationBlock includes URL, hash, and the encouragement nudg
       stamped as UnsignedTx & { verification: NonNullable<UnsignedTx["verification"]> },
     );
     expect(rendered).toContain("VERIFY BEFORE SIGNING");
-    expect(rendered).toContain(stamped.verification!.decoderUrl);
+    // Markdown-linkified so large URLs don't visually bloat chat; raw URL still
+    // present inside the parens for clients that don't render markdown.
+    expect(rendered).toContain(`[open in swiss-knife](${stamped.verification!.decoderUrl})`);
     expect(rendered).toContain(stamped.verification!.payloadHash);
     expect(rendered).toContain(stamped.verification!.payloadHashShort);
     expect(rendered).toContain("REJECT");
     expect(rendered).toContain("transfer(address,uint256)");
-    // Short template: no more agent-facing preamble bleeding into user text.
     expect(rendered).not.toContain("SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM");
-    // Eight-ish lines, keeps the chat uncluttered.
     expect(rendered.split("\n").length).toBeLessThanOrEqual(10);
+  });
+
+  it("unknown-destination block tells the user swiss-knife is the decode source, not '(unknown)'", () => {
+    const unknown = getAddress("0xdeaDBEefDEadBEefdEAdbeefdEAdbeEFdeaDbeEf");
+    const tx: UnsignedTx = {
+      chain: "ethereum",
+      to: unknown,
+      data: "0x2c57e88400000000" as `0x${string}`,
+      value: "0",
+      from: SENDER,
+      description: "unknown call",
+    };
+    const stamped = issueHandles(tx);
+    const rendered = renderVerificationBlock(
+      stamped as UnsignedTx & { verification: NonNullable<UnsignedTx["verification"]> },
+    );
+    expect(rendered).toContain("decoded by swiss-knife only");
+    // We no longer emit the literal scary word "unknown" in the Call line.
+    expect(rendered).not.toMatch(/Call:\s+unknown/);
   });
 
   it("TRON block tells the user there's no browser decoder URL and points at Tronscan", () => {

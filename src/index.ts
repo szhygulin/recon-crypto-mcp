@@ -166,7 +166,7 @@ import { readUserConfig } from "./config/user-config.js";
  * Unknown shapes return an empty array (non-prepare tools have no
  * verification field).
  */
-function collectVerificationBlocks(result: unknown): string[] {
+export function collectVerificationBlocks(result: unknown): string[] {
   if (!result || typeof result !== "object") return [];
   const blocks: string[] = [];
   // EVM path: UnsignedTx has `chain` / `to` / `data` / `value` / `verification` + optional `.next`.
