@@ -239,7 +239,15 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     expect(task).toMatch(/trust boundary/);
     expect(task).toMatch(/swiss-knife/);
     expect(task).toMatch(/decode the calldata yourself/);
-    expect(task).toMatch(/do NOT perform[\s\n]+your own decode unless they ask/);
+    expect(task).toMatch(/do NOT perform any of them\s+unprompted/);
+    // Three explicit options (a), (b), (c) — (c) is the WebFetch-swiss-knife path.
+    expect(task).toMatch(/\(a\)/);
+    expect(task).toMatch(/\(b\)/);
+    expect(task).toMatch(/\(c\)/);
+    expect(task).toMatch(/WebFetch/);
+    // The honesty caveat about swiss-knife being client-side rendered.
+    expect(task).toMatch(/client-side Next\.js SPA/);
+    expect(task).toMatch(/state the limitation before doing the fetch/);
     // The send-time hash reminder.
     expect(task).toMatch(/short payload hash/);
     expect(task).toMatch(/Ledger[\s\n]+shows[\s\n]+before[\s\n]+approving/);
