@@ -17,6 +17,7 @@ import {
 } from "../../signing/tron-usb-signer.js";
 import { broadcastTronTx } from "../tron/broadcast.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
+import { payloadFingerprint, tronPayloadFingerprint } from "../../signing/verification.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { simulateTx } from "../simulation/index.js";
@@ -45,10 +46,17 @@ import type {
   PrepareTokenSendArgs,
   SendTransactionArgs,
   GetTransactionStatusArgs,
+  GetTxVerificationArgs,
 } from "./schemas.js";
 import type { SupportedChain, UnsignedTx, UnsignedTronTx } from "../../types/index.js";
 import { hasTronHandle } from "../../signing/tron-tx-store.js";
+import { hasHandle } from "../../signing/tx-store.js";
 import { round } from "../../data/format.js";
+import {
+  notApplicableForTron,
+  verifyEvmCalldata,
+  type VerifyDecodeResult,
+} from "../../signing/verify-decode.js";
 
 /** Render a QR code as an ASCII string (returns promise with the string). */
 function qrString(uri: string): Promise<string> {
@@ -348,6 +356,22 @@ async function sendTronTransaction(args: SendTransactionArgs): Promise<{
   chain: "tron";
 }> {
   const tx: UnsignedTronTx = consumeTronHandle(args.handle);
+  // Proof-of-identity guard: recompute the domain-tagged hash of the EXACT
+  // rawDataHex that the USB signer is about to hand to the Ledger, and
+  // require equality with the hash the user previewed. A drift here means
+  // tx state mutated between handle issuance and send — should never
+  // happen, but the invariant is cheap to enforce and exactly what turns
+  // "trust me" into "same bytes, same hash".
+  if (tx.verification) {
+    const rehash = tronPayloadFingerprint(tx.rawDataHex);
+    if (rehash !== tx.verification.payloadHash) {
+      throw new Error(
+        `TRON payload hash mismatch at send time. Previewed ${tx.verification.payloadHash}, ` +
+          `about to sign ${rehash}. The rawDataHex changed between preview and send — refusing ` +
+          `to forward to the Ledger.`,
+      );
+    }
+  }
   // If the user paired this `from` via `pair_ledger_tron`, use the path they
   // paired on (covers non-default account slots). If we have no paired entry
   // for `from`, fall through to the signer's default path — the device
@@ -431,6 +455,23 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
       );
     }
   }
+  // Proof-of-identity guard: recompute the domain-tagged hash of the exact
+  // `{chainId, to, value, data}` that are about to be forwarded to WalletConnect
+  // (`requestSendTransaction` consumes these four fields, see
+  // src/signing/walletconnect.ts). Equality with `tx.verification.payloadHash`
+  // is the "what-you-preview == what-you-sign" proof. If they diverge, the
+  // request is refused — a mismatch would only be possible if tx state was
+  // mutated in-process between handle issuance and the send call.
+  if (tx.verification) {
+    const rehash = payloadFingerprint({ chain: tx.chain, to: tx.to, value: tx.value, data: tx.data });
+    if (rehash !== tx.verification.payloadHash) {
+      throw new Error(
+        `Payload hash mismatch at send time. Previewed ${tx.verification.payloadHash}, ` +
+          `about to send ${rehash}. The transaction bytes changed between preview and send — ` +
+          `refusing to forward to WalletConnect.`,
+      );
+    }
+  }
   const hash = await requestSendTransaction(tx);
   // Only retire the handle after successful submission. If requestSendTransaction
   // throws (device disconnect, user rejection, relay timeout), the handle stays
@@ -476,4 +517,58 @@ export async function getTransactionStatus(args: GetTransactionStatusArgs) {
       };
     }
   }
+}
+
+/**
+ * Re-emit the prepared tx + verification block for a known handle. The result
+ * shape matches the original prepare_* response, so the existing handler
+ * wrapper renders the same VERIFY-BEFORE-SIGNING text content blocks.
+ *
+ * Why this exists: agents periodically lose the original prepare_* tool result
+ * from their context (compaction, long sessions, multi-agent handoffs). The
+ * wrong recovery is to read the persisted tool-result JSON file from disk and
+ * parse it with a python script — that bypasses the MCP boundary, drags the
+ * agent into harness internals, and produces brittle code per call. The right
+ * recovery is to ask the server: handles live in-memory for 15 minutes and
+ * already carry the verification data, so a tool that takes a handle and
+ * returns the same shape costs almost nothing and keeps every agent on the
+ * same code path.
+ *
+ * Routes by handle origin: EVM handles come from tx-store, TRON handles from
+ * tron-tx-store. If neither knows the handle, throws with a single clear
+ * "expired or unknown" message rather than chaining store-specific errors.
+ */
+export function getTxVerification(args: GetTxVerificationArgs): UnsignedTx | UnsignedTronTx {
+  if (hasHandle(args.handle)) return consumeHandle(args.handle);
+  if (hasTronHandle(args.handle)) return consumeTronHandle(args.handle);
+  throw new Error(
+    `Unknown or expired tx handle '${args.handle}'. Prepared transactions live for ` +
+      `15 minutes after issue and are deleted on successful submission. Re-run the ` +
+      `prepare_* tool to get a fresh handle.`
+  );
+}
+
+/**
+ * Server-side independent cross-check of a prepared EVM tx's calldata.
+ *
+ * Pipeline: fetch candidate function signatures for the 4-byte selector from
+ * 4byte.directory, decode + re-encode the calldata against each, and report
+ * which (if any) round-trips losslessly. Result is a `VerifyDecodeResult`
+ * with a human-readable `summary` field — the orchestrator agent is
+ * expected to relay that summary to the user verbatim.
+ *
+ * This exists so the agent does NOT have to script ad-hoc WebFetches to
+ * verify arguments, and does NOT have to pretend it read swiss-knife's
+ * client-rendered SPA output. One MCP tool = one auditable code path.
+ */
+export async function verifyTxDecode(args: GetTxVerificationArgs): Promise<VerifyDecodeResult> {
+  if (hasTronHandle(args.handle)) return notApplicableForTron();
+  if (!hasHandle(args.handle)) {
+    throw new Error(
+      `Unknown or expired tx handle '${args.handle}'. Prepared transactions live for ` +
+        `15 minutes after issue. Re-run the prepare_* tool to get a fresh handle.`
+    );
+  }
+  const tx = consumeHandle(args.handle);
+  return verifyEvmCalldata(tx);
 }

@@ -17,9 +17,20 @@ const baseSwapSchema = z.object({
   amount: z
     .string()
     .describe(
-      'Human-readable decimal amount of fromToken, NOT raw wei/base units. ' +
-        'Example: "1.5" for 1.5 USDC, "0.01" for 0.01 ETH. The tool resolves ' +
-        'decimals on-chain and converts internally.'
+      'Human-readable decimal amount, NOT raw wei/base units. Example: "1.5" for ' +
+        '1.5 USDC, "0.01" for 0.01 ETH. Interpreted as fromToken input by default; ' +
+        'set `amountSide: "to"` to interpret as the toToken output amount (exact-out). ' +
+        'The tool resolves decimals on-chain and converts internally.'
+    ),
+  amountSide: z
+    .enum(["from", "to"])
+    .optional()
+    .describe(
+      'Which side of the swap `amount` refers to. "from" (default) = exact-in: you ' +
+        'spend exactly `amount` of fromToken and receive a variable output. "to" = ' +
+        'exact-out: you receive exactly `amount` of toToken and the input is sized to ' +
+        "hit that target. Exact-out uses LiFi's toAmount quote and skips the 1inch " +
+        "comparison (1inch has no exact-out endpoint)."
     ),
   fromTokenDecimals: z
     .number()
@@ -29,6 +40,16 @@ const baseSwapSchema = z.object({
     .optional()
     .describe(
       "Optional decimals hint for fromToken if on-chain lookup fails (rare). Native is 18."
+    ),
+  toTokenDecimals: z
+    .number()
+    .int()
+    .min(0)
+    .max(36)
+    .optional()
+    .describe(
+      "Optional decimals hint for toToken if on-chain lookup fails (rare). Only used " +
+        'when `amountSide: "to"`. Native is 18.'
     ),
   slippageBps: z
     .number()

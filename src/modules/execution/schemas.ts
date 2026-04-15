@@ -126,6 +126,19 @@ export const getTransactionStatusInput = z.object({
   txHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
 });
 
+export const getTxVerificationInput = z.object({
+  handle: z
+    .string()
+    .min(1)
+    .describe(
+      "Opaque handle returned by any prepare_* tool. Use this when the original " +
+        "prepare_* response (and its VERIFY-BEFORE-SIGNING block) has been dropped " +
+        "from your context — the server re-emits the exact same JSON + verification " +
+        "block from in-memory state. Read the response from this tool directly; " +
+        "never recover verification data by reading tool-result files from disk."
+    ),
+});
+
 export type PairLedgerTronArgs = z.infer<typeof pairLedgerTronInput>;
 export type PrepareAaveSupplyArgs = z.infer<typeof prepareAaveSupplyInput>;
 export type PrepareAaveWithdrawArgs = z.infer<typeof prepareAaveWithdrawInput>;
@@ -138,3 +151,4 @@ export type PrepareNativeSendArgs = z.infer<typeof prepareNativeSendInput>;
 export type PrepareTokenSendArgs = z.infer<typeof prepareTokenSendInput>;
 export type SendTransactionArgs = z.infer<typeof sendTransactionInput>;
 export type GetTransactionStatusArgs = z.infer<typeof getTransactionStatusInput>;
+export type GetTxVerificationArgs = z.infer<typeof getTxVerificationInput>;

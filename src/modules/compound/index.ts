@@ -45,9 +45,14 @@ async function readMarketPosition(
   const client = getClient(chain);
   const comet = market.address;
 
-  // Tolerate markets that aren't deployed / reverted — we silently skip them. Previously this
-  // used allowFailure:false which made ONE bad market address in the registry blow up the
-  // entire portfolio call.
+  // allowFailure:true so one weird sub-read doesn't nuke the batch. Previously
+  // we silently dropped any failed market to null; now we THROW on any of the
+  // three position-critical reads failing, because the registry is curated
+  // (every address in CONTRACTS[chain].compound is a known-deployed Comet
+  // proxy). A silent null-return here is how issue #34 hid a six-figure
+  // cUSDCv3 supply — a flaky RPC made the market invisible and the aggregator
+  // reported clean coverage. numAssets is the only sub-read allowed to fail
+  // silently: it just gates the collateral breakdown, not the base position.
   const results = await client.multicall({
     contracts: [
       { address: comet, abi: cometAbi, functionName: "baseToken" },
@@ -57,14 +62,14 @@ async function readMarketPosition(
     ],
     allowFailure: true,
   });
-  // Need baseToken + balanceOf + borrowBalanceOf to say anything meaningful. numAssets
-  // failing is survivable — we just skip the collateral breakdown.
-  if (
-    results[0].status !== "success" ||
-    results[2].status !== "success" ||
-    results[3].status !== "success"
-  ) {
-    return null;
+  const failed: string[] = [];
+  if (results[0].status !== "success") failed.push("baseToken");
+  if (results[2].status !== "success") failed.push("balanceOf");
+  if (results[3].status !== "success") failed.push("borrowBalanceOf");
+  if (failed.length > 0) {
+    throw new Error(
+      `Compound V3 ${chain}:${market.name} — ${failed.join(", ")} read failed on a curated-registry market`,
+    );
   }
   const baseToken = results[0].result;
   const supplied = results[2].result;
@@ -183,16 +188,50 @@ async function readMarketPosition(
 
 export async function getCompoundPositions(
   args: GetCompoundPositionsArgs
-): Promise<{ wallet: `0x${string}`; positions: CompoundPosition[] }> {
+): Promise<{
+  wallet: `0x${string}`;
+  positions: CompoundPosition[];
+  /**
+   * True if any per-market read failed (RPC blip on a deployed market). A
+   * six-figure position can vanish from `positions` when this is true, so the
+   * portfolio aggregator uses this to set `coverage.compound.errored = true`
+   * instead of claiming clean coverage. See issue #34.
+   */
+  errored: boolean;
+  /** Per-market failures, for diagnostics when errored is true. */
+  erroredMarkets?: { chain: SupportedChain; market: string; error: string }[];
+}> {
   const wallet = args.wallet as `0x${string}`;
   const chains = (args.chains as SupportedChain[] | undefined) ?? [...SUPPORTED_CHAINS];
   // Use allSettled so an unhealthy chain (Multicall3 returning 0x, rate-limit, etc.)
-  // doesn't nuke the other chain's results. Rejected reads are dropped silently.
-  const tasks = chains.flatMap((chain) =>
-    listMarkets(chain).map((m) => readMarketPosition(wallet, chain, m).catch(() => null))
+  // doesn't nuke the other chain's results. Rejections are counted and surfaced via
+  // the `errored` flag — the previous silent `.catch(() => null)` swallow meant a
+  // flaky cUSDCv3 read would drop a live six-figure supply without any warning.
+  const tagged = chains.flatMap((chain) =>
+    listMarkets(chain).map((m) => ({ chain, market: m })),
   );
-  const all = await Promise.all(tasks);
-  return { wallet, positions: all.filter((p): p is CompoundPosition => p !== null) };
+  const settled = await Promise.allSettled(
+    tagged.map(({ chain, market }) => readMarketPosition(wallet, chain, market)),
+  );
+  const positions: CompoundPosition[] = [];
+  const erroredMarkets: { chain: SupportedChain; market: string; error: string }[] = [];
+  settled.forEach((r, i) => {
+    if (r.status === "fulfilled") {
+      if (r.value !== null) positions.push(r.value);
+    } else {
+      erroredMarkets.push({
+        chain: tagged[i].chain,
+        market: tagged[i].market.name,
+        error: r.reason instanceof Error ? r.reason.message : String(r.reason),
+      });
+    }
+  });
+  return {
+    wallet,
+    positions,
+    errored: erroredMarkets.length > 0,
+    ...(erroredMarkets.length > 0 ? { erroredMarkets } : {}),
+  };
 }
 
 export { formatUnits };

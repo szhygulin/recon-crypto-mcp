@@ -58,6 +58,8 @@ import {
   prepareTokenSend,
   sendTransaction,
   getTransactionStatus,
+  getTxVerification,
+  verifyTxDecode,
 } from "./modules/execution/index.js";
 import {
   pairLedgerLiveInput,
@@ -74,6 +76,7 @@ import {
   prepareTokenSendInput,
   sendTransactionInput,
   getTransactionStatusInput,
+  getTxVerificationInput,
 } from "./modules/execution/schemas.js";
 
 import { getTokenBalance, resolveName, reverseResolve } from "./modules/balances/index.js";
@@ -148,27 +151,111 @@ import { simulateTransactionInput } from "./modules/simulation/schemas.js";
 import { requestCapability, requestCapabilityInput } from "./modules/feedback/index.js";
 
 import { issueHandles } from "./signing/tx-store.js";
-import type { UnsignedTx } from "./types/index.js";
+import {
+  renderAgentTaskBlock,
+  renderPostSendPollBlock,
+  renderTronVerificationBlock,
+  renderVerificationBlock,
+  shouldRenderVerificationBlock,
+} from "./signing/render-verification.js";
+import { verifyEvmCalldata, type VerifyDecodeResult } from "./signing/verify-decode.js";
+import type { SupportedChain, TxVerification, UnsignedTronTx, UnsignedTx } from "./types/index.js";
+import type { SendTransactionArgs } from "./modules/execution/schemas.js";
 
 import { readUserConfig } from "./config/user-config.js";
+
+/**
+ * Collect rendered verification blocks from a result, walking `.next` for
+ * EVM approve→action chains. Each prepared tx in the chain gets its own
+ * block so the user can cross-check every hash they will sign — never a
+ * single aggregated block that conflates two separate signatures.
+ *
+ * Runs the independent 4byte.directory cross-check inline so its summary
+ * is ALWAYS emitted, regardless of whether the agent remembers to call
+ * `verify_tx_decode`. A compromised agent could previously skip the tool
+ * and fabricate a "✓ cross-check passed" line; now the server emits the
+ * real result adjacent to the verification block.
+ *
+ * Unknown shapes return an empty array (non-prepare tools have no
+ * verification field).
+ */
+export async function collectVerificationBlocks(
+  result: unknown,
+  opts?: {
+    verify?: (
+      tx: UnsignedTx & { verification: TxVerification },
+    ) => Promise<VerifyDecodeResult>;
+  },
+): Promise<string[]> {
+  const verify = opts?.verify ?? verifyEvmCalldata;
+  if (!result || typeof result !== "object") return [];
+  const blocks: string[] = [];
+  // EVM path: UnsignedTx has `chain` / `to` / `data` / `value` / `verification` + optional `.next`.
+  const r = result as Record<string, unknown>;
+  const verification = r.verification as TxVerification | undefined;
+  if (!verification) return blocks;
+  const chain = r.chain as string | undefined;
+  if (chain === "tron" && typeof r.rawDataHex === "string") {
+    blocks.push(renderTronVerificationBlock(result as UnsignedTronTx & { verification: TxVerification }));
+    return blocks;
+  }
+  if (typeof r.to === "string" && typeof r.data === "string" && typeof r.value === "string" && typeof chain === "string") {
+    const tx = result as UnsignedTx & { verification: TxVerification };
+    // ERC-20 approvals clear-sign on Ledger's Ethereum app — skip rendering
+    // (the send-time payload-hash guard still runs, using tx.verification).
+    if (shouldRenderVerificationBlock(tx)) {
+      blocks.push(renderVerificationBlock(tx));
+      // Auto-emit the independent 4byte.directory cross-check. If the network
+      // call fails, verifyEvmCalldata returns an "error" summary — we still
+      // emit it so the agent surfaces the degraded state to the user rather
+      // than silently skipping.
+      try {
+        const cross = await verify(tx);
+        blocks.push(
+          `[CROSS-CHECK SUMMARY — RELAY VERBATIM TO USER AS THE FIRST LINE OF YOUR REPLY]\n${cross.summary}`,
+        );
+      } catch (e) {
+        blocks.push(
+          `[CROSS-CHECK SUMMARY — RELAY VERBATIM TO USER AS THE FIRST LINE OF YOUR REPLY]\n` +
+            `Could not run the independent calldata cross-check this turn (${e instanceof Error ? e.message : String(e)}). ` +
+            `The local ABI decode above is still shown; open the swiss-knife decoder URL in a browser for a manual check.`,
+        );
+      }
+      // Per-call agent directives (compact bullet summary, three trust-boundary
+      // options, Ledger-match reminder). Adjacent to the verification block so
+      // the model is far more likely to act on it than on the session-level
+      // instructions field, which it tends to ignore after the first few turns.
+      const taskBlock = renderAgentTaskBlock(tx);
+      if (taskBlock) blocks.push(taskBlock);
+    }
+    if (r.next) blocks.push(...(await collectVerificationBlocks(r.next, opts)));
+  }
+  return blocks;
+}
 
 /**
  * Wrap a plain async function into the shape MCP expects.
  * Returns `{ content: [{ type: "text", text }] }` on success,
  * `{ content, isError: true }` on failure.
+ *
+ * When the result carries a `verification` field (every `prepare_*` tool
+ * output does), a SECOND text content block is appended with the rendered
+ * "VERIFY BEFORE SIGNING" prose — decoder URL, local decode, comparison
+ * string, payload hash, and the nudge to open the URL before approving.
+ * The block lives next to the JSON so machine readers still get the
+ * structured data AND the user sees the verification prose verbatim.
  */
 function handler<T, R>(fn: (args: T) => Promise<R> | R) {
   return async (args: T) => {
     try {
       const result = await fn(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, bigintReplacer, 2),
-          },
-        ],
-      };
+      const content: { type: "text"; text: string }[] = [
+        { type: "text", text: JSON.stringify(result, bigintReplacer, 2) },
+      ];
+      for (const block of await collectVerificationBlocks(result)) {
+        content.push({ type: "text", text: block });
+      }
+      return { content };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {
@@ -188,6 +275,45 @@ function handler<T, R>(fn: (args: T) => Promise<R> | R) {
  */
 function txHandler<T>(fn: (args: T) => Promise<UnsignedTx> | UnsignedTx) {
   return handler(async (args: T) => issueHandles(await fn(args)));
+}
+
+/**
+ * Handler wrapper for `send_transaction`. Appends a per-call agent task
+ * block instructing the agent to poll `get_transaction_status` itself
+ * instead of waiting for the user to ask. The session-level instructions
+ * tend to drift out of attention after a few hundred tokens, so we put
+ * the directive adjacent to the txHash it refers to.
+ */
+function sendTransactionHandler(
+  fn: (args: SendTransactionArgs) => Promise<{
+    txHash: `0x${string}` | string;
+    chain: SupportedChain | "tron";
+    nextHandle?: string;
+  }>,
+) {
+  return async (args: SendTransactionArgs) => {
+    try {
+      const result = await fn(args);
+      const content: { type: "text"; text: string }[] = [
+        { type: "text", text: JSON.stringify(result, bigintReplacer, 2) },
+        {
+          type: "text",
+          text: renderPostSendPollBlock({
+            chain: String(result.chain),
+            txHash: String(result.txHash),
+            ...(result.nextHandle ? { nextHandle: result.nextHandle } : {}),
+          }),
+        },
+      ];
+      return { content };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text" as const, text: `Error: ${message}` }],
+        isError: true,
+      };
+    }
+  };
 }
 
 /** JSON.stringify replacer that converts bigint to decimal string. */
@@ -251,14 +377,18 @@ async function main() {
         "4. Show the decoded preview to the user and get explicit confirmation.",
         "5. Call `send_transaction` with the handle and `confirmed: true` — Ledger Live will",
         "   prompt the user to review and physically sign on the device.",
-        "6. Optionally poll `get_transaction_status` for inclusion.",
+        "6. After `send_transaction` returns a txHash, poll `get_transaction_status`",
+        "   YOURSELF every ~5s until status is `success` or `failed` (budget ~2min).",
+        "   Do NOT stop and wait for the user to type \"next\" — the per-call AGENT",
+        "   TASK block emitted alongside the txHash prescribes the exact cadence.",
         "",
         "TWO-STEP ALLOWANCE FLOWS: when a `prepare_*` tool returns an approval tx alongside",
         "the main tx (supply, repay, swap, etc.), submit the approval via `send_transaction`",
-        "FIRST, then POLL `get_transaction_status` until the approval is included (status",
-        "`confirmed`). Only AFTER that, simulate or send the main tx. Simulating the main tx",
-        "against pre-approval state fails with \"insufficient allowance\" / ERC20 reverts and",
-        "looks like a builder bug — it is not, the allowance just isn't on-chain yet.",
+        "FIRST. The post-send auto-poll (step 6) is how you wait for the approval to be",
+        "included — do not ask the user to confirm inclusion. Only AFTER status flips to",
+        "`success`, simulate or send the main tx. Simulating against pre-approval state",
+        "fails with \"insufficient allowance\" / ERC20 reverts and looks like a builder bug",
+        "— it is not, the allowance just isn't on-chain yet.",
         "",
         "READ-ONLY TOOLS need no pairing and can be called freely: get_lending_positions,",
         "get_lp_positions, get_compound_positions, get_morpho_positions, get_staking_positions,",
@@ -266,7 +396,7 @@ async function main() {
         "get_token_balance, get_token_price, resolve_ens_name, reverse_resolve_ens,",
         "get_tron_staking, get_health_alerts, simulate_position_change,",
         "check_contract_security, check_permission_risks, get_protocol_risk_score,",
-        "get_transaction_status.",
+        "get_transaction_status, get_tx_verification.",
         "",
         "SWAP/BRIDGE ROUTING: prefer `prepare_swap` (LiFi aggregator) over building DEX",
         "router calls directly — LiFi handles route selection, approvals, and cross-chain",
@@ -278,6 +408,57 @@ async function main() {
         "returns a prefilled URL for the user to click — nothing is sent automatically. Use",
         "this only after confirming no existing tool fits; it is rate-limited (3/hour,",
         "10/day, dedup'd for 7 days). Never substitute this for completing the task.",
+        "",
+        "TRANSACTION VERIFICATION (CRITICAL — DO NOT SKIP): most `prepare_*` tools return",
+        "MULTIPLE text content elements after the JSON. The order is: (1) the VERIFY-",
+        "BEFORE-SIGNING block; (2) the [CROSS-CHECK SUMMARY] block produced by the server's",
+        "4byte.directory independent decode; (3) the [AGENT TASK] block with per-call",
+        "directives. Do NOT relay the raw VERIFY-BEFORE-SIGNING block to the user — it is",
+        "a wall of hex/struct data that drowns the sentence that matters. Instead, relay",
+        "the CROSS-CHECK SUMMARY text VERBATIM as your first line(s), keep the ✓/✗ prefix",
+        "unchanged, then produce a COMPACT bullet summary of the tx: a headline",
+        "(\"Prepared <action> — <one-line summary>\"), then From / To (with a destination",
+        "label when known, e.g. \"LiFi diamond\", \"Aave pool\") / Value (human + wei) /",
+        "Function, plus the tx-specific field that matters for this flow (Min out for",
+        "swaps, Amount for supplies/withdraws/sends, Spender+Cap for approves). Do NOT",
+        "include a \"Short hash\" line in the bullet summary — our payloadHash does not",
+        "match what Ledger displays on-device (Ledger hashes the full RLP including",
+        "nonce + gas fields that Ledger Live picks at send time), and showing the short",
+        "hash trains the user to rubber-stamp a real mismatch. The per-call AGENT TASK",
+        "block prescribes the exact shape — follow it. You may label chain steps",
+        "(\"STEP 1 — Approval\" / \"STEP 2 — Swap\"). ERC-20 approvals clear-sign natively on",
+        "Ledger's Ethereum app, so the server intentionally does NOT emit a VERIFY /",
+        "CROSS-CHECK / AGENT TASK block for those — you'll only see blocks for the main",
+        "action on approve→action chains. That is expected, not a bug. The send-time",
+        "payload-hash guard still runs on every tx. FOR APPROVAL STEPS, tell the user",
+        "exactly what to eyeball on their Ledger screen: (1) the spender address matches",
+        "the protocol they intended to authorize (LiFi diamond for swaps, the Aave /",
+        "Compound / Morpho pool for lending, etc. — state the address and the protocol",
+        "name), and (2) the approved amount matches the amount they asked for (in human",
+        "units, not wei). If either differs, they MUST reject on-device. For all OTHER",
+        "txs (non-approve), the end-of-reply Ledger reminder must cover both on-device",
+        "modes honestly: CLEAR-SIGN (device shows decoded fields via a plugin — confirm",
+        "function + key field from the bullet summary) AND BLIND-SIGN (device shows only",
+        "a hash we cannot pre-compute — the user's on-screen checks are To = <to address>",
+        "and Value = <human native amount>; reject if either doesn't match). Never claim",
+        "the Ledger hash must equal our payloadHash.",
+        "",
+        "INDEPENDENT CROSS-CHECK: the server now runs the 4byte.directory decode",
+        "automatically for every prepared EVM tx and emits the result as a [CROSS-CHECK",
+        "SUMMARY] text block in the response. You do NOT need to call `verify_tx_decode`",
+        "separately — just relay the summary text verbatim. Do NOT script your own",
+        "WebFetch to 4byte.directory or swiss-knife.xyz to duplicate the check — that",
+        "bypasses the auditable code path and the summary text will disagree with the",
+        "canonical one. `verify_tx_decode` is kept as a tool only for re-running the",
+        "check against a still-open handle (e.g. after context compaction).",
+        "",
+        "RECOVERING A LOST VERIFICATION BLOCK: if the original prepare_* tool result has",
+        "dropped out of your context (compaction, long session, multi-agent handoff),",
+        "call `get_tx_verification(handle)` to have the server re-emit the same JSON +",
+        "VERIFY-BEFORE-SIGNING block from in-memory state. The handle lives 15 minutes.",
+        "DO NOT read tool-result JSON files from disk (e.g. via Bash + python or jq) to",
+        "recover the verification data — that scrapes harness internals, produces brittle",
+        "code per call, and bypasses the MCP boundary that exists to keep this auditable.",
         "",
         "SECURITY: the `wallet` / `peerUrl` returned by `get_ledger_status` is self-reported",
         "by the paired WalletConnect peer. Before the FIRST `send_transaction` of a session,",
@@ -408,7 +589,7 @@ async function main() {
     "get_swap_quote",
     {
       description:
-        "Get a LiFi aggregator quote for a token swap (same-chain) or bridge (cross-chain). Returns expected output, fees, execution time, and the underlying tool selected. No transaction is built.",
+        "Get a LiFi aggregator quote for a token swap (same-chain) or bridge (cross-chain). Returns expected output, fees, execution time, and the underlying tool selected. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out quotes (`amount` = target toToken output). No transaction is built.",
       inputSchema: getSwapQuoteInput.shape,
     },
     handler(getSwapQuote)
@@ -418,7 +599,7 @@ async function main() {
     "prepare_swap",
     {
       description:
-        "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. The returned tx can be sent via `send_transaction`.",
+        "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out (`amount` = target toToken output, e.g. \"I want 100 USDC out\"). The returned tx can be sent via `send_transaction`.",
       inputSchema: prepareSwapInput.shape,
     },
     txHandler(prepareSwap)
@@ -543,7 +724,7 @@ async function main() {
         "For TRON handles, `pair_ledger_tron` must have been called at least once per session (so the TRON app has been opened on the device) and the Ledger must still be plugged in with the TRON app open at send time.",
       inputSchema: sendTransactionInput.shape,
     },
-    handler(sendTransaction)
+    sendTransactionHandler(sendTransaction)
   );
 
   server.registerTool(
@@ -554,6 +735,38 @@ async function main() {
       inputSchema: getTransactionStatusInput.shape,
     },
     handler(getTransactionStatus)
+  );
+
+  server.registerTool(
+    "get_tx_verification",
+    {
+      description:
+        "Re-emit the prepared-tx JSON and VERIFY-BEFORE-SIGNING block for a known handle. Use this when the original prepare_* tool output has dropped out of your context (compaction, long sessions). The response shape and verification block match the original prepare_* call exactly. NEVER recover a verification block by reading tool-result files from disk — call this tool instead. Handles live in-memory for 15 minutes after issue.",
+      inputSchema: getTxVerificationInput.shape,
+    },
+    handler(getTxVerification)
+  );
+
+  server.registerTool(
+    "verify_tx_decode",
+    {
+      description:
+        "Independent server-side cross-check of a prepared EVM tx's calldata. Fetches the function " +
+        "signature(s) registered for the 4-byte selector on 4byte.directory (a public registry), " +
+        "re-decodes the calldata via viem against each candidate, and re-encodes to prove the signature " +
+        "describes the exact calldata bytes losslessly. Returns a VerifyDecodeResult whose `summary` " +
+        "field is pre-written for end-user consumption — the orchestrator should relay it verbatim. " +
+        "Status values: `match` (independent decode agrees with local ABI), `mismatch` (function-name " +
+        "disagreement — DO NOT SEND), `no-signature` / `error` / `not-applicable` (no independent check " +
+        "possible; fall back to the swiss-knife URL). On TRON, returns `not-applicable` — TRON " +
+        "transactions carry no 4-byte selector so this cross-check doesn't apply. Handle is the same " +
+        "opaque ID returned by any prepare_* tool. NEVER do this check by scripting ad-hoc WebFetches " +
+        "to 4byte or swiss-knife; always call this tool so the check runs through a single auditable " +
+        "code path. This is deliberately more expensive than a 4byte-selector lookup — it proves the " +
+        "FULL calldata (not just the function name) is consistent with the independent signature.",
+      inputSchema: getTxVerificationInput.shape,
+    },
+    handler(verifyTxDecode)
   );
 
   server.registerTool(

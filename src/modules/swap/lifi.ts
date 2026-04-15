@@ -18,18 +18,28 @@ function toLifiChain(chain: SupportedChain): number {
   return CHAIN_IDS[chain];
 }
 
-export interface LifiQuoteRequest {
+interface LifiQuoteRequestBase {
   fromChain: SupportedChain;
   toChain: SupportedChain;
   /** Use "native" or "0x0000000000000000000000000000000000000000" for native token. */
   fromToken: `0x${string}` | "native";
   toToken: `0x${string}` | "native";
-  /** Raw integer amount as string (e.g. "1000000" for 1 USDC). */
-  fromAmount: string;
   fromAddress: `0x${string}`;
   /** Optional slippage override — LiFi default is 0.5% (0.005). */
   slippage?: number;
 }
+
+export type LifiQuoteRequest =
+  | (LifiQuoteRequestBase & {
+      /** Raw integer amount as string (e.g. "1000000" for 1 USDC). */
+      fromAmount: string;
+      toAmount?: undefined;
+    })
+  | (LifiQuoteRequestBase & {
+      /** Raw integer output amount as string — exact-out quote. */
+      toAmount: string;
+      fromAmount?: undefined;
+    });
 
 const NATIVE = "0x0000000000000000000000000000000000000000";
 
@@ -40,7 +50,18 @@ export async function fetchQuote(req: LifiQuoteRequest) {
   const fromToken = req.fromToken === "native" ? NATIVE : req.fromToken;
   const toToken = req.toToken === "native" ? NATIVE : req.toToken;
 
-  const quote = await getQuote({
+  if (req.toAmount !== undefined) {
+    return getQuote({
+      fromChain: fromChain as LifiChainId,
+      toChain: toChain as LifiChainId,
+      fromToken,
+      toToken,
+      toAmount: req.toAmount,
+      fromAddress: req.fromAddress,
+      slippage: req.slippage,
+    });
+  }
+  return getQuote({
     fromChain: fromChain as LifiChainId,
     toChain: toChain as LifiChainId,
     fromToken,
@@ -49,7 +70,6 @@ export async function fetchQuote(req: LifiQuoteRequest) {
     fromAddress: req.fromAddress,
     slippage: req.slippage,
   });
-  return quote;
 }
 
 export async function fetchStatus(txHash: string, fromChain: SupportedChain, toChain: SupportedChain) {

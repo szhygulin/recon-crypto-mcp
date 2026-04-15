@@ -187,23 +187,22 @@ describe("Bug 4: EigenLayer revert does not crash getStakingPositions", () => {
   });
 });
 
-describe("Bug 3: Compound positions skip individual markets that revert", () => {
+describe("Bug 3: Compound positions isolate per-market read failures", () => {
   beforeEach(() => vi.resetModules());
   afterEach(() => vi.restoreAllMocks());
 
-  it("returns positions for healthy markets and silently skips failing ones", async () => {
-    // Simulate a multicall batch of 4 reads per market: first market fails (one of the
-    // four returns failure), second succeeds and shows a balance, third market has zero
-    // balance and should be filtered out by the null-position check.
+  it("reads healthy markets successfully while flagging the failing one via the errored list (one bad market doesn't nuke the whole call)", async () => {
+    // Market 1's baseToken read fails — previously we silently skipped this
+    // case, which was how issue #34 hid a six-figure cUSDCv3 supply. Now
+    // readMarketPosition throws on ANY of {baseToken, balanceOf,
+    // borrowBalanceOf} failing, getCompoundPositions collects the throw via
+    // allSettled, and healthy markets still return.
     let callCount = 0;
     const mockClient = {
       multicall: vi.fn(async ({ contracts }: { contracts: unknown[] }) => {
         callCount++;
-        // All multicalls in this flow have exactly 4 contracts (baseToken, numAssets,
-        // balanceOf, borrowBalanceOf) — except the metadata follow-up which has >=2.
         if (contracts.length === 4) {
           if (callCount === 1) {
-            // Market 1: baseToken call reverts (bad address in registry).
             return [
               { status: "failure", error: new Error("returned no data") },
               { status: "success", result: 0 },
@@ -212,15 +211,13 @@ describe("Bug 3: Compound positions skip individual markets that revert", () => 
             ];
           }
           if (callCount === 2) {
-            // Market 2: healthy with a supplied balance but no collateral assets.
             return [
               { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
-              { status: "success", result: 0 }, // numAssets = 0
-              { status: "success", result: 2_000_000_000n }, // 2000 USDC supplied
+              { status: "success", result: 0 },
+              { status: "success", result: 2_000_000_000n },
               { status: "success", result: 0n },
             ];
           }
-          // Market 3+: wallet has no position.
           return [
             { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
             { status: "success", result: 0 },
@@ -228,7 +225,6 @@ describe("Bug 3: Compound positions skip individual markets that revert", () => 
             { status: "success", result: 0n },
           ];
         }
-        // Metadata call: decimals, symbol for the base token (no collateral assets here).
         return [
           { status: "success", result: 6 },
           { status: "success", result: "USDC" },
@@ -240,7 +236,6 @@ describe("Bug 3: Compound positions skip individual markets that revert", () => 
       getClient: () => mockClient,
       resetClients: () => {},
     }));
-    // Price layer hits the network; stub it so tests are hermetic.
     vi.doMock("../src/data/format.js", async () => {
       const actual = await vi.importActual<typeof import("../src/data/format.js")>(
         "../src/data/format.js"
@@ -249,15 +244,18 @@ describe("Bug 3: Compound positions skip individual markets that revert", () => 
     });
 
     const { getCompoundPositions } = await import("../src/modules/compound/index.js");
-    const { positions } = await getCompoundPositions({
+    const result = await getCompoundPositions({
       wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
       chains: ["ethereum"],
     });
-    // At least one healthy market with a position should come back. Failing markets silently
-    // drop; empty markets drop via the null-filter.
-    expect(positions.length).toBeGreaterThanOrEqual(1);
-    expect(positions[0].baseSupplied?.symbol).toBe("USDC");
-    expect(positions[0].baseSupplied?.formatted).toBe("2000");
+    // Healthy market with a position still returns.
+    expect(result.positions.length).toBeGreaterThanOrEqual(1);
+    expect(result.positions[0].baseSupplied?.symbol).toBe("USDC");
+    expect(result.positions[0].baseSupplied?.formatted).toBe("2000");
+    // The failing market is surfaced rather than silently dropped.
+    expect(result.errored).toBe(true);
+    expect(result.erroredMarkets!.length).toBeGreaterThanOrEqual(1);
+    expect(result.erroredMarkets![0].error).toMatch(/baseToken/);
   });
 });
 
@@ -1071,5 +1069,426 @@ describe("Feature: intra-chain swap quote compares LiFi against 1inch", () => {
     expect(alt.error).toMatch(/401/);
     // No bestSource when the comparison couldn't run.
     expect(quote.bestSource).toBeUndefined();
+  });
+});
+
+describe("Bug 13: exact-out swap quotes (amountSide: 'to')", () => {
+  // When the user asks for "~100 USDC output", the schema's `amount` is interpreted
+  // as the toToken amount and passed to LiFi's toAmount endpoint. The 1inch comparison
+  // is skipped because 1inch v6 has no exact-out route — comparing apples to oranges
+  // would mislead route-selection. Approval sizing must come from the quote's
+  // returned fromAmount, not the user-supplied (toToken) amount.
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../src/modules/compound/index.js");
+    vi.doMock("../src/config/user-config.js", () => ({
+      readUserConfig: () => ({ apiKeys: { oneinch: "test-key" } }),
+      resolveOneInchApiKey: () => "test-key",
+    }));
+  });
+
+  it("passes toAmount (not fromAmount) to LiFi and skips the 1inch comparison", async () => {
+    const lifiCalls: unknown[] = [];
+    const oneInchCalls: unknown[] = [];
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async (req: unknown) => {
+        lifiCalls.push(req);
+        return {
+          tool: "uniswap",
+          action: {
+            fromToken: {
+              symbol: "WETH",
+              decimals: 18,
+              address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              priceUSD: "2800",
+            },
+            toToken: {
+              symbol: "USDC",
+              decimals: 6,
+              address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              priceUSD: "1",
+            },
+            fromAmount: "35714285714285714", // ~0.0357 WETH
+          },
+          estimate: {
+            fromAmount: "35714285714285714",
+            toAmount: "100000000", // 100 USDC
+            toAmountMin: "99500000",
+            executionDuration: 30,
+            feeCosts: [],
+            gasCosts: [],
+          },
+        };
+      },
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/modules/swap/oneinch.js", () => ({
+      fetchOneInchQuote: async (req: unknown) => {
+        oneInchCalls.push(req);
+        return {};
+      },
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({ readContract: async () => 6 }),
+      resetClients: () => {},
+    }));
+
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    const quote = await getSwapQuote({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      toToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      amount: "100",
+      amountSide: "to",
+    });
+
+    expect(lifiCalls).toHaveLength(1);
+    const lifiReq = lifiCalls[0] as { toAmount?: string; fromAmount?: string };
+    expect(lifiReq.toAmount).toBe("100000000");
+    expect(lifiReq.fromAmount).toBeUndefined();
+    // 1inch has no exact-out endpoint → comparison must be skipped.
+    expect(oneInchCalls).toHaveLength(0);
+    expect(quote.alternatives).toBeUndefined();
+    expect(Number(quote.toAmountExpected)).toBeCloseTo(100, 6);
+  });
+
+  it("sizes the ERC-20 approval from the quote's fromAmount padded by slippage, not the user-supplied toAmount", async () => {
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => ({
+        tool: "uniswap",
+        action: {
+          fromToken: {
+            symbol: "USDC",
+            decimals: 6,
+            address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            priceUSD: "1",
+          },
+          toToken: {
+            symbol: "WETH",
+            decimals: 18,
+            address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            priceUSD: "2800",
+          },
+          // Need ~280 USDC to produce 0.1 WETH.
+          fromAmount: "280000000",
+        },
+        estimate: {
+          fromAmount: "280000000",
+          toAmount: "100000000000000000", // 0.1 WETH
+          toAmountMin: "99500000000000000",
+          approvalAddress: "0x1111111254EEB25477B68fb85Ed929f73A960582",
+          executionDuration: 30,
+          feeCosts: [],
+          gasCosts: [],
+        },
+        transactionRequest: {
+          to: "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE",
+          data: "0xdeadbeef",
+          value: "0x0",
+          gasLimit: "0x30d40",
+        },
+      }),
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        readContract: async ({
+          functionName,
+          address,
+        }: {
+          functionName: string;
+          address: string;
+        }) => {
+          if (functionName === "decimals") {
+            // USDC=6, WETH=18.
+            return address.toLowerCase() ===
+              "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+              ? 6
+              : 18;
+          }
+          if (functionName === "allowance") return 0n;
+          return 0;
+        },
+      }),
+      resetClients: () => {},
+    }));
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    const tx = await prepareSwap({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      amount: "0.1",
+      amountSide: "to",
+      slippageBps: 100, // 1%
+    });
+
+    // First tx in the chain is the approval (ERC-20 input, no existing allowance).
+    expect(tx.decoded?.functionName).toBe("approve");
+    // Approval must cover quote.fromAmount * (1 + slippage). At 1% slippage: 280 → 282.8.
+    // The cap is shown with a ≤ prefix so the user knows it is a ceiling, not an exact pull.
+    expect(tx.decoded?.args?.amount).toBe("≤282.8 USDC");
+    // Swap tx description still shows the *expected* input (not the cap) so the user sees
+    // the route's quoted price, with the approval cap separately on the approve tx.
+    expect(tx.next?.description).toContain("~280 USDC → 0.1 WETH");
+  });
+
+  it("exact-in approval sizing is unchanged (exact amount, no slippage padding)", async () => {
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => ({
+        tool: "uniswap",
+        action: {
+          fromToken: {
+            symbol: "USDC",
+            decimals: 6,
+            address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            priceUSD: "1",
+          },
+          toToken: {
+            symbol: "WETH",
+            decimals: 18,
+            address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            priceUSD: "2800",
+          },
+          fromAmount: "280000000",
+        },
+        estimate: {
+          fromAmount: "280000000",
+          toAmount: "100000000000000000",
+          toAmountMin: "99500000000000000",
+          approvalAddress: "0x1111111254EEB25477B68fb85Ed929f73A960582",
+          executionDuration: 30,
+          feeCosts: [],
+          gasCosts: [],
+        },
+        transactionRequest: {
+          to: "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE",
+          data: "0xdeadbeef",
+          value: "0x0",
+          gasLimit: "0x30d40",
+        },
+      }),
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        readContract: async ({
+          functionName,
+          address,
+        }: {
+          functionName: string;
+          address: string;
+        }) => {
+          if (functionName === "decimals") {
+            return address.toLowerCase() ===
+              "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+              ? 6
+              : 18;
+          }
+          if (functionName === "allowance") return 0n;
+          return 0;
+        },
+      }),
+      resetClients: () => {},
+    }));
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    const tx = await prepareSwap({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      amount: "280",
+      slippageBps: 100,
+    });
+
+    expect(tx.decoded?.functionName).toBe("approve");
+    // Exact-in: the approval equals the user-specified input exactly — no slippage pad.
+    expect(tx.decoded?.args?.amount).toBe("280 USDC");
+    expect(tx.description).toContain("(exact amount)");
+  });
+});
+
+describe("Bug 14: Compound per-market RPC failures surface as coverage.errored (issue #34)", () => {
+  // Live bug: wallet held 184k cUSDCv3 but get_portfolio_summary showed
+  // lendingNetUsd=0 with coverage.compound={covered:true}. Root cause: per-market
+  // readMarketPosition promises were caught silently, so a transient RPC blip on
+  // cUSDCv3 dropped the market and the aggregator still claimed clean coverage.
+  // The user literally could not tell "no position" from "position hidden by RPC
+  // blip" without cross-checking against get_compound_positions.
+  //
+  // Fix: readMarketPosition now throws when baseToken succeeds but
+  // balanceOf/borrowBalanceOf fail (the market IS deployed, the read just
+  // flaked). getCompoundPositions collects those failures via allSettled and
+  // returns { errored: true, erroredMarkets: [...] }. The portfolio aggregator
+  // flips errors.compound → coverage.compound.errored = true so the user sees
+  // a warning note instead of silent $0.
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("getCompoundPositions returns errored:true when baseToken succeeds but balanceOf fails on a deployed market", async () => {
+    let callCount = 0;
+    const mockClient = {
+      multicall: vi.fn(async ({ contracts }: { contracts: unknown[] }) => {
+        callCount++;
+        if (contracts.length === 4) {
+          if (callCount === 1) {
+            // Market 1: baseToken OK, balanceOf FAILS — flaky RPC on a
+            // deployed market. Must bubble up as errored, NOT silently drop.
+            return [
+              { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
+              { status: "success", result: 0 },
+              { status: "failure", error: new Error("returned no data") },
+              { status: "success", result: 0n },
+            ];
+          }
+          // Other markets: wallet has no position (clean read).
+          return [
+            { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
+            { status: "success", result: 0 },
+            { status: "success", result: 0n },
+            { status: "success", result: 0n },
+          ];
+        }
+        return [
+          { status: "success", result: 6 },
+          { status: "success", result: "USDC" },
+        ];
+      }),
+    };
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => mockClient,
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/data/format.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/data/format.js")>(
+        "../src/data/format.js"
+      );
+      return { ...actual, priceTokenAmounts: async () => {} };
+    });
+
+    const { getCompoundPositions } = await import("../src/modules/compound/index.js");
+    const result = await getCompoundPositions({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      chains: ["ethereum"],
+    });
+    expect(result.errored).toBe(true);
+    expect(result.erroredMarkets).toBeDefined();
+    expect(result.erroredMarkets!.length).toBeGreaterThanOrEqual(1);
+    // The error message should name the specific market that failed, not a
+    // generic "compound failed" — useful for the user to know WHICH read blew up.
+    expect(result.erroredMarkets![0].error).toMatch(/balanceOf/);
+    expect(result.erroredMarkets![0].error).toMatch(/curated-registry/);
+  });
+
+  it("getCompoundPositions flags errored:true when baseToken fails too — registry is curated, so a baseToken read failure on a listed market is an RPC problem, not 'not deployed'", async () => {
+    // Rationale: CONTRACTS[chain].compound only lists known-deployed markets
+    // (cUSDCv3, cWETHv3 on ethereum, etc.). A baseToken read failing on one
+    // of those is an RPC flake, not an absent contract — so surface it
+    // rather than silently skipping. The user needs to distinguish "wallet
+    // has no position" from "an RPC blip hid my position."
+    const mockClient = {
+      multicall: vi.fn(async ({ contracts }: { contracts: unknown[] }) => {
+        if (contracts.length === 4) {
+          return [
+            { status: "failure", error: new Error("returned no data") },
+            { status: "success", result: 0 },
+            { status: "success", result: 0n },
+            { status: "success", result: 0n },
+          ];
+        }
+        return [
+          { status: "success", result: 6 },
+          { status: "success", result: "USDC" },
+        ];
+      }),
+    };
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => mockClient,
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/data/format.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/data/format.js")>(
+        "../src/data/format.js"
+      );
+      return { ...actual, priceTokenAmounts: async () => {} };
+    });
+
+    const { getCompoundPositions } = await import("../src/modules/compound/index.js");
+    const result = await getCompoundPositions({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      chains: ["ethereum"],
+    });
+    expect(result.errored).toBe(true);
+    expect(result.erroredMarkets![0].error).toMatch(/baseToken/);
+  });
+
+  it("portfolio aggregator flips coverage.compound.errored when getCompoundPositions reports per-market failures", async () => {
+    // Stub the compound reader directly — we're testing the aggregator's
+    // handling of the new { errored } flag, not the multicall plumbing.
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        multicall: async () => [],
+        readContract: async () => 0n,
+        getBalance: async () => 0n,
+        getBlockNumber: async () => 1n,
+      }),
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/data/format.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/data/format.js")>(
+        "../src/data/format.js"
+      );
+      return { ...actual, priceTokenAmounts: async () => {} };
+    });
+    vi.doMock("../src/modules/wallet/index.js", () => ({
+      fetchNativeBalance: async (wallet: string, chain: string) => ({
+        wallet,
+        chain,
+        symbol: "ETH",
+        amount: "0",
+        priceMissing: false,
+      }),
+      fetchTopErc20Balances: async () => [],
+    }));
+    vi.doMock("../src/modules/aave/index.js", () => ({
+      getLendingPositions: async ({ wallet }: { wallet: string }) => ({ wallet, positions: [] }),
+    }));
+    vi.doMock("../src/modules/morpho/index.js", () => ({
+      getMorphoPositions: async ({ wallet }: { wallet: string }) => ({ wallet, positions: [] }),
+    }));
+    vi.doMock("../src/modules/uniswap/index.js", () => ({
+      getLpPositions: async ({ wallet }: { wallet: string }) => ({ wallet, positions: [] }),
+    }));
+    vi.doMock("../src/modules/staking/index.js", () => ({
+      getStakingPositions: async ({ wallet }: { wallet: string }) => ({ wallet, positions: [] }),
+    }));
+    vi.doMock("../src/modules/compound/index.js", () => ({
+      // Simulate the "silent drop" scenario: positions array is EMPTY, but
+      // errored is TRUE because a per-market read flaked. Pre-fix, the
+      // aggregator had no way to know this happened.
+      getCompoundPositions: async ({ wallet }: { wallet: string }) => ({
+        wallet,
+        positions: [],
+        errored: true,
+        erroredMarkets: [{ chain: "ethereum", market: "cUSDCv3", error: "balanceOf failed" }],
+      }),
+    }));
+
+    const { getPortfolioSummary } = await import("../src/modules/portfolio/index.js");
+    const summary = (await getPortfolioSummary({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      chains: ["ethereum"],
+    })) as Awaited<ReturnType<typeof getPortfolioSummary>>;
+    const single = summary as Extract<typeof summary, { breakdown: unknown }>;
+    expect(single.coverage.compound.covered).toBe(false);
+    expect(single.coverage.compound.errored).toBe(true);
+    expect(single.coverage.compound.note).toMatch(/Compound V3/);
+    expect(single.coverage.compound.note).toMatch(/some positions may be missing/);
   });
 });
