@@ -1315,3 +1315,179 @@ describe("Bug 13: exact-out swap quotes (amountSide: 'to')", () => {
     expect(tx.description).toContain("(exact amount)");
   });
 });
+
+describe("Bug 14: Compound per-market RPC failures surface as coverage.errored (issue #34)", () => {
+  // Live bug: wallet held 184k cUSDCv3 but get_portfolio_summary showed
+  // lendingNetUsd=0 with coverage.compound={covered:true}. Root cause: per-market
+  // readMarketPosition promises were caught silently, so a transient RPC blip on
+  // cUSDCv3 dropped the market and the aggregator still claimed clean coverage.
+  // The user literally could not tell "no position" from "position hidden by RPC
+  // blip" without cross-checking against get_compound_positions.
+  //
+  // Fix: readMarketPosition now throws when baseToken succeeds but
+  // balanceOf/borrowBalanceOf fail (the market IS deployed, the read just
+  // flaked). getCompoundPositions collects those failures via allSettled and
+  // returns { errored: true, erroredMarkets: [...] }. The portfolio aggregator
+  // flips errors.compound → coverage.compound.errored = true so the user sees
+  // a warning note instead of silent $0.
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("getCompoundPositions returns errored:true when baseToken succeeds but balanceOf fails on a deployed market", async () => {
+    let callCount = 0;
+    const mockClient = {
+      multicall: vi.fn(async ({ contracts }: { contracts: unknown[] }) => {
+        callCount++;
+        if (contracts.length === 4) {
+          if (callCount === 1) {
+            // Market 1: baseToken OK, balanceOf FAILS — flaky RPC on a
+            // deployed market. Must bubble up as errored, NOT silently drop.
+            return [
+              { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
+              { status: "success", result: 0 },
+              { status: "failure", error: new Error("returned no data") },
+              { status: "success", result: 0n },
+            ];
+          }
+          // Other markets: wallet has no position (clean read).
+          return [
+            { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
+            { status: "success", result: 0 },
+            { status: "success", result: 0n },
+            { status: "success", result: 0n },
+          ];
+        }
+        return [
+          { status: "success", result: 6 },
+          { status: "success", result: "USDC" },
+        ];
+      }),
+    };
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => mockClient,
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/data/format.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/data/format.js")>(
+        "../src/data/format.js"
+      );
+      return { ...actual, priceTokenAmounts: async () => {} };
+    });
+
+    const { getCompoundPositions } = await import("../src/modules/compound/index.js");
+    const result = await getCompoundPositions({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      chains: ["ethereum"],
+    });
+    expect(result.errored).toBe(true);
+    expect(result.erroredMarkets).toBeDefined();
+    expect(result.erroredMarkets!.length).toBeGreaterThanOrEqual(1);
+    // The error message should name the specific market that failed, not a
+    // generic "compound failed" — useful for the user to know WHICH read blew up.
+    expect(result.erroredMarkets![0].error).toMatch(/balanceOf\/borrowBalanceOf/);
+  });
+
+  it("getCompoundPositions stays errored:false when a market's baseToken fails (clean skip: market not deployed at that address)", async () => {
+    // Complement of the above: baseToken failing is the legitimate
+    // "market not on this chain / bad address in registry" case — should
+    // still skip silently, NOT flip the errored flag.
+    const mockClient = {
+      multicall: vi.fn(async ({ contracts }: { contracts: unknown[] }) => {
+        if (contracts.length === 4) {
+          return [
+            { status: "failure", error: new Error("returned no data") },
+            { status: "success", result: 0 },
+            { status: "success", result: 0n },
+            { status: "success", result: 0n },
+          ];
+        }
+        return [
+          { status: "success", result: 6 },
+          { status: "success", result: "USDC" },
+        ];
+      }),
+    };
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => mockClient,
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/data/format.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/data/format.js")>(
+        "../src/data/format.js"
+      );
+      return { ...actual, priceTokenAmounts: async () => {} };
+    });
+
+    const { getCompoundPositions } = await import("../src/modules/compound/index.js");
+    const result = await getCompoundPositions({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      chains: ["ethereum"],
+    });
+    expect(result.errored).toBe(false);
+    expect(result.erroredMarkets).toBeUndefined();
+  });
+
+  it("portfolio aggregator flips coverage.compound.errored when getCompoundPositions reports per-market failures", async () => {
+    // Stub the compound reader directly — we're testing the aggregator's
+    // handling of the new { errored } flag, not the multicall plumbing.
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        multicall: async () => [],
+        readContract: async () => 0n,
+        getBalance: async () => 0n,
+        getBlockNumber: async () => 1n,
+      }),
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/data/format.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/data/format.js")>(
+        "../src/data/format.js"
+      );
+      return { ...actual, priceTokenAmounts: async () => {} };
+    });
+    vi.doMock("../src/modules/wallet/index.js", () => ({
+      fetchNativeBalance: async (wallet: string, chain: string) => ({
+        wallet,
+        chain,
+        symbol: "ETH",
+        amount: "0",
+        priceMissing: false,
+      }),
+      fetchTopErc20Balances: async () => [],
+    }));
+    vi.doMock("../src/modules/aave/index.js", () => ({
+      getLendingPositions: async ({ wallet }: { wallet: string }) => ({ wallet, positions: [] }),
+    }));
+    vi.doMock("../src/modules/morpho/index.js", () => ({
+      getMorphoPositions: async ({ wallet }: { wallet: string }) => ({ wallet, positions: [] }),
+    }));
+    vi.doMock("../src/modules/uniswap/index.js", () => ({
+      getLpPositions: async ({ wallet }: { wallet: string }) => ({ wallet, positions: [] }),
+    }));
+    vi.doMock("../src/modules/staking/index.js", () => ({
+      getStakingPositions: async ({ wallet }: { wallet: string }) => ({ wallet, positions: [] }),
+    }));
+    vi.doMock("../src/modules/compound/index.js", () => ({
+      // Simulate the "silent drop" scenario: positions array is EMPTY, but
+      // errored is TRUE because a per-market read flaked. Pre-fix, the
+      // aggregator had no way to know this happened.
+      getCompoundPositions: async ({ wallet }: { wallet: string }) => ({
+        wallet,
+        positions: [],
+        errored: true,
+        erroredMarkets: [{ chain: "ethereum", market: "cUSDCv3", error: "balanceOf failed" }],
+      }),
+    }));
+
+    const { getPortfolioSummary } = await import("../src/modules/portfolio/index.js");
+    const summary = (await getPortfolioSummary({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      chains: ["ethereum"],
+    })) as Awaited<ReturnType<typeof getPortfolioSummary>>;
+    const single = summary as Extract<typeof summary, { breakdown: unknown }>;
+    expect(single.coverage.compound.covered).toBe(false);
+    expect(single.coverage.compound.errored).toBe(true);
+    expect(single.coverage.compound.note).toMatch(/Compound V3/);
+    expect(single.coverage.compound.note).toMatch(/some positions may be missing/);
+  });
+});

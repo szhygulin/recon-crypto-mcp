@@ -203,10 +203,21 @@ async function buildWalletSummary(
         errors.aave = true;
         return emptyPositions as never;
       }),
-      getCompoundPositions({ wallet, chains }).catch(() => {
-        errors.compound = true;
-        return emptyPositions as never;
-      }),
+      getCompoundPositions({ wallet, chains })
+        .then((r) => {
+          // Per-market reads use allSettled internally, so the top-level
+          // promise succeeds even when individual markets errored. Surface
+          // that partial failure so coverage.compound.errored is correct —
+          // without this, a flaky cUSDCv3 read would drop a six-figure
+          // supply while the aggregator still reported clean coverage
+          // (issue #34).
+          if (r.errored) errors.compound = true;
+          return r;
+        })
+        .catch(() => {
+          errors.compound = true;
+          return emptyPositions as never;
+        }),
       // Morpho has no multi-chain list endpoint; fan out per-chain and swallow
       // per-chain failures individually so one bad RPC doesn't drop the whole
       // Morpho bucket. If any chain throws, the overall coverage is errored.
@@ -302,7 +313,7 @@ async function buildWalletSummary(
     [...native, ...erc20].filter((t) => t.priceMissing).length + tronUnpriced;
   const coverage: PortfolioCoverage = {
     aave: { covered: !errors.aave, ...(errors.aave ? { errored: true, note: "Aave fetch failed — positions not included in totals." } : {}) },
-    compound: { covered: !errors.compound, ...(errors.compound ? { errored: true, note: "Compound V3 fetch failed — positions not included in totals." } : {}) },
+    compound: { covered: !errors.compound, ...(errors.compound ? { errored: true, note: "Compound V3 fetch failed on at least one market — some positions may be missing from totals." } : {}) },
     morpho: { covered: !errors.morpho, ...(errors.morpho ? { errored: true, note: "Morpho Blue event-log discovery failed on at least one chain — some positions may be missing from totals." } : {}) },
     uniswapV3: { covered: !errors.lp, ...(errors.lp ? { errored: true, note: "Uniswap V3 LP fetch failed — positions not included." } : {}) },
     staking: { covered: !errors.staking, ...(errors.staking ? { errored: true, note: "Staking (Lido/EigenLayer) fetch failed — positions not included." } : {}) },
