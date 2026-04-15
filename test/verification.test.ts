@@ -331,6 +331,69 @@ describe("shouldRenderVerificationBlock — approvals are suppressed (Ledger cle
   });
 });
 
+describe("decodeCalldata — LiFi Diamond", () => {
+  const LIFI_DIAMOND = getAddress("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE");
+
+  it("decodes swapTokensMultipleV3ERC20ToNative (selector 0x2c57e884)", () => {
+    // Round-trip: encode a call, then pass the bytes through the decoder and
+    // assert we get the function name + a non-empty args list back. Locks in
+    // the 0x2c57e884 selector that previously rendered "Call: unknown".
+    const data = encodeFunctionData({
+      abi: [
+        {
+          type: "function",
+          name: "swapTokensMultipleV3ERC20ToNative",
+          stateMutability: "payable",
+          inputs: [
+            { name: "_transactionId", type: "bytes32" },
+            { name: "_integrator", type: "string" },
+            { name: "_referrer", type: "string" },
+            { name: "_receiver", type: "address" },
+            { name: "_minAmountOut", type: "uint256" },
+            {
+              name: "_swapData",
+              type: "tuple[]",
+              components: [
+                { name: "callTo", type: "address" },
+                { name: "approveTo", type: "address" },
+                { name: "sendingAssetId", type: "address" },
+                { name: "receivingAssetId", type: "address" },
+                { name: "fromAmount", type: "uint256" },
+                { name: "callData", type: "bytes" },
+                { name: "requiresDeposit", type: "bool" },
+              ],
+            },
+          ],
+          outputs: [],
+        },
+      ],
+      functionName: "swapTokensMultipleV3ERC20ToNative",
+      args: [
+        `0x${"00".repeat(32)}` as `0x${string}`,
+        "vaultpilot-mcp",
+        "",
+        SENDER,
+        42_000_000_000_000_000n,
+        [],
+      ],
+    });
+    expect(data.slice(0, 10)).toBe("0x2c57e884");
+    const d = decodeCalldata("ethereum", LIFI_DIAMOND, data, "0");
+    expect(d.source).toBe("local-abi");
+    expect(d.functionName).toBe("swapTokensMultipleV3ERC20ToNative");
+    expect(d.signature).toContain("swapTokensMultipleV3ERC20ToNative(");
+    expect(d.args.find((a) => a.name === "_receiver")?.value).toBe(SENDER);
+  });
+
+  it("unknown LiFi selector on the same address falls through to source:none", () => {
+    // Not a real LiFi function — ensures un-whitelisted selectors gracefully
+    // fall back to the swiss-knife-only path rather than misdecoding.
+    const d = decodeCalldata("ethereum", LIFI_DIAMOND, "0xdeadbeef00000000" as `0x${string}`, "0");
+    expect(d.source).toBe("none");
+    expect(d.functionName).toBe("unknown");
+  });
+});
+
 describe("decodeCalldata", () => {
   it("extracts a checksummed `to` arg on ERC-20 transfer", () => {
     const data = encodeFunctionData({

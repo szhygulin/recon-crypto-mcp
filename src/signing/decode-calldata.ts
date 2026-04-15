@@ -12,6 +12,7 @@ import { morphoBlueAbi } from "../abis/morpho-blue.js";
 import { stETHAbi, lidoWithdrawalQueueAbi } from "../abis/lido.js";
 import { eigenStrategyManagerAbi } from "../abis/eigenlayer-strategy-manager.js";
 import { uniswapPositionManagerAbi } from "../abis/uniswap-position-manager.js";
+import { lifiDiamondAbi } from "../abis/lifi-diamond.js";
 import { CONTRACTS, NATIVE_SYMBOL, TOKEN_META } from "../config/contracts.js";
 import type {
   DecodedArg,
@@ -45,7 +46,7 @@ type DestinationKind =
 
 interface Destination {
   kind: DestinationKind;
-  /** ABI to use for decoding. `null` means we recognize the contract but have no ABI for decode (LiFi). */
+  /** ABI to use for decoding. `null` means we recognize the contract but have no ABI for decode. */
   abi: Abi | null;
 }
 
@@ -89,7 +90,7 @@ function classifyDestination(chain: SupportedChain, to: `0x${string}`): Destinat
     return { kind: "uniswap-v3-npm", abi: uniswapPositionManagerAbi as Abi };
   }
 
-  if (lo === LIFI_DIAMOND) return { kind: "lifi-diamond", abi: null };
+  if (lo === LIFI_DIAMOND) return { kind: "lifi-diamond", abi: lifiDiamondAbi as Abi };
 
   const tokens = (CONTRACTS[chain] as { tokens?: Record<string, string> }).tokens;
   if (tokens) {
