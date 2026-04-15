@@ -232,6 +232,14 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     expect(task).toMatch(/verify_tx_decode/);
     // Tells the agent to relay the tool's summary verbatim.
     expect(task).toMatch(/VERBATIM/);
+    // Offers the user an out-of-trust-boundary check — either browser-side
+    // swiss-knife or the agent's own independent decode. Phrased as an offer,
+    // not a default action.
+    expect(task).toMatch(/OFFER/);
+    expect(task).toMatch(/trust boundary/);
+    expect(task).toMatch(/swiss-knife/);
+    expect(task).toMatch(/decode the calldata yourself/);
+    expect(task).toMatch(/do NOT perform[\s\n]+your own decode unless they ask/);
     // The send-time hash reminder.
     expect(task).toMatch(/short payload hash/);
     expect(task).toMatch(/Ledger[\s\n]+shows[\s\n]+before[\s\n]+approving/);
@@ -593,6 +601,12 @@ describe("verifyEvmCalldata — independent cross-check via 4byte.directory", ()
     expect(result.localFunctionName).toBe("transfer");
     expect(result.summary).toMatch(/Independent cross-check passed/);
     expect(result.summary).toMatch(/re-encod/);
+    // Honesty about provenance: the server runs the same algorithm swiss-knife
+    // does in-browser, not a fetch of swiss-knife's output.
+    expect(result.summary).toMatch(/SAME algorithm/);
+    // Flag that this check shares a trust boundary with the MCP server itself,
+    // and nudge toward the out-of-boundary browser check.
+    expect(result.summary).toMatch(/trust boundary/);
     // Args are recovered positionally.
     expect(result.independentArgs).toHaveLength(2);
     expect(result.independentArgs?.[0].type).toBe("address");

@@ -249,16 +249,22 @@ export async function verifyEvmCalldata(
   }
 
   const summary = localFunctionName
-    ? `✓ Independent cross-check passed. I ran the calldata through a SECOND decoder on the MCP server ` +
-      `using the function signature "${chosen.signature}" fetched from 4byte.directory (a public registry of ` +
-      `selectors built from unrelated on-chain traffic). That decoder produced the same function name my local ` +
-      `ABI reported (${localFunctionName}), and re-encoding its decoded arguments reproduces the original calldata ` +
-      `byte-for-byte — which mathematically implies every argument value matches the one shown in the verification ` +
-      `block above. You can still open the swiss-knife decoder URL for your own browser-side eyeball check.`
-    : `✓ Independent decode succeeded using 4byte.directory signature "${chosen.signature}" — re-encoding produces ` +
-      `the exact original calldata bytes. My local ABI didn't recognize the destination contract, so the ` +
-      `verification block showed no local arg names; the independentArgs field on this tool result lists the ` +
-      `values recovered positionally — review them against what you expected before approving on Ledger.`;
+    ? `✓ Independent cross-check passed. I re-ran the SAME algorithm the swiss-knife decoder URL uses in your ` +
+      `browser — fetch the function signature from 4byte.directory (a public selector registry), decode the ` +
+      `calldata with viem, re-encode to confirm the bytes round-trip losslessly — but executed it server-side on ` +
+      `the MCP so you can see the result in chat without opening a browser. The signature fetched ` +
+      `("${chosen.signature}") produced the same function name my local ABI reported (${localFunctionName}), and ` +
+      `the re-encode matched the original calldata byte-for-byte, which mathematically implies every argument ` +
+      `value matches the one shown in the verification block above. Note: this check shares a trust boundary with ` +
+      `the MCP server itself. If you want a check outside that boundary, open the swiss-knife URL in your ` +
+      `browser — it runs this same algorithm in a context you fully control.`
+    : `✓ Independent decode succeeded. I re-ran the SAME algorithm the swiss-knife URL uses in your browser ` +
+      `(fetch signature from 4byte.directory, decode with viem, re-encode to verify bytes round-trip), but ` +
+      `executed it server-side on the MCP. The signature "${chosen.signature}" re-encodes to the exact original ` +
+      `calldata bytes. Your local ABI didn't recognize the destination contract, so no local comparison was ` +
+      `possible; the independentArgs field on this result lists the values recovered positionally — review them ` +
+      `against what you expected before approving. Note: this check shares a trust boundary with the MCP server. ` +
+      `Open the swiss-knife URL in your browser for a check outside that boundary.`;
 
   return {
     status: "match",
