@@ -61,6 +61,86 @@ describe("eip1559PreSignHash", () => {
   });
 });
 
+describe("renderPrepareReceiptBlock", () => {
+  it("labels itself for verbatim relay and lists the agent-supplied args", async () => {
+    const { renderPrepareReceiptBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPrepareReceiptBlock({
+      tool: "prepare_native_send",
+      args: {
+        wallet: "0x8F9dE85C01070D2762d29A6Dd7ffEcC965b34361",
+        chain: "ethereum",
+        to: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        amount: "0.5",
+      },
+    });
+    // Verbatim-relay label is how we ask the agent not to collapse this; if
+    // this string drifts, the per-call directive is lost and a narrowly-
+    // compromised agent can tamper invisibly.
+    expect(block).toMatch(/PREPARE RECEIPT — RELAY VERBATIM TO USER/);
+    expect(block).toContain("Tool: prepare_native_send");
+    // Each arg appears as its own line so the user can spot a single-field
+    // mutation (e.g. a swapped `to`).
+    expect(block).toMatch(/wallet: 0x8F9dE85C01070D2762d29A6Dd7ffEcC965b34361/);
+    expect(block).toMatch(/to: 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2/);
+    expect(block).toMatch(/amount: 0\.5/);
+    // Honest framing — this is a narrow-injection defense, not a hard
+    // trust boundary. Keep the "retelling vs. actual" contrast explicit.
+    expect(block).toMatch(/retelling/);
+  });
+
+  it("renders nested objects as JSON so complex args (e.g. Tron votes) stay inspectable", async () => {
+    const { renderPrepareReceiptBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPrepareReceiptBlock({
+      tool: "prepare_tron_vote",
+      args: {
+        from: "TXYZ",
+        votes: [{ srAddress: "TABC", count: 1000 }],
+      },
+    });
+    expect(block).toContain(
+      'votes: [{"srAddress":"TABC","count":1000}]',
+    );
+  });
+});
+
+describe("renderPreviewVerifyAgentTaskBlock", () => {
+  it("is an agent-task block (not user-facing) that describes independent hash recomputation", async () => {
+    const { renderPreviewVerifyAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPreviewVerifyAgentTaskBlock({
+      chain: "ethereum",
+      preSignHash: "0xabc",
+      pinned: {
+        nonce: 7,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "21000",
+      },
+      to: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      valueWei: "500000000000000000",
+    });
+    // Must be an agent directive, not a verbatim-relay block — we don't want
+    // this command surface text dumped into the user's chat.
+    expect(block).toMatch(/AGENT TASK — DO NOT FORWARD/);
+    // Names the attack we're defending against so a future reviewer doesn't
+    // think this is busywork.
+    expect(block).toMatch(/compromised MCP/);
+    // The per-call values are spliced into the viem command so the agent
+    // doesn't have to reconstruct them — keeps the optional check cheap.
+    expect(block).toContain("nonce:7");
+    expect(block).toContain("maxFeePerGas:22000000000n");
+    expect(block).toContain("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+    // "Offer, don't run" is load-bearing UX — the check is heavy and
+    // irrelevant for trusting users.
+    expect(block).toMatch(/Do NOT run it unprompted/);
+  });
+});
+
 describe("renderLedgerHashBlock", () => {
   it("includes the hash, the on-device match instruction, and the Edit-gas warning", async () => {
     const { renderLedgerHashBlock } = await import(

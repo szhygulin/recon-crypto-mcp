@@ -158,6 +158,8 @@ import {
   renderLedgerHashBlock,
   renderPostBroadcastBlock,
   renderPostSendPollBlock,
+  renderPrepareReceiptBlock,
+  renderPreviewVerifyAgentTaskBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
   shouldRenderVerificationBlock,
@@ -249,13 +251,36 @@ export async function collectVerificationBlocks(
  * The block lives next to the JSON so machine readers still get the
  * structured data AND the user sees the verification prose verbatim.
  */
-function handler<T, R>(fn: (args: T) => Promise<R> | R) {
+function handler<T, R>(
+  fn: (args: T) => Promise<R> | R,
+  opts?: { toolName?: string },
+) {
   return async (args: T) => {
     try {
       const result = await fn(args);
       const content: { type: "text"; text: string }[] = [
         { type: "text", text: JSON.stringify(result, bigintReplacer, 2) },
       ];
+      // Emit the prepare-receipt for every tool that built a transaction
+      // (result carries `verification`). Gives the user a verbatim-relay view
+      // of the args that hit the server, independent of the agent's bullet
+      // summary — raises the tampering bar against narrow prompt injections
+      // and malicious add-ons that rewrite args without also crafting an
+      // output filter. See render-verification.ts for the full rationale.
+      if (
+        opts?.toolName &&
+        result !== null &&
+        typeof result === "object" &&
+        "verification" in (result as Record<string, unknown>)
+      ) {
+        content.push({
+          type: "text",
+          text: renderPrepareReceiptBlock({
+            tool: opts.toolName,
+            args: (args ?? {}) as Record<string, unknown>,
+          }),
+        });
+      }
       for (const block of await collectVerificationBlocks(result)) {
         content.push({ type: "text", text: block });
       }
@@ -276,9 +301,12 @@ function handler<T, R>(fn: (args: T) => Promise<R> | R) {
  * `send_transaction` can re-hydrate the exact tx from server state. The agent
  * never passes raw calldata to the signing path — it calls send_transaction
  * with a handle, which closes the prompt-injection → arbitrary-calldata window.
+ *
+ * `toolName` is the registered MCP tool name; it's threaded through so the
+ * prepare-receipt block can label which tool was called with which args.
  */
-function txHandler<T>(fn: (args: T) => Promise<UnsignedTx> | UnsignedTx) {
-  return handler(async (args: T) => issueHandles(await fn(args)));
+function txHandler<T>(toolName: string, fn: (args: T) => Promise<UnsignedTx> | UnsignedTx) {
+  return handler(async (args: T) => issueHandles(await fn(args)), { toolName });
 }
 
 /**
@@ -314,6 +342,20 @@ function previewSendHandler(
             type: "text" as const,
             text: renderLedgerHashBlock({
               preSignHash: result.preSignHash,
+              to: result.to,
+              valueWei: result.valueWei,
+            }),
+          },
+          // Agent-task block: offer the user an independent hash re-computation
+          // against a compromised MCP that lies about the hash. Optional, not
+          // run unprompted. Emitting it here (per-call) keeps the values in-
+          // context for the agent to splice into the local viem command.
+          {
+            type: "text" as const,
+            text: renderPreviewVerifyAgentTaskBlock({
+              chain: result.chain,
+              preSignHash: result.preSignHash,
+              pinned: result.pinned,
               to: result.to,
               valueWei: result.valueWei,
             }),
@@ -700,7 +742,7 @@ async function main() {
         "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out (`amount` = target toToken output, e.g. \"I want 100 USDC out\"). The returned tx can be sent via `send_transaction`.",
       inputSchema: prepareSwapInput.shape,
     },
-    txHandler(prepareSwap)
+    txHandler("prepare_swap", prepareSwap)
   );
 
   // ---- Module 6: Execution (Ledger Live) ----
@@ -750,7 +792,7 @@ async function main() {
         "Build an unsigned Aave V3 supply transaction. If an ERC-20 approve() is required first, it is returned as the outer tx and the supply tx is embedded in `.next`. Both must be signed for the supply to succeed.",
       inputSchema: prepareAaveSupplyInput.shape,
     },
-    txHandler(prepareAaveSupply)
+    txHandler("prepare_aave_supply", prepareAaveSupply)
   );
 
   server.registerTool(
@@ -760,7 +802,7 @@ async function main() {
         "Build an unsigned Aave V3 withdraw transaction. Pass `amount: \"max\"` to withdraw the entire aToken balance.",
       inputSchema: prepareAaveWithdrawInput.shape,
     },
-    txHandler(prepareAaveWithdraw)
+    txHandler("prepare_aave_withdraw", prepareAaveWithdraw)
   );
 
   server.registerTool(
@@ -770,7 +812,7 @@ async function main() {
         "Build an unsigned Aave V3 borrow transaction (variable rate — stable rate is deprecated and reverts on production markets). The borrower must already have sufficient collateral supplied.",
       inputSchema: prepareAaveBorrowInput.shape,
     },
-    txHandler(prepareAaveBorrow)
+    txHandler("prepare_aave_borrow", prepareAaveBorrow)
   );
 
   server.registerTool(
@@ -780,7 +822,7 @@ async function main() {
         "Build an unsigned Aave V3 repay transaction. If an ERC-20 approve() is required first, it is returned as the outer tx and repay is in `.next`. Pass `amount: \"max\"` to repay the full debt.",
       inputSchema: prepareAaveRepayInput.shape,
     },
-    txHandler(prepareAaveRepay)
+    txHandler("prepare_aave_repay", prepareAaveRepay)
   );
 
   server.registerTool(
@@ -790,7 +832,7 @@ async function main() {
         "Build an unsigned Lido stake transaction (wraps ETH into stETH via stETH.submit). The tx's value field is the ETH amount to stake.",
       inputSchema: prepareLidoStakeInput.shape,
     },
-    txHandler(prepareLidoStake)
+    txHandler("prepare_lido_stake", prepareLidoStake)
   );
 
   server.registerTool(
@@ -800,7 +842,7 @@ async function main() {
         "Build an unsigned Lido withdrawal request transaction. Wraps `requestWithdrawals` on the Lido Withdrawal Queue and includes an approve step if needed.",
       inputSchema: prepareLidoUnstakeInput.shape,
     },
-    txHandler(prepareLidoUnstake)
+    txHandler("prepare_lido_unstake", prepareLidoUnstake)
   );
 
   server.registerTool(
@@ -810,7 +852,7 @@ async function main() {
         "Build an unsigned EigenLayer StrategyManager.depositIntoStrategy transaction. Includes an ERC-20 approve step if needed.",
       inputSchema: prepareEigenLayerDepositInput.shape,
     },
-    txHandler(prepareEigenLayerDeposit)
+    txHandler("prepare_eigenlayer_deposit", prepareEigenLayerDeposit)
   );
 
   server.registerTool(
@@ -963,7 +1005,7 @@ async function main() {
         "Build an unsigned TRON native TRX send transaction via TronGrid's /wallet/createtransaction. Returns a human-readable preview + opaque handle. Forward the handle via `send_transaction` to sign on the directly-connected Ledger (USB HID via @ledgerhq/hw-app-trx) and broadcast to TronGrid. Run `pair_ledger_tron` once per session first so the TRON app is open and the device address is verified.",
       inputSchema: prepareTronNativeSendInput.shape,
     },
-    handler(buildTronNativeSend)
+    handler(buildTronNativeSend, { toolName: "prepare_tron_native_send" })
   );
 
   server.registerTool(
@@ -973,7 +1015,7 @@ async function main() {
         "Build an unsigned TRC-20 transfer transaction (canonical set only: USDT, USDC, USDD, TUSD) via TronGrid's /wallet/triggersmartcontract. Decimals are resolved from the canonical table — unknown TRC-20s are rejected with an explicit error. Default fee_limit is 100 TRX (TronLink/Ledger Live default); override with `feeLimitTrx` if energy pricing has moved. Returns a preview + opaque handle. Forward via `send_transaction` for USB-HID signing on the paired Ledger. USDT renders natively on the TRON app; other TRC-20s may display raw hex on-device (the contract address and amount are still shown, so the user can verify against the preview).",
       inputSchema: prepareTronTokenSendInput.shape,
     },
-    handler(buildTronTokenSend)
+    handler(buildTronTokenSend, { toolName: "prepare_tron_token_send" })
   );
 
   server.registerTool(
@@ -983,7 +1025,7 @@ async function main() {
         "Build an unsigned TRON WithdrawBalance transaction that claims accumulated voting rewards to the owner's balance. TRON enforces a 24-hour cooldown between claims — TronGrid will reject (surfaced as an error) if the previous claim was inside the window. Pair with `get_tron_staking` first to read `claimableRewards` and avoid empty-claim tx builds. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronClaimRewardsInput.shape,
     },
-    handler(buildTronClaimRewards)
+    handler(buildTronClaimRewards, { toolName: "prepare_tron_claim_rewards" })
   );
 
   server.registerTool(
@@ -993,7 +1035,7 @@ async function main() {
         "Build an unsigned TRON Stake 2.0 FreezeBalanceV2 transaction. Locks TRX to earn `bandwidth` (fuels plain transfers) or `energy` (fuels smart-contract calls) and gains proportional voting power. IMPORTANT: freezing alone does NOT accrue TRX rewards — `claimableRewards` (see `get_tron_staking`) only grows after the user also votes for a Super Representative. Pair this tool with `list_tron_witnesses` + `prepare_tron_vote` for the full reward-earning flow. Unlocking requires a 14-day cooldown via `prepare_tron_unfreeze` + `prepare_tron_withdraw_expire_unfreeze`. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronFreezeInput.shape,
     },
-    handler(buildTronFreeze)
+    handler(buildTronFreeze, { toolName: "prepare_tron_freeze" })
   );
 
   server.registerTool(
@@ -1003,7 +1045,7 @@ async function main() {
         "Build an unsigned TRON Stake 2.0 UnfreezeBalanceV2 transaction — begins the 14-day cooldown on a previously-frozen slice. The `amount` must not exceed what's currently frozen for that resource (query `get_tron_staking` first; TronGrid rejects otherwise with 'less than frozen balance'). After 14 days the slice shows up in `pendingUnfreezes` with an elapsed `unlockAt`; call `prepare_tron_withdraw_expire_unfreeze` to sweep it back to liquid TRX. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronUnfreezeInput.shape,
     },
-    handler(buildTronUnfreeze)
+    handler(buildTronUnfreeze, { toolName: "prepare_tron_unfreeze" })
   );
 
   server.registerTool(
@@ -1013,7 +1055,7 @@ async function main() {
         "Build an unsigned TRON WithdrawExpireUnfreeze transaction — sweeps every matured unfreeze slice (those whose 14-day cooldown elapsed) back to liquid TRX. No amount needed; the chain drains all eligible slices in one call. Inspect `pendingUnfreezes` from `get_tron_staking` first — if every entry's `unlockAt` is still in the future, TronGrid returns 'no expire unfreeze' and this tool errors. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronWithdrawExpireUnfreezeInput.shape,
     },
-    handler(buildTronWithdrawExpireUnfreeze)
+    handler(buildTronWithdrawExpireUnfreeze, { toolName: "prepare_tron_withdraw_expire_unfreeze" })
   );
 
   server.registerTool(
@@ -1035,7 +1077,7 @@ async function main() {
         "Build an unsigned TRON VoteWitnessContract transaction — casts votes for Super Representatives to earn voting rewards on frozen TRX. IMPORTANT: VoteWitness REPLACES the wallet's entire prior vote allocation atomically. Pass every SR you intend to back (not just a delta); an empty `votes` array clears all votes. Sum of `count` values must not exceed the wallet's available TRON Power — check `list_tron_witnesses(address)` → `availableVotes` first. `count` is an integer (1 vote = 1 TRX of TRON Power). Rewards accrue per block and are harvested via `prepare_tron_claim_rewards` (24h cooldown). Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronVoteInput.shape,
     },
-    handler(buildTronVote)
+    handler(buildTronVote, { toolName: "prepare_tron_vote" })
   );
 
   server.registerTool(
@@ -1045,7 +1087,7 @@ async function main() {
         "Build an unsigned native-coin send transaction (ETH on Ethereum/Arbitrum). Pass a human-readable amount like \"0.5\".",
       inputSchema: prepareNativeSendInput.shape,
     },
-    txHandler(prepareNativeSend)
+    txHandler("prepare_native_send", prepareNativeSend)
   );
 
   server.registerTool(
@@ -1055,7 +1097,7 @@ async function main() {
         "Build an unsigned ERC-20 transfer transaction. Pass `amount: \"max\"` to send the full balance (resolved at build time).",
       inputSchema: prepareTokenSendInput.shape,
     },
-    txHandler(prepareTokenSend)
+    txHandler("prepare_token_send", prepareTokenSend)
   );
 
   // ---- Module 8: Compound V3 ----
@@ -1076,7 +1118,7 @@ async function main() {
         "Build an unsigned Compound V3 supply transaction (base token or collateral). If an ERC-20 approve() is required first, it is returned as the outer tx with supply in `.next`.",
       inputSchema: prepareCompoundSupplyInput.shape,
     },
-    txHandler(buildCompoundSupply)
+    txHandler("prepare_compound_supply", buildCompoundSupply)
   );
 
   server.registerTool(
@@ -1086,7 +1128,7 @@ async function main() {
         "Build an unsigned Compound V3 withdraw transaction. Pass `amount: \"max\"` to withdraw the full supplied balance.",
       inputSchema: prepareCompoundWithdrawInput.shape,
     },
-    txHandler(buildCompoundWithdraw)
+    txHandler("prepare_compound_withdraw", buildCompoundWithdraw)
   );
 
   server.registerTool(
@@ -1096,7 +1138,7 @@ async function main() {
         "Build an unsigned Compound V3 borrow transaction. Compound V3 encodes a borrow as `withdraw(baseToken)` drawn beyond the wallet's supplied balance — the base token is resolved on-chain from the Comet market so you only pass the market address and amount. Requires the wallet to have already supplied enough collateral in that market; `get_compound_positions` shows the current collateral mix. Returns a handle + human-readable preview for the user to sign on Ledger; no approval step is needed (borrowing doesn't pull tokens from the wallet).",
       inputSchema: prepareCompoundBorrowInput.shape,
     },
-    txHandler(buildCompoundBorrow)
+    txHandler("prepare_compound_borrow", buildCompoundBorrow)
   );
 
   server.registerTool(
@@ -1106,7 +1148,7 @@ async function main() {
         "Build an unsigned Compound V3 repay transaction — encoded as supply(baseToken) against an outstanding borrow. Includes an approve step if needed. Pass `amount: \"max\"` for a full repay.",
       inputSchema: prepareCompoundRepayInput.shape,
     },
-    txHandler(buildCompoundRepay)
+    txHandler("prepare_compound_repay", buildCompoundRepay)
   );
 
   // ---- Module 9: Morpho Blue ----
@@ -1127,7 +1169,7 @@ async function main() {
         "Build an unsigned Morpho Blue supply transaction — deposits the market's loan token to earn lending yield. Market params (loan/collateral tokens, oracle, IRM, LLTV) are resolved on-chain from the market id, so only wallet/marketId/amount are required. If the wallet's current allowance is insufficient, an ERC-20 approve tx is emitted first (chainable via `.next`); control the cap with `approvalCap` (defaults to unlimited for UX, pass 'exact' or a decimal ceiling to scope it). Returns a handle + preview for Ledger signing.",
       inputSchema: prepareMorphoSupplyInput.shape,
     },
-    txHandler(buildMorphoSupply)
+    txHandler("prepare_morpho_supply", buildMorphoSupply)
   );
 
   server.registerTool(
@@ -1137,7 +1179,7 @@ async function main() {
         "Build an unsigned Morpho Blue withdraw transaction (withdraws supplied loan token). Explicit amount only — \"max\" is not supported; query your position first.",
       inputSchema: prepareMorphoWithdrawInput.shape,
     },
-    txHandler(buildMorphoWithdraw)
+    txHandler("prepare_morpho_withdraw", buildMorphoWithdraw)
   );
 
   server.registerTool(
@@ -1147,7 +1189,7 @@ async function main() {
         "Build an unsigned Morpho Blue borrow transaction. Requires pre-existing collateral in the market.",
       inputSchema: prepareMorphoBorrowInput.shape,
     },
-    txHandler(buildMorphoBorrow)
+    txHandler("prepare_morpho_borrow", buildMorphoBorrow)
   );
 
   server.registerTool(
@@ -1157,7 +1199,7 @@ async function main() {
         "Build an unsigned Morpho Blue repay transaction. Includes an approve step if needed. Explicit amount only — \"max\" is not supported.",
       inputSchema: prepareMorphoRepayInput.shape,
     },
-    txHandler(buildMorphoRepay)
+    txHandler("prepare_morpho_repay", buildMorphoRepay)
   );
 
   server.registerTool(
@@ -1167,7 +1209,7 @@ async function main() {
         "Build an unsigned Morpho Blue supplyCollateral transaction — adds collateral to a market. Includes an approve step if needed.",
       inputSchema: prepareMorphoSupplyCollateralInput.shape,
     },
-    txHandler(buildMorphoSupplyCollateral)
+    txHandler("prepare_morpho_supply_collateral", buildMorphoSupplyCollateral)
   );
 
   server.registerTool(
@@ -1177,7 +1219,7 @@ async function main() {
         "Build an unsigned Morpho Blue withdrawCollateral transaction — removes collateral from a market to send back to the wallet. Only withdraws the exact amount specified; `\"max\"` is NOT supported because Morpho's isolated-market accounting doesn't expose a clean max-safe value without simulating against the market's oracle/LLTV (query `get_morpho_positions` first to know your deposited collateral). Will revert on-chain if the withdrawal would push the position below the liquidation threshold. No approval step needed. Returns a handle + preview for Ledger signing.",
       inputSchema: prepareMorphoWithdrawCollateralInput.shape,
     },
-    txHandler(buildMorphoWithdrawCollateral)
+    txHandler("prepare_morpho_withdraw_collateral", buildMorphoWithdrawCollateral)
   );
 
   // ---- Module 10: Capability requests (agent → maintainers) ----
