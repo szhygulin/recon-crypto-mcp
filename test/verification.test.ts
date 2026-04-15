@@ -431,3 +431,56 @@ describe("decodeCalldata", () => {
     expect(toArg?.value).toBe(RECIPIENT);
   });
 });
+
+describe("get_tx_verification recovers a verification block by handle", () => {
+  it("EVM handle round-trips through the same JSON + rendered block", async () => {
+    const { getTxVerification } = await import("../src/modules/execution/index.js");
+    const stamped = issueHandles(usdcTransferTx(1_000_000n));
+    const handle = stamped.handle!;
+
+    const recovered = getTxVerification({ handle }) as UnsignedTx;
+    // The store strips the root handle to avoid storing the key in the value;
+    // the rest of the tx (and its verification) is the same instance.
+    expect(recovered.to).toBe(stamped.to);
+    expect(recovered.data).toBe(stamped.data);
+    expect(recovered.value).toBe(stamped.value);
+    expect(recovered.verification?.payloadHash).toBe(stamped.verification?.payloadHash);
+
+    // The handler() wrapper renders the verification block from the result —
+    // proving that get_tx_verification slots into the same render path as prepare_*.
+    const blocks = collectVerificationBlocks(recovered);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toContain("VERIFY BEFORE SIGNING");
+    expect(blocks[0]).toContain(stamped.verification!.payloadHash);
+  });
+
+  it("TRON handle returns the TRON-rendered block (separate code path)", async () => {
+    const { getTxVerification } = await import("../src/modules/execution/index.js");
+    const stamped = issueTronHandle({
+      chain: "tron",
+      action: "trc20_send",
+      from: "TXYZ",
+      txID: "c".repeat(64),
+      rawData: {},
+      rawDataHex: "ff00",
+      description: "send 5 USDT",
+      decoded: { functionName: "transfer", args: { to: "Tabc", amount: "5 USDT" } },
+    });
+    const handle = stamped.handle!;
+
+    const recovered = getTxVerification({ handle }) as UnsignedTronTx;
+    expect(recovered.txID).toBe(stamped.txID);
+    expect(recovered.verification?.payloadHash).toBe(stamped.verification?.payloadHash);
+
+    const blocks = collectVerificationBlocks(recovered);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toContain("VERIFY BEFORE SIGNING (TRON)");
+  });
+
+  it("unknown handle throws with a single clear 'expired or unknown' message", async () => {
+    const { getTxVerification } = await import("../src/modules/execution/index.js");
+    expect(() => getTxVerification({ handle: "nonexistent-handle-uuid" })).toThrow(
+      /Unknown or expired tx handle/
+    );
+  });
+});

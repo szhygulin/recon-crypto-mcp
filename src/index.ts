@@ -58,6 +58,7 @@ import {
   prepareTokenSend,
   sendTransaction,
   getTransactionStatus,
+  getTxVerification,
 } from "./modules/execution/index.js";
 import {
   pairLedgerLiveInput,
@@ -74,6 +75,7 @@ import {
   prepareTokenSendInput,
   sendTransactionInput,
   getTransactionStatusInput,
+  getTxVerificationInput,
 } from "./modules/execution/schemas.js";
 
 import { getTokenBalance, resolveName, reverseResolve } from "./modules/balances/index.js";
@@ -310,7 +312,7 @@ async function main() {
         "get_token_balance, get_token_price, resolve_ens_name, reverse_resolve_ens,",
         "get_tron_staking, get_health_alerts, simulate_position_change,",
         "check_contract_security, check_permission_risks, get_protocol_risk_score,",
-        "get_transaction_status.",
+        "get_transaction_status, get_tx_verification.",
         "",
         "SWAP/BRIDGE ROUTING: prefer `prepare_swap` (LiFi aggregator) over building DEX",
         "router calls directly — LiFi handles route selection, approvals, and cross-chain",
@@ -360,6 +362,14 @@ async function main() {
         "you fetch it, say so honestly: \"swiss-knife renders client-side, so I cannot",
         "verify its output programmatically — please open the link in a browser.\" The",
         "user can lie-detect you, so be precise about what you actually checked.",
+        "",
+        "RECOVERING A LOST VERIFICATION BLOCK: if the original prepare_* tool result has",
+        "dropped out of your context (compaction, long session, multi-agent handoff),",
+        "call `get_tx_verification(handle)` to have the server re-emit the same JSON +",
+        "VERIFY-BEFORE-SIGNING block from in-memory state. The handle lives 15 minutes.",
+        "DO NOT read tool-result JSON files from disk (e.g. via Bash + python or jq) to",
+        "recover the verification data — that scrapes harness internals, produces brittle",
+        "code per call, and bypasses the MCP boundary that exists to keep this auditable.",
         "",
         "SECURITY: the `wallet` / `peerUrl` returned by `get_ledger_status` is self-reported",
         "by the paired WalletConnect peer. Before the FIRST `send_transaction` of a session,",
@@ -636,6 +646,16 @@ async function main() {
       inputSchema: getTransactionStatusInput.shape,
     },
     handler(getTransactionStatus)
+  );
+
+  server.registerTool(
+    "get_tx_verification",
+    {
+      description:
+        "Re-emit the prepared-tx JSON and VERIFY-BEFORE-SIGNING block for a known handle. Use this when the original prepare_* tool output has dropped out of your context (compaction, long sessions). The response shape and verification block match the original prepare_* call exactly. NEVER recover a verification block by reading tool-result files from disk — call this tool instead. Handles live in-memory for 15 minutes after issue.",
+      inputSchema: getTxVerificationInput.shape,
+    },
+    handler(getTxVerification)
   );
 
   server.registerTool(

@@ -46,9 +46,11 @@ import type {
   PrepareTokenSendArgs,
   SendTransactionArgs,
   GetTransactionStatusArgs,
+  GetTxVerificationArgs,
 } from "./schemas.js";
 import type { SupportedChain, UnsignedTx, UnsignedTronTx } from "../../types/index.js";
 import { hasTronHandle } from "../../signing/tron-tx-store.js";
+import { hasHandle } from "../../signing/tx-store.js";
 import { round } from "../../data/format.js";
 
 /** Render a QR code as an ASCII string (returns promise with the string). */
@@ -510,4 +512,33 @@ export async function getTransactionStatus(args: GetTransactionStatusArgs) {
       };
     }
   }
+}
+
+/**
+ * Re-emit the prepared tx + verification block for a known handle. The result
+ * shape matches the original prepare_* response, so the existing handler
+ * wrapper renders the same VERIFY-BEFORE-SIGNING text content blocks.
+ *
+ * Why this exists: agents periodically lose the original prepare_* tool result
+ * from their context (compaction, long sessions, multi-agent handoffs). The
+ * wrong recovery is to read the persisted tool-result JSON file from disk and
+ * parse it with a python script — that bypasses the MCP boundary, drags the
+ * agent into harness internals, and produces brittle code per call. The right
+ * recovery is to ask the server: handles live in-memory for 15 minutes and
+ * already carry the verification data, so a tool that takes a handle and
+ * returns the same shape costs almost nothing and keeps every agent on the
+ * same code path.
+ *
+ * Routes by handle origin: EVM handles come from tx-store, TRON handles from
+ * tron-tx-store. If neither knows the handle, throws with a single clear
+ * "expired or unknown" message rather than chaining store-specific errors.
+ */
+export function getTxVerification(args: GetTxVerificationArgs): UnsignedTx | UnsignedTronTx {
+  if (hasHandle(args.handle)) return consumeHandle(args.handle);
+  if (hasTronHandle(args.handle)) return consumeTronHandle(args.handle);
+  throw new Error(
+    `Unknown or expired tx handle '${args.handle}'. Prepared transactions live for ` +
+      `15 minutes after issue and are deleted on successful submission. Re-run the ` +
+      `prepare_* tool to get a fresh handle.`
+  );
 }
