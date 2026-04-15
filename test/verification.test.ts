@@ -264,6 +264,31 @@ describe("renderVerificationBlock includes URL, hash, and the encouragement nudg
     expect(rendered).toContain("transfer(address,uint256)");
     expect(rendered).not.toContain("SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM");
     expect(rendered.split("\n").length).toBeLessThanOrEqual(10);
+    // When local decode succeeds, the calldata's *content* is shown via Args:
+    // re-printing a hex preview duplicates the same information and crowds the
+    // chat. Show only byte length as sizing context.
+    expect(rendered).toContain("calldata bytes)");
+    // Negative lookbehind to ignore the URL's `?calldata=0x...` param — only
+    // the standalone `data=0x...` on the chainId line should be absent.
+    expect(rendered).not.toMatch(/(?<!call)data=0x[0-9a-f]/i);
+  });
+
+  it("includes a hex preview when source: 'none' (no local decode = user has no other local signal)", () => {
+    const unknown = getAddress("0xdeaDBEefDEadBEefdEAdbeefdEAdbeEFdeaDbeEf");
+    const tx: UnsignedTx = {
+      chain: "ethereum",
+      to: unknown,
+      data: ("0x2c57e884" + "ab".repeat(120)) as `0x${string}`,
+      value: "0",
+      from: SENDER,
+      description: "unknown call",
+    };
+    const stamped = issueHandles(tx);
+    const rendered = renderVerificationBlock(
+      stamped as UnsignedTx & { verification: NonNullable<UnsignedTx["verification"]> },
+    );
+    expect(rendered).toMatch(/data=0x2c57e884/);
+    expect(rendered).toMatch(/\(\d+ bytes\)/);
   });
 
   it("unknown-destination block tells the user swiss-knife is the decode source, not '(unknown)'", () => {

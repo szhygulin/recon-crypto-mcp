@@ -32,6 +32,11 @@ function truncateHex(data: string, bytelenLabel: boolean): string {
   return bytelenLabel ? `${head}…${tail} (${byteLen} bytes)` : `${head}…${tail}`;
 }
 
+function dataByteLen(data: string): number {
+  const normalized = data.startsWith("0x") ? data.slice(2) : data;
+  return Math.floor(normalized.length / 2);
+}
+
 function formatArgs(v: TxVerification): string[] {
   if (v.humanDecode.source === "none") {
     // No local ABI — lean on swiss-knife. Skip the "Args:" line entirely
@@ -71,13 +76,22 @@ export function renderVerificationBlock(
 ): string {
   const v = tx.verification;
   const chainId = CHAIN_IDS[tx.chain];
+  // When we have a local decode, the decoded Args ARE the calldata's content —
+  // repeating the hex preview is just visual noise (and wraps awkwardly in
+  // narrow terminals). Keep only the byte length as sizing context. When the
+  // decode is "source: none", show a short hex preview so the user has *some*
+  // local signal before opening the decoder URL.
+  const dataLine =
+    v.humanDecode.source === "none"
+      ? `  chainId=${chainId} ${tx.chain}  to=${tx.to}  value=${tx.value} wei  data=${truncateHex(tx.data, true)}`
+      : `  chainId=${chainId} ${tx.chain}  to=${tx.to}  value=${tx.value} wei  (${dataByteLen(tx.data)} calldata bytes)`;
   return [
     "VERIFY BEFORE SIGNING — open the decoder URL, confirm it decodes to the",
     "same call shown below, and REJECT on Ledger if they differ.",
     formatDecoder(v),
     formatCall(v),
     ...formatArgs(v),
-    `  chainId=${chainId} ${tx.chain}  to=${tx.to}  value=${tx.value} wei  data=${truncateHex(tx.data, true)}`,
+    dataLine,
     `  Hash: ${v.payloadHash}  (short ${v.payloadHashShort}, echoed at send time)`,
   ].join("\n");
 }
