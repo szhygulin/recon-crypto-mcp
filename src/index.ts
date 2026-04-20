@@ -1148,7 +1148,7 @@ async function main() {
     "get_market_incident_status",
     {
       description:
-        "Return an 'is anything on fire' snapshot across every registered market for a protocol + chain. For Compound V3, returns per-market pause flags, utilization, totalSupply, totalBorrow, and a `flagged` bit that's true when any pause is active or utilization ≥ 95% (borrowers trapped). Top-level `incident: true` if any market is flagged. Use this when you suspect a governance pause, a utilization cliff, or a multi-market contagion from a shared collateral exploit — it collapses what would otherwise take one get_compound_market_info call per market.",
+        "Return an 'is anything on fire' snapshot across every registered market for a protocol + chain. For Compound V3, returns per-market pause flags, utilization, totalSupply, totalBorrow. For Aave V3, returns per-reserve isActive/isFrozen/isPaused, utilization, totalSupplied, totalBorrowed. Each entry has a `flagged` bit: Compound flags on any pause or utilization ≥ 95% (borrowers trapped); Aave flags on paused/frozen/inactive or utilization ≥ 95%. Top-level `incident: true` if any market/reserve is flagged. Use when you suspect a governance pause, a utilization cliff, or multi-market contagion from a shared-collateral exploit — collapses what would otherwise take one get_compound_market_info call per market.",
       inputSchema: getMarketIncidentStatusInput.shape,
     },
     handler(getMarketIncidentStatus)

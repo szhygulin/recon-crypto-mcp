@@ -3,6 +3,7 @@ import { getClient } from "../../data/rpc.js";
 import { CONTRACTS } from "../../config/contracts.js";
 import { cometAbi } from "../../abis/compound-comet.js";
 import { erc20Abi } from "../../abis/erc20.js";
+import { aaveUiPoolDataProviderAbi } from "../../abis/aave-ui-pool-data-provider.js";
 import { readCometPausedActions, type CometPausedAction } from "../compound/index.js";
 import { round } from "../../data/format.js";
 import type { SupportedChain } from "../../types/index.js";
@@ -31,7 +32,21 @@ export interface CompoundMarketIncidentEntry {
   flagged: boolean;
 }
 
-export interface MarketIncidentStatus {
+export interface AaveReserveIncidentEntry {
+  chain: SupportedChain;
+  symbol: string;
+  underlyingAsset: `0x${string}`;
+  isActive: boolean;
+  isFrozen: boolean;
+  isPaused: boolean;
+  utilization: number;
+  totalSupplied: string;
+  totalBorrowed: string;
+  /** True when any reserve is paused/frozen/inactive OR utilization ≥ 0.95. */
+  flagged: boolean;
+}
+
+export interface CompoundMarketIncidentStatus {
   protocol: "compound-v3";
   chain: SupportedChain;
   /** Block number at which reads were performed. Useful for incident reports. */
@@ -41,18 +56,42 @@ export interface MarketIncidentStatus {
   markets: CompoundMarketIncidentEntry[];
 }
 
+export interface AaveMarketIncidentStatus {
+  protocol: "aave-v3";
+  chain: SupportedChain;
+  blockNumber: string;
+  incident: boolean;
+  markets: AaveReserveIncidentEntry[];
+}
+
+export type MarketIncidentStatus =
+  | CompoundMarketIncidentStatus
+  | AaveMarketIncidentStatus;
+
 const HIGH_UTILIZATION_FLAG = 0.95;
+const RAY = 10n ** 27n;
+function rayMul(a: bigint, b: bigint): bigint {
+  return (a * b + RAY / 2n) / RAY;
+}
 
 export async function getMarketIncidentStatus(
   args: GetMarketIncidentStatusArgs
 ): Promise<MarketIncidentStatus> {
   const chain = args.chain as SupportedChain;
-  if (args.protocol !== "compound-v3") {
-    throw new Error(
-      `get_market_incident_status currently supports protocol="compound-v3" only. Requested ${args.protocol}.`
-    );
+  if (args.protocol === "compound-v3") {
+    return getCompoundIncidentStatus(chain);
   }
+  if (args.protocol === "aave-v3") {
+    return getAaveIncidentStatus(chain);
+  }
+  throw new Error(
+    `get_market_incident_status supports protocol="compound-v3" or "aave-v3". Requested ${args.protocol}.`
+  );
+}
 
+async function getCompoundIncidentStatus(
+  chain: SupportedChain
+): Promise<CompoundMarketIncidentStatus> {
   const registry = (CONTRACTS as Record<string, Record<string, Record<string, string>>>)[
     chain
   ]?.compound;
@@ -116,6 +155,73 @@ export async function getMarketIncidentStatus(
 
   return {
     protocol: "compound-v3",
+    chain,
+    blockNumber: blockNumber.toString(),
+    incident: entries.some((e) => e.flagged),
+    markets: entries,
+  };
+}
+
+interface AaveReserveRaw {
+  underlyingAsset: `0x${string}`;
+  symbol: string;
+  decimals: bigint;
+  isActive: boolean;
+  isFrozen: boolean;
+  isPaused: boolean;
+  variableBorrowIndex: bigint;
+  availableLiquidity: bigint;
+  totalScaledVariableDebt: bigint;
+}
+
+async function getAaveIncidentStatus(
+  chain: SupportedChain
+): Promise<AaveMarketIncidentStatus> {
+  const aave = (CONTRACTS as Record<string, Record<string, Record<string, string>>>)[
+    chain
+  ]?.aave;
+  if (!aave) {
+    throw new Error(`Aave V3 is not registered on ${chain}.`);
+  }
+  const provider = aave.poolAddressProvider as `0x${string}`;
+  const uiProvider = aave.uiPoolDataProvider as `0x${string}`;
+
+  const client = getClient(chain);
+  const blockNumber = await client.getBlockNumber();
+
+  const reservesResult = await client.readContract({
+    address: uiProvider,
+    abi: aaveUiPoolDataProviderAbi,
+    functionName: "getReservesData",
+    args: [provider],
+  });
+  const [reserves] = reservesResult as unknown as [AaveReserveRaw[], unknown];
+
+  const entries: AaveReserveIncidentEntry[] = reserves.map((r) => {
+    const decimals = Number(r.decimals);
+    const variableDebt = rayMul(r.totalScaledVariableDebt, r.variableBorrowIndex);
+    const totalSupplied = r.availableLiquidity + variableDebt;
+    const utilFraction =
+      totalSupplied === 0n ? 0 : Number(variableDebt) / Number(totalSupplied);
+    const flagged =
+      r.isPaused || r.isFrozen || !r.isActive || utilFraction >= HIGH_UTILIZATION_FLAG;
+
+    return {
+      chain,
+      symbol: r.symbol,
+      underlyingAsset: r.underlyingAsset,
+      isActive: r.isActive,
+      isFrozen: r.isFrozen,
+      isPaused: r.isPaused,
+      utilization: round(utilFraction, 6),
+      totalSupplied: formatUnits(totalSupplied, decimals),
+      totalBorrowed: formatUnits(variableDebt, decimals),
+      flagged,
+    };
+  });
+
+  return {
+    protocol: "aave-v3",
     chain,
     blockNumber: blockNumber.toString(),
     incident: entries.some((e) => e.flagged),

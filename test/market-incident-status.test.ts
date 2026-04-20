@@ -123,7 +123,99 @@ describe("get_market_incident_status (compound-v3)", () => {
     expect(cusdt.flagged).toBe(false);
   });
 
-  it("refuses protocols other than compound-v3", async () => {
+  it("flags a paused Aave reserve and a high-utilization reserve", async () => {
+    // Three reserves: WETH (paused, low utilization), USDC (clean, 99% utilization),
+    // DAI (clean, normal utilization). Expect incident=true with two flagged entries.
+    const reserves = [
+      {
+        underlyingAsset: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        name: "Wrapped Ether",
+        symbol: "WETH",
+        decimals: 18n,
+        isActive: true,
+        isFrozen: false,
+        isPaused: true, // flagged: paused
+        variableBorrowIndex: 10n ** 27n,
+        availableLiquidity: 1000n * 10n ** 18n,
+        totalScaledVariableDebt: 100n * 10n ** 18n,
+      },
+      {
+        underlyingAsset: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        name: "USD Coin",
+        symbol: "USDC",
+        decimals: 6n,
+        isActive: true,
+        isFrozen: false,
+        isPaused: false,
+        variableBorrowIndex: 10n ** 27n,
+        // 1 unit liquid, 99 units borrowed → 99% util → flagged.
+        availableLiquidity: 1_000_000n,
+        totalScaledVariableDebt: 99_000_000n,
+      },
+      {
+        underlyingAsset: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+        name: "Dai Stablecoin",
+        symbol: "DAI",
+        decimals: 18n,
+        isActive: true,
+        isFrozen: false,
+        isPaused: false,
+        variableBorrowIndex: 10n ** 27n,
+        availableLiquidity: 500n * 10n ** 18n,
+        totalScaledVariableDebt: 500n * 10n ** 18n, // 50% util, not flagged
+      },
+    ];
+
+    const mockClient = {
+      getBlockNumber: vi.fn(async () => 19_800_000n),
+      readContract: vi.fn(
+        async ({ functionName }: { functionName: string }) => {
+          if (functionName === "getReservesData") {
+            return [
+              reserves,
+              {
+                marketReferenceCurrencyUnit: 10n ** 8n,
+                marketReferenceCurrencyPriceInUsd: 10n ** 8n,
+                networkBaseTokenPriceInUsd: 0n,
+                networkBaseTokenPriceDecimals: 8,
+              },
+            ];
+          }
+          throw new Error(`unexpected readContract ${functionName}`);
+        }
+      ),
+    };
+
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => mockClient,
+      resetClients: () => {},
+    }));
+
+    const { getMarketIncidentStatus } = await import(
+      "../src/modules/incidents/index.js"
+    );
+    const result = await getMarketIncidentStatus({
+      protocol: "aave-v3",
+      chain: "ethereum",
+    });
+
+    expect(result.protocol).toBe("aave-v3");
+    expect(result.incident).toBe(true);
+    expect(result.markets).toHaveLength(3);
+
+    const weth = result.markets.find((m) => m.symbol === "WETH")!;
+    expect(weth.isPaused).toBe(true);
+    expect(weth.flagged).toBe(true);
+
+    const usdc = result.markets.find((m) => m.symbol === "USDC")!;
+    expect(usdc.utilization).toBeGreaterThanOrEqual(0.95);
+    expect(usdc.flagged).toBe(true);
+
+    const dai = result.markets.find((m) => m.symbol === "DAI")!;
+    expect(dai.flagged).toBe(false);
+  });
+
+  it("refuses unsupported protocols", async () => {
     vi.doMock("../src/data/rpc.js", () => ({
       getClient: () => ({ getBlockNumber: async () => 0n, multicall: async () => [] }),
       resetClients: () => {},
@@ -133,9 +225,9 @@ describe("get_market_incident_status (compound-v3)", () => {
     );
     await expect(
       getMarketIncidentStatus({
-        protocol: "aave-v3" as unknown as "compound-v3",
+        protocol: "morpho-blue" as unknown as "compound-v3",
         chain: "ethereum",
       })
-    ).rejects.toThrow(/compound-v3/);
+    ).rejects.toThrow(/compound-v3|aave-v3/);
   });
 });
