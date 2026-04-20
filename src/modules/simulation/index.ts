@@ -1,29 +1,20 @@
-import { BaseError } from "viem";
 import { getClient } from "../../data/rpc.js";
 import type { SupportedChain } from "../../types/index.js";
 import type { SimulateTransactionArgs } from "./schemas.js";
+import { enrichRevertReason, type DecodedRevert } from "./revert-decode.js";
 
 export interface SimulationResult {
   chain: SupportedChain;
   ok: boolean;
   returnData?: `0x${string}`;
+  /** Human-readable revert summary; populated when ok === false. */
   revertReason?: string;
-}
-
-/**
- * Best-effort decoding of a revert. viem wraps the RPC error in a BaseError
- * chain; `shortMessage` usually contains the decoded "Execution reverted with
- * reason: ..." line. We fall back to the first line of `.message` for non-viem
- * errors (e.g. raw RPC HTTP failures).
- */
-function decodeRevertError(err: unknown): string {
-  if (err instanceof BaseError) {
-    return err.shortMessage || err.message.split("\n")[0] || "execution reverted";
-  }
-  if (err instanceof Error) {
-    return err.message.split("\n")[0] || "execution reverted";
-  }
-  return "execution reverted";
+  /**
+   * Structured revert details (errorName, args, data, source). Populated when
+   * ok === false and we managed to decode anything beyond a bare "execution reverted".
+   * Callers that need more than the human string should prefer this.
+   */
+  revert?: DecodedRevert;
 }
 
 /**
@@ -58,10 +49,12 @@ export async function simulateTx(args: {
       returnData: (result.data ?? "0x") as `0x${string}`,
     };
   } catch (err) {
+    const revert = await enrichRevertReason(err);
     return {
       chain: args.chain,
       ok: false,
-      revertReason: decodeRevertError(err),
+      revertReason: revert.message,
+      revert,
     };
   }
 }
