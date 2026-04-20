@@ -1,11 +1,14 @@
+import { getAddress } from "viem";
 import { getClient } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { makeTokenAmount } from "../../data/format.js";
 import { getTokenPrice } from "../../data/prices.js";
 import { NATIVE_SYMBOL } from "../../config/contracts.js";
+import { readEip1967Implementation } from "../../data/proxy.js";
 import { getTronTokenBalance } from "../tron/balances.js";
 import type {
   GetTokenBalanceArgs,
+  GetTokenMetadataArgs,
   ResolveNameArgs,
   ReverseResolveArgs,
 } from "./schemas.js";
@@ -15,6 +18,16 @@ import type {
   TokenAmount,
   TronBalance,
 } from "../../types/index.js";
+
+export interface TokenMetadata {
+  chain: SupportedChain;
+  address: `0x${string}`;
+  symbol: string;
+  name: string;
+  decimals: number;
+  isProxy: boolean;
+  implementation?: `0x${string}`;
+}
 
 /**
  * Fetch the balance of an arbitrary token (ERC-20 by address, or the chain's native coin).
@@ -72,6 +85,38 @@ export async function getTokenBalance(
     symbol as string,
     price
   );
+}
+
+/**
+ * Fetch on-chain metadata (symbol, name, decimals) for any ERC-20 address, no wallet required.
+ * Also detects EIP-1967 transparent proxies and returns the current implementation slot so
+ * callers know they're looking at a proxy.
+ */
+export async function getTokenMetadata(
+  args: GetTokenMetadataArgs
+): Promise<TokenMetadata> {
+  const chain = args.chain as SupportedChain;
+  const address = getAddress(args.address) as `0x${string}`;
+  const client = getClient(chain);
+
+  const [symbol, nameResult, decimals, implementation] = await Promise.all([
+    client.readContract({ address, abi: erc20Abi, functionName: "symbol" }),
+    client
+      .readContract({ address, abi: erc20Abi, functionName: "name" })
+      .catch(() => undefined),
+    client.readContract({ address, abi: erc20Abi, functionName: "decimals" }),
+    readEip1967Implementation(chain, address),
+  ]);
+
+  return {
+    chain,
+    address,
+    symbol: symbol as string,
+    name: (nameResult as string | undefined) ?? (symbol as string),
+    decimals: Number(decimals),
+    isProxy: implementation !== undefined,
+    implementation,
+  };
 }
 
 /**

@@ -81,9 +81,15 @@ import {
   getTxVerificationInput,
 } from "./modules/execution/schemas.js";
 
-import { getTokenBalance, resolveName, reverseResolve } from "./modules/balances/index.js";
+import {
+  getTokenBalance,
+  getTokenMetadata,
+  resolveName,
+  reverseResolve,
+} from "./modules/balances/index.js";
 import {
   getTokenBalanceInput,
+  getTokenMetadataInput,
   resolveNameInput,
   reverseResolveInput,
 } from "./modules/balances/schemas.js";
@@ -508,7 +514,8 @@ async function main() {
         "READ-ONLY TOOLS need no pairing and can be called freely: get_lending_positions,",
         "get_lp_positions, get_compound_positions, get_morpho_positions, get_staking_positions,",
         "get_staking_rewards, estimate_staking_yield, get_portfolio_summary, get_swap_quote,",
-        "get_token_balance, get_token_price, resolve_ens_name, reverse_resolve_ens,",
+        "get_token_balance, get_token_price, get_token_metadata, resolve_ens_name,",
+        "reverse_resolve_ens,",
         "get_tron_staking, get_health_alerts, simulate_position_change,",
         "check_contract_security, check_permission_risks, get_protocol_risk_score,",
         "get_transaction_status, get_tx_verification.",
@@ -966,6 +973,16 @@ async function main() {
       inputSchema: getTokenPriceInput.shape,
     },
     handler(getTokenPriceTool)
+  );
+
+  server.registerTool(
+    "get_token_metadata",
+    {
+      description:
+        "Fetch on-chain ERC-20 metadata (symbol, name, decimals) for any token address on an EVM chain — no wallet or balance required. Also detects EIP-1967 transparent proxies and returns the current implementation address when present. Prefer this over running raw simulate_transaction calls against symbol()/name()/decimals() selectors.",
+      inputSchema: getTokenMetadataInput.shape,
+    },
+    handler(getTokenMetadata)
   );
 
   server.registerTool(

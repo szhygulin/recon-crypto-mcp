@@ -1,29 +1,7 @@
-import { getAddress, zeroAddress } from "viem";
-import { getClient } from "../../data/rpc.js";
+import { getAddress } from "viem";
 import { getContractInfo } from "../../data/apis/etherscan.js";
+import { readEip1967Admin, readEip1967Implementation } from "../../data/proxy.js";
 import type { SecurityReport, SupportedChain } from "../../types/index.js";
-
-// EIP-1967 storage slots.
-const EIP1967_IMPL_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
-const EIP1967_ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";
-
-/** Read a 32-byte storage slot and return it as a 20-byte address (last 20 bytes). */
-async function readAddressFromSlot(
-  chain: SupportedChain,
-  address: `0x${string}`,
-  slot: `0x${string}`
-): Promise<`0x${string}` | undefined> {
-  const client = getClient(chain);
-  try {
-    const raw = await client.getStorageAt({ address, slot });
-    if (!raw || raw === "0x" || raw.length < 66) return undefined;
-    const addr = `0x${raw.slice(26)}` as `0x${string}`;
-    if (addr === zeroAddress) return undefined;
-    return getAddress(addr) as `0x${string}`;
-  } catch {
-    return undefined;
-  }
-}
 
 const DANGEROUS_FUNCTION_NAMES = new Set([
   "mint",
@@ -58,8 +36,8 @@ export async function checkContractSecurity(
 ): Promise<SecurityReport> {
   const [info, eipImpl, eipAdmin] = await Promise.all([
     getContractInfo(address, chain),
-    readAddressFromSlot(chain, address, EIP1967_IMPL_SLOT),
-    readAddressFromSlot(chain, address, EIP1967_ADMIN_SLOT),
+    readEip1967Implementation(chain, address),
+    readEip1967Admin(chain, address),
   ]);
 
   const isProxy = info.isProxy || eipImpl !== undefined;
