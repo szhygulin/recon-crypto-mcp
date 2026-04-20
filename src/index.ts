@@ -118,6 +118,7 @@ import {
 } from "./modules/tron/schemas.js";
 
 import { getCompoundPositions } from "./modules/compound/index.js";
+import { getCompoundMarketInfo } from "./modules/compound/market-info.js";
 import {
   buildCompoundSupply,
   buildCompoundWithdraw,
@@ -126,6 +127,7 @@ import {
 } from "./modules/compound/actions.js";
 import {
   getCompoundPositionsInput,
+  getCompoundMarketInfoInput,
   prepareCompoundSupplyInput,
   prepareCompoundWithdrawInput,
   prepareCompoundBorrowInput,
@@ -512,7 +514,8 @@ async function main() {
         "reverts and looks like a builder bug — it is not, the allowance just isn't on-chain yet.",
         "",
         "READ-ONLY TOOLS need no pairing and can be called freely: get_lending_positions,",
-        "get_lp_positions, get_compound_positions, get_morpho_positions, get_staking_positions,",
+        "get_lp_positions, get_compound_positions, get_compound_market_info,",
+        "get_morpho_positions, get_staking_positions,",
         "get_staking_rewards, estimate_staking_yield, get_portfolio_summary, get_swap_quote,",
         "get_token_balance, get_token_price, get_token_metadata, resolve_ens_name,",
         "reverse_resolve_ens,",
@@ -1126,6 +1129,16 @@ async function main() {
       inputSchema: getCompoundPositionsInput.shape,
     },
     handler(getCompoundPositions)
+  );
+
+  server.registerTool(
+    "get_compound_market_info",
+    {
+      description:
+        "Fetch structured market info for a single Compound V3 (Comet) market — no wallet required. Returns base-token metadata, totalSupply/totalBorrow, utilization, supply+borrow APR, current pause flags, and the full collateral-asset list with each asset's symbol, decimals, priceFeed, borrow/liquidate/liquidation collateral factors, supply cap, and total amount currently supplied across all users. Use this to explain market state, answer 'what are the listed collaterals for cUSDCv3', or diagnose an incident (pause + utilization + contagion across collaterals) in one call.",
+      inputSchema: getCompoundMarketInfoInput.shape,
+    },
+    handler(getCompoundMarketInfo)
   );
 
   server.registerTool(
