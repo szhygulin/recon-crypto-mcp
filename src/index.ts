@@ -655,7 +655,7 @@ async function main() {
     "simulate_position_change",
     {
       description:
-        "Simulate the effect of adding or removing collateral, or borrowing/repaying debt on an Aave V3 position. Returns the projected health factor and collateral/debt totals. No transaction is sent.",
+        "Simulate the effect of adding or removing collateral, or borrowing/repaying debt on a lending position. Returns the projected health factor and collateral/debt totals. Supports Aave V3 (default), Compound V3 (pass `protocol: \"compound-v3\"` + `market` Comet address), and Morpho Blue (pass `protocol: \"morpho-blue\"` + `marketId` bytes32). No transaction is sent.",
       inputSchema: simulatePositionChangeInput.shape,
     },
     handler(simulatePositionChange)
