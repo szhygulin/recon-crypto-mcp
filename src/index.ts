@@ -42,6 +42,8 @@ import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 
 import { getSwapQuote, prepareSwap } from "./modules/swap/index.js";
 import { getSwapQuoteInput, prepareSwapInput } from "./modules/swap/schemas.js";
+import { prepareUniswapSwap } from "./modules/uniswap-swap/index.js";
+import { prepareUniswapSwapInput } from "./modules/uniswap-swap/schemas.js";
 
 import { getSessionStatus as getLedgerStatus } from "./signing/session.js";
 import {
@@ -528,9 +530,14 @@ async function main() {
         "check_contract_security, check_permission_risks, get_protocol_risk_score,",
         "get_transaction_status, get_tx_verification, get_verification_artifact.",
         "",
-        "SWAP/BRIDGE ROUTING: prefer `prepare_swap` (LiFi aggregator) over building DEX",
-        "router calls directly — LiFi handles route selection, approvals, and cross-chain",
-        "bridging uniformly.",
+        "SWAP/BRIDGE ROUTING: default to `prepare_swap` (LiFi aggregator) — it handles route",
+        "selection, approvals, and cross-chain bridging uniformly. EXCEPTION: when the user",
+        "EXPLICITLY names a direct DEX venue (e.g. \"swap on Uniswap\", \"via Uniswap\"), use the",
+        "matching direct-DEX tool instead so their stated venue choice is honoured rather than",
+        "re-routed by the aggregator. Available direct-DEX tools: `prepare_uniswap_swap`",
+        "(Uniswap V3, same-chain only). If the user asks for a venue we do not have a direct",
+        "tool for (Sushi/Curve/Balancer/etc.), fall back to `prepare_swap` AND note that the",
+        "aggregator picked the actual venue — do NOT silently claim you used the requested one.",
         "",
         "CAPABILITY GAPS: if the user asks for something this server cannot do (unsupported",
         "protocol, chain, token, venue, or a workflow none of the existing tools cover), do",
@@ -782,6 +789,24 @@ async function main() {
       inputSchema: prepareSwapInput.shape,
     },
     txHandler("prepare_swap", prepareSwap)
+  );
+
+  server.registerTool(
+    "prepare_uniswap_swap",
+    {
+      description:
+        "Prepare a direct Uniswap V3 swap (bypasses LiFi aggregator). Use this ONLY when the user " +
+          "explicitly asks for Uniswap — otherwise default to `prepare_swap` which compares routes " +
+          "across venues. Same-chain only (Uniswap V3 is not a bridge). Auto-picks the best pool " +
+          "fee tier (100/500/3000/10000 bps) by quoting all four against QuoterV2 and choosing the " +
+          "one with the best price; pass `feeTier` to override. Supports ERC-20 <-> ERC-20, " +
+          "native-in (ETH -> ERC-20), and native-out (ERC-20 -> ETH). Both exact-in and exact-out. " +
+          "Returns an unsigned tx (with a reset+approve chain when the router needs allowance) that " +
+          "`send_transaction` can forward to Ledger Live. Single-hop only in v1 — multi-hop routes " +
+          "through an intermediate asset (e.g. via WETH) fall back to `prepare_swap`.",
+      inputSchema: prepareUniswapSwapInput.shape,
+    },
+    txHandler("prepare_uniswap_swap", prepareUniswapSwap)
   );
 
   // ---- Module 6: Execution (Ledger Live) ----
