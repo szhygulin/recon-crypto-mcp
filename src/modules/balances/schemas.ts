@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ALL_CHAINS } from "../../types/index.js";
+import { ALL_CHAINS, SUPPORTED_CHAINS } from "../../types/index.js";
 
 const chainEnum = z.enum(ALL_CHAINS as unknown as [string, ...string[]]);
 /**
@@ -16,6 +16,13 @@ const tokenSchema = z.union([
   z.string().regex(/^0x[a-fA-F0-9]{40}$/),
   z.string().regex(/^T[1-9A-HJ-NP-Za-km-z]{33}$/),
 ]);
+
+const evmChainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
+
+export const getTokenMetadataInput = z.object({
+  address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+  chain: evmChainEnum.default("ethereum"),
+});
 
 export const getTokenBalanceInput = z.object({
   wallet: walletSchema,
@@ -36,5 +43,6 @@ export const reverseResolveInput = z.object({
 });
 
 export type GetTokenBalanceArgs = z.infer<typeof getTokenBalanceInput>;
+export type GetTokenMetadataArgs = z.infer<typeof getTokenMetadataInput>;
 export type ResolveNameArgs = z.infer<typeof resolveNameInput>;
 export type ReverseResolveArgs = z.infer<typeof reverseResolveInput>;

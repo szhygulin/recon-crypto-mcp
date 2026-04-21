@@ -81,9 +81,15 @@ import {
   getTxVerificationInput,
 } from "./modules/execution/schemas.js";
 
-import { getTokenBalance, resolveName, reverseResolve } from "./modules/balances/index.js";
+import {
+  getTokenBalance,
+  getTokenMetadata,
+  resolveName,
+  reverseResolve,
+} from "./modules/balances/index.js";
 import {
   getTokenBalanceInput,
+  getTokenMetadataInput,
   resolveNameInput,
   reverseResolveInput,
 } from "./modules/balances/schemas.js";
@@ -112,6 +118,9 @@ import {
 } from "./modules/tron/schemas.js";
 
 import { getCompoundPositions } from "./modules/compound/index.js";
+import { getCompoundMarketInfo } from "./modules/compound/market-info.js";
+import { getMarketIncidentStatus } from "./modules/incidents/index.js";
+import { getMarketIncidentStatusInput } from "./modules/incidents/schemas.js";
 import {
   buildCompoundSupply,
   buildCompoundWithdraw,
@@ -120,6 +129,7 @@ import {
 } from "./modules/compound/actions.js";
 import {
   getCompoundPositionsInput,
+  getCompoundMarketInfoInput,
   prepareCompoundSupplyInput,
   prepareCompoundWithdrawInput,
   prepareCompoundBorrowInput,
@@ -506,9 +516,12 @@ async function main() {
         "reverts and looks like a builder bug — it is not, the allowance just isn't on-chain yet.",
         "",
         "READ-ONLY TOOLS need no pairing and can be called freely: get_lending_positions,",
-        "get_lp_positions, get_compound_positions, get_morpho_positions, get_staking_positions,",
+        "get_lp_positions, get_compound_positions, get_compound_market_info,",
+        "get_market_incident_status,",
+        "get_morpho_positions, get_staking_positions,",
         "get_staking_rewards, estimate_staking_yield, get_portfolio_summary, get_swap_quote,",
-        "get_token_balance, get_token_price, resolve_ens_name, reverse_resolve_ens,",
+        "get_token_balance, get_token_price, get_token_metadata, resolve_ens_name,",
+        "reverse_resolve_ens,",
         "get_tron_staking, get_health_alerts, simulate_position_change,",
         "check_contract_security, check_permission_risks, get_protocol_risk_score,",
         "get_transaction_status, get_tx_verification.",
@@ -645,7 +658,7 @@ async function main() {
     "simulate_position_change",
     {
       description:
-        "Simulate the effect of adding or removing collateral, or borrowing/repaying debt on an Aave V3 position. Returns the projected health factor and collateral/debt totals. No transaction is sent.",
+        "Simulate the effect of adding or removing collateral, or borrowing/repaying debt on a lending position. Returns the projected health factor and collateral/debt totals. Supports Aave V3 (default), Compound V3 (pass `protocol: \"compound-v3\"` + `market` Comet address), and Morpho Blue (pass `protocol: \"morpho-blue\"` + `marketId` bytes32). No transaction is sent.",
       inputSchema: simulatePositionChangeInput.shape,
     },
     handler(simulatePositionChange)
@@ -969,6 +982,16 @@ async function main() {
   );
 
   server.registerTool(
+    "get_token_metadata",
+    {
+      description:
+        "Fetch on-chain ERC-20 metadata (symbol, name, decimals) for any token address on an EVM chain — no wallet or balance required. Also detects EIP-1967 transparent proxies and returns the current implementation address when present. Prefer this over running raw simulate_transaction calls against symbol()/name()/decimals() selectors.",
+      inputSchema: getTokenMetadataInput.shape,
+    },
+    handler(getTokenMetadata)
+  );
+
+  server.registerTool(
     "resolve_ens_name",
     {
       description:
@@ -1109,6 +1132,26 @@ async function main() {
       inputSchema: getCompoundPositionsInput.shape,
     },
     handler(getCompoundPositions)
+  );
+
+  server.registerTool(
+    "get_compound_market_info",
+    {
+      description:
+        "Fetch structured market info for a single Compound V3 (Comet) market — no wallet required. Returns base-token metadata, totalSupply/totalBorrow, utilization, supply+borrow APR, current pause flags, and the full collateral-asset list with each asset's symbol, decimals, priceFeed, borrow/liquidate/liquidation collateral factors, supply cap, and total amount currently supplied across all users. Use this to explain market state, answer 'what are the listed collaterals for cUSDCv3', or diagnose an incident (pause + utilization + contagion across collaterals) in one call.",
+      inputSchema: getCompoundMarketInfoInput.shape,
+    },
+    handler(getCompoundMarketInfo)
+  );
+
+  server.registerTool(
+    "get_market_incident_status",
+    {
+      description:
+        "Return an 'is anything on fire' snapshot across every registered market for a protocol + chain. For Compound V3, returns per-market pause flags, utilization, totalSupply, totalBorrow. For Aave V3, returns per-reserve isActive/isFrozen/isPaused, utilization, totalSupplied, totalBorrowed. Each entry has a `flagged` bit: Compound flags on any pause or utilization ≥ 95% (borrowers trapped); Aave flags on paused/frozen/inactive or utilization ≥ 95%. Top-level `incident: true` if any market/reserve is flagged. Use when you suspect a governance pause, a utilization cliff, or multi-market contagion from a shared-collateral exploit — collapses what would otherwise take one get_compound_market_info call per market.",
+      inputSchema: getMarketIncidentStatusInput.shape,
+    },
+    handler(getMarketIncidentStatus)
   );
 
   server.registerTool(

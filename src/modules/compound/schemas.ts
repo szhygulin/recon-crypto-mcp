@@ -62,6 +62,17 @@ export const prepareCompoundRepayInput = prepareCompoundBorrowInput.extend({
   approvalCap: approvalCapSchema,
 });
 
+export const getCompoundMarketInfoInput = z.object({
+  chain: chainEnum
+    .default("ethereum")
+    .describe("EVM chain the Comet market lives on. Defaults to ethereum."),
+  market: addressSchema.describe(
+    "Comet market address (e.g. cUSDCv3 at 0xc3d688B66703497DAA19211EEdff47f25384cdc3 on Ethereum)."
+  ),
+});
+
+export type GetCompoundMarketInfoArgs = z.infer<typeof getCompoundMarketInfoInput>;
+
 export type GetCompoundPositionsArgs = z.infer<typeof getCompoundPositionsInput>;
 export type PrepareCompoundSupplyArgs = z.infer<typeof prepareCompoundSupplyInput>;
 export type PrepareCompoundWithdrawArgs = z.infer<typeof prepareCompoundWithdrawInput>;

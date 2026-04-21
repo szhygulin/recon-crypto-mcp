@@ -26,6 +26,25 @@ export const simulatePositionChangeInput = z.object({
   asset: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
   /** Amount in USD (base currency) — we approximate since asset price lookups are cheap. */
   amountUsd: z.number().positive(),
+  /**
+   * Which lending protocol this simulation targets. Defaults to "aave-v3".
+   * When "compound-v3", pass `market` (Comet address). When "morpho-blue",
+   * pass `marketId` (bytes32).
+   */
+  protocol: z
+    .enum(["aave-v3", "compound-v3", "morpho-blue"])
+    .optional()
+    .default("aave-v3"),
+  /** Compound V3 Comet market address (required when protocol="compound-v3"). */
+  market: z
+    .string()
+    .regex(/^0x[a-fA-F0-9]{40}$/)
+    .optional(),
+  /** Morpho Blue market id (required when protocol="morpho-blue"). */
+  marketId: z
+    .string()
+    .regex(/^0x[a-fA-F0-9]{64}$/)
+    .optional(),
 });
 
 export type GetLendingPositionsArgs = z.infer<typeof getLendingPositionsInput>;
