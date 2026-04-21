@@ -127,14 +127,20 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     // Must be an agent directive, not a verbatim-relay block — we don't want
     // this command surface text dumped into the user's chat.
     expect(block).toMatch(/AGENT TASK — DO NOT FORWARD/);
-    // Names the attack we're defending against so a future reviewer doesn't
-    // think this is busywork.
-    expect(block).toMatch(/compromised MCP/);
+    // The (4)-option frame is pair-consistency, not "hash recompute" — the
+    // wording must make clear this is narrower than (b) and names the
+    // specific attack shape it catches (on-device match can't detect it).
+    expect(block).toMatch(/pair-consistency/);
+    expect(block).toMatch(/on-device (hash )?match/);
     // The per-call values are spliced into the viem command so the agent
     // doesn't have to reconstruct them — keeps the optional check cheap.
     expect(block).toContain("nonce:7");
     expect(block).toContain("maxFeePerGas:22000000000n");
     expect(block).toContain("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+    // Acknowledges (b) from prepare time so the user doesn't see (4) as a
+    // restatement — the new wording lets them skip the decode prerequisite
+    // if they already ran it.
+    expect(block).toMatch(/already ran \(b\)/);
     // "Offer, don't run" is load-bearing UX — the check is heavy and
     // irrelevant for trusting users.
     expect(block).toMatch(/Do NOT run either unprompted/);
