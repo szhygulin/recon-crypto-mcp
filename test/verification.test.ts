@@ -538,6 +538,16 @@ describe("renderPostSendPollBlock — auto-poll directive after send_transaction
     expect(block).not.toMatch(/nextHandle=/);
     expect(block).toMatch(/No follow-up tx is queued/);
   });
+
+  it("uses a faster cadence on TRON (3s blocks) than on Ethereum (12s blocks)", () => {
+    const tronBlock = renderPostSendPollBlock({
+      chain: "tron",
+      txHash: "a".repeat(64),
+    });
+    expect(tronBlock).toMatch(/every ~3 seconds/);
+    expect(tronBlock).toMatch(/~1 minute/);
+    expect(tronBlock).not.toMatch(/every ~5 seconds/);
+  });
 });
 
 describe("shouldRenderVerificationBlock — approvals are suppressed (Ledger clear-signs them)", () => {
