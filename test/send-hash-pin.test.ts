@@ -137,7 +137,19 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     expect(block).toContain("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
     // "Offer, don't run" is load-bearing UX — the check is heavy and
     // irrelevant for trusting users.
-    expect(block).toMatch(/Do NOT run it unprompted/);
+    expect(block).toMatch(/Do NOT run either unprompted/);
+    // Fifth trust-boundary option — second-agent verification via
+    // get_verification_artifact. This catches the one attack the hash
+    // recompute (option 4) can't: a fully-coordinated compromise where
+    // this agent AND the MCP are lying together. Test that the offer
+    // is present and names the tool explicitly.
+    expect(block).toMatch(/FIFTH OPTION/);
+    expect(block).toContain("get_verification_artifact");
+    expect(block).toMatch(/second, independent LLM/);
+    // Must tell the agent NOT to pre-decode in the same reply — the
+    // whole point of the check is that the second agent decodes with
+    // no shared context from this one.
+    expect(block).toMatch(/Do\s*NOT pre-decode/);
   });
 });
 
