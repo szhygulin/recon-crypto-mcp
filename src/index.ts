@@ -239,7 +239,7 @@ export async function collectVerificationBlocks(
             `The local ABI decode above is still shown; open the swiss-knife decoder URL in a browser for a manual check.`,
         );
       }
-      // Per-call agent directives (compact bullet summary, three trust-boundary
+      // Per-call agent directives (compact bullet summary, two trust-boundary
       // options, Ledger-match reminder). Adjacent to the verification block so
       // the model is far more likely to act on it than on the session-level
       // instructions field, which it tends to ignore after the first few turns.
@@ -624,8 +624,8 @@ async function main() {
         "the preSignHash in the artifact differs from what Ledger shows on-device, the",
         "user rejects. This is the ONLY check that survives a fully-coordinated compromise",
         "where this agent and the MCP would lie together — a second LLM in a separate",
-        "provider cannot be coordinated with either. ACTIVELY OFFER it alongside (a)/(b)/",
-        "(c) at prepare time for: swap/bridge calldata with an unknown 4-byte selector,",
+        "provider cannot be coordinated with either. ACTIVELY OFFER it alongside (a)/(b)",
+        "at prepare time for: swap/bridge calldata with an unknown 4-byte selector,",
         "txs touching unfamiliar contract addresses, approvals with large or unlimited",
         "caps, any tx moving >$1k of value, or any flow where the server's 4byte cross-",
         "check returned 'no-signature' or 'error'. Do NOT offer it in place of the normal",

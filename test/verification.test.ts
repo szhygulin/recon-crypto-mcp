@@ -301,13 +301,19 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     // payloadHash does not match what Ledger displays, and leading the user
     // to expect a match trains rubber-stamping.
     expect(task).not.toMatch(/- Short hash:/);
-    // Three trust-boundary options still offered, not performed.
+    // Two trust-boundary options offered, not performed. (c) was dropped —
+    // it collapsed to (b) in practice because WebFetch can't execute
+    // swiss-knife's client-side JS. (b) now optionally extends via a
+    // 4byte / openchain signature-lookup fallback, but that's still (b).
     expect(task).toMatch(/OFFER/);
     expect(task).toMatch(/trust boundary/);
     expect(task).toMatch(/\(a\)/);
     expect(task).toMatch(/\(b\)/);
-    expect(task).toMatch(/\(c\)/);
-    expect(task).toMatch(/client-side Next\.js SPA/);
+    expect(task).not.toMatch(/\(c\)/);
+    // (b) extension: agent may WebFetch the selector registry when its
+    // weights don't recognize a selector, but must say so explicitly.
+    expect(task).toMatch(/4byte\.directory/);
+    expect(task).toMatch(/openchain/);
     // Final Ledger reminder must honestly cover both modes and NOT claim our
     // prepare-time payloadHashShort matches Ledger's on-device hash.
     expect(task).toMatch(/On the Ledger screen/);

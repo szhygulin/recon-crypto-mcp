@@ -127,9 +127,9 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     // Must be an agent directive, not a verbatim-relay block — we don't want
     // this command surface text dumped into the user's chat.
     expect(block).toMatch(/AGENT TASK — DO NOT FORWARD/);
-    // The (4)-option frame is pair-consistency, not "hash recompute" — the
-    // wording must make clear this is narrower than (b) and names the
-    // specific attack shape it catches (on-device match can't detect it).
+    // Pair-consistency framing (was previously labeled "hash recompute" —
+    // that framing overlapped with option (b) at prepare time). The
+    // narrower attack shape is what makes the check worth running.
     expect(block).toMatch(/pair-consistency/);
     expect(block).toMatch(/on-device (hash )?match/);
     // The per-call values are spliced into the viem command so the agent
@@ -137,19 +137,18 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     expect(block).toContain("nonce:7");
     expect(block).toContain("maxFeePerGas:22000000000n");
     expect(block).toContain("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
-    // Acknowledges (b) from prepare time so the user doesn't see (4) as a
-    // restatement — the new wording lets them skip the decode prerequisite
-    // if they already ran it.
+    // Acknowledges (b) from prepare time so the user doesn't see pair-
+    // consistency as a restatement — the new wording lets them skip the
+    // decode prerequisite if they already ran it.
     expect(block).toMatch(/already ran \(b\)/);
     // "Offer, don't run" is load-bearing UX — the check is heavy and
     // irrelevant for trusting users.
     expect(block).toMatch(/Do NOT run either unprompted/);
-    // Fifth trust-boundary option — second-agent verification via
-    // get_verification_artifact. This catches the one attack the hash
-    // recompute (option 4) can't: a fully-coordinated compromise where
-    // this agent AND the MCP are lying together. Test that the offer
-    // is present and names the tool explicitly.
-    expect(block).toMatch(/FIFTH OPTION/);
+    // Second-agent verification option — names the tool explicitly so
+    // the agent knows it's not just narrative advice. This is the only
+    // check that survives a fully-coordinated compromise where this
+    // agent AND the MCP are lying together.
+    expect(block).toContain("second-agent verification");
     expect(block).toContain("get_verification_artifact");
     expect(block).toMatch(/second, independent LLM/);
     // Must tell the agent NOT to pre-decode in the same reply — the
