@@ -901,8 +901,10 @@ describe("verifyTxDecode (MCP handler) — routes by handle origin", () => {
     });
     const result = await verifyTxDecode({ handle: stamped.handle! });
     expect(result.status).toBe("not-applicable");
-    expect(result.summary).toMatch(/EVM-only/);
-    expect(result.summary).toMatch(/tronscan/);
+    expect(result.summary).toMatch(/decoded preview/);
+    expect(result.summary).toMatch(/assertTronRawDataMatches/);
+    expect(result.summary).toContain("transfer");
+    expect(result.summary).toContain("to: Tabc");
   });
 
   it("throws a clear 'Unknown or expired' error for an unrecognized handle", async () => {
