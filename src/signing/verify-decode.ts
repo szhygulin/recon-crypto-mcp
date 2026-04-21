@@ -300,15 +300,16 @@ export async function verifyEvmCalldata(
   }
 
   const summary = localFunctionName
-    ? `✓ Cross-check passed. I pulled the function signature for ${localFunctionName} from a public registry ` +
-      `(4byte.directory), decoded the calldata against it, and the result re-encodes to the original bytes ` +
-      `exactly — which mathematically implies every argument below matches what's actually in the transaction. ` +
-      `This runs on the MCP server; options for a check outside that trust boundary are shown below.`
-    : `✓ Cross-check passed. The calldata decodes cleanly against a 4byte.directory signature ` +
-      `("${chosen.signature}"), and the decoded args re-encode to the original bytes exactly — which ` +
-      `mathematically implies the values in independentArgs faithfully reflect the transaction. Your local ABI ` +
-      `didn't recognize this destination, so review those args before approving. For an out-of-boundary check, ` +
-      `see options below.`;
+    ? `✓ Cross-check passed (MCP-side — same trust boundary as the local decode; NOT an external check). ` +
+      `I pulled the function signature for ${localFunctionName} from 4byte.directory, decoded the calldata ` +
+      `against it, and the result re-encodes to the original bytes exactly — which mathematically implies ` +
+      `every argument below matches what's actually in the transaction. See options below for a check ` +
+      `outside this trust boundary.`
+    : `✓ Cross-check passed (MCP-side — same trust boundary as the preparer; NOT an external check). ` +
+      `The calldata decodes cleanly against a 4byte.directory signature ("${chosen.signature}"), and the ` +
+      `decoded args re-encode to the original bytes exactly — which mathematically implies the values in ` +
+      `independentArgs faithfully reflect the transaction. Your local ABI didn't recognize this destination, ` +
+      `so review those args before approving. See options below for a check outside this trust boundary.`;
 
   return {
     status: "match",

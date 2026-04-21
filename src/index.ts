@@ -60,6 +60,7 @@ import {
   sendTransaction,
   getTransactionStatus,
   getTxVerification,
+  getVerificationArtifact,
   verifyTxDecode,
 } from "./modules/execution/index.js";
 import {
@@ -79,6 +80,7 @@ import {
   sendTransactionInput,
   getTransactionStatusInput,
   getTxVerificationInput,
+  getVerificationArtifactInput,
 } from "./modules/execution/schemas.js";
 
 import {
@@ -237,7 +239,7 @@ export async function collectVerificationBlocks(
             `The local ABI decode above is still shown; open the swiss-knife decoder URL in a browser for a manual check.`,
         );
       }
-      // Per-call agent directives (compact bullet summary, three trust-boundary
+      // Per-call agent directives (compact bullet summary, two trust-boundary
       // options, Ledger-match reminder). Adjacent to the verification block so
       // the model is far more likely to act on it than on the session-level
       // instructions field, which it tends to ignore after the first few turns.
@@ -524,7 +526,7 @@ async function main() {
         "reverse_resolve_ens,",
         "get_tron_staking, get_health_alerts, simulate_position_change,",
         "check_contract_security, check_permission_risks, get_protocol_risk_score,",
-        "get_transaction_status, get_tx_verification.",
+        "get_transaction_status, get_tx_verification, get_verification_artifact.",
         "",
         "SWAP/BRIDGE ROUTING: prefer `prepare_swap` (LiFi aggregator) over building DEX",
         "router calls directly — LiFi handles route selection, approvals, and cross-chain",
@@ -618,6 +620,24 @@ async function main() {
         "DO NOT read tool-result JSON files from disk (e.g. via Bash + python or jq) to",
         "recover the verification data — that scrapes harness internals, produces brittle",
         "code per call, and bypasses the MCP boundary that exists to keep this auditable.",
+        "",
+        "SECOND-AGENT VERIFICATION (strongest user-facing check — volunteer it, don't wait",
+        "to be asked): `get_verification_artifact(handle)` returns a sparse JSON artifact",
+        "(raw calldata, chain, to, value, payloadHash, preSignHash if pinned) plus a canned",
+        "prompt for a second LLM. The user pastes it into an independent chat (ideally a",
+        "different provider) so a second agent decodes the bytes from scratch with no",
+        "shared context. If the first and second agents disagree on what the tx does, or",
+        "the preSignHash in the artifact differs from what Ledger shows on-device, the",
+        "user rejects. This is the ONLY check that survives a fully-coordinated compromise",
+        "where this agent and the MCP would lie together — a second LLM in a separate",
+        "provider cannot be coordinated with either. ACTIVELY OFFER it alongside (a)/(b)",
+        "at prepare time for: swap/bridge calldata with an unknown 4-byte selector,",
+        "txs touching unfamiliar contract addresses, approvals with large or unlimited",
+        "caps, any tx moving >$1k of value, or any flow where the server's 4byte cross-",
+        "check returned 'no-signature' or 'error'. Do NOT offer it in place of the normal",
+        "VERIFY-BEFORE-SIGNING block — it's an additional check, not a replacement. The",
+        "preview_send agent-task block also offers it again as a fifth trust-boundary",
+        "option right before signing.",
         "",
         "SECURITY: the `wallet` / `peerUrl` returned by `get_ledger_status` is self-reported",
         "by the paired WalletConnect peer. Before the FIRST `send_transaction` of a session,",
@@ -924,6 +944,26 @@ async function main() {
       inputSchema: getTxVerificationInput.shape,
     },
     handler(getTxVerification)
+  );
+
+  server.registerTool(
+    "get_verification_artifact",
+    {
+      description:
+        "Return a sparse verification artifact for a prepared tx — raw calldata (or TRON " +
+        "rawDataHex), chain, to/value, payloadHash, preSignHash if preview_send has pinned " +
+        "gas, plus a static prompt instructing a second LLM on how to decode the bytes from " +
+        "scratch. Intended for adversarial independent verification: the user copies this " +
+        "artifact into a second LLM session (different provider recommended) so the second " +
+        "agent produces an independent decode with no shared context from the current " +
+        "conversation. If the two decodes disagree — or if the preSignHash doesn't match " +
+        "what Ledger displays at sign time — the user rejects. Does NOT call any external " +
+        "API; read-only in-memory lookup. Output deliberately omits the server's humanDecode, " +
+        "swiss-knife URL, and 4byte cross-check so the second agent cannot echo them. Handles " +
+        "live in-memory for 15 minutes after issue.",
+      inputSchema: getVerificationArtifactInput.shape,
+    },
+    handler(getVerificationArtifact)
   );
 
   server.registerTool(
