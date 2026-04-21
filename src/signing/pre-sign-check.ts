@@ -6,6 +6,7 @@ import { eigenStrategyManagerAbi } from "../abis/eigenlayer-strategy-manager.js"
 import { cometAbi } from "../abis/compound-comet.js";
 import { morphoBlueAbi } from "../abis/morpho-blue.js";
 import { uniswapPositionManagerAbi } from "../abis/uniswap-position-manager.js";
+import { swapRouter02Abi } from "../abis/uniswap-swap-router-02.js";
 import { CONTRACTS } from "../config/contracts.js";
 import type { SupportedChain, UnsignedTx } from "../types/index.js";
 
@@ -53,6 +54,7 @@ type DestinationKind =
   | "lido-withdrawalQueue"
   | "eigenlayer-strategyManager"
   | "uniswap-v3-npm"
+  | "uniswap-v3-swap-router"
   | "known-erc20"
   | "lifi-diamond";
 
@@ -82,6 +84,7 @@ const LIDO_STETH_SELECTORS = computeSelectorsFromAbi(stETHAbi);
 const LIDO_QUEUE_SELECTORS = computeSelectorsFromAbi(lidoWithdrawalQueueAbi);
 const EIGEN_SELECTORS = computeSelectorsFromAbi(eigenStrategyManagerAbi);
 const UNISWAP_NPM_SELECTORS = computeSelectorsFromAbi(uniswapPositionManagerAbi);
+const UNISWAP_SWAP_ROUTER_SELECTORS = computeSelectorsFromAbi(swapRouter02Abi);
 const ERC20_SELECTORS = computeSelectorsFromAbi(erc20Abi);
 
 async function classifyDestination(
@@ -126,6 +129,13 @@ async function classifyDestination(
     return { kind: "uniswap-v3-npm", allowedAbi: uniswapPositionManagerAbi };
   }
 
+  // Uniswap V3 SwapRouter02 — target of prepare_uniswap_swap.
+  const swapRouter02 = (CONTRACTS[chain].uniswap as { swapRouter02?: string })
+    .swapRouter02;
+  if (swapRouter02 && lo === swapRouter02.toLowerCase()) {
+    return { kind: "uniswap-v3-swap-router", allowedAbi: swapRouter02Abi };
+  }
+
   // LiFi Diamond — accept but skip per-selector check (LiFi's ABI is huge and dynamic).
   if (lo === LIFI_DIAMOND) return { kind: "lifi-diamond", allowedAbi: null };
 
@@ -154,6 +164,9 @@ function buildSpenderAllowlist(chain: SupportedChain): Set<string> {
     out.add(CONTRACTS.ethereum.eigenlayer.strategyManager.toLowerCase());
   }
   out.add(CONTRACTS[chain].uniswap.positionManager.toLowerCase());
+  const swapRouter02 = (CONTRACTS[chain].uniswap as { swapRouter02?: string })
+    .swapRouter02;
+  if (swapRouter02) out.add(swapRouter02.toLowerCase());
   out.add(LIFI_DIAMOND);
   return out;
 }
@@ -215,7 +228,7 @@ export async function assertTransactionSafe(tx: UnsignedTx): Promise<void> {
       throw new Error(
         `Pre-sign check: refusing approve(spender=${spender}, ...) on ${tx.chain} — spender is ` +
           `not in the protocol allowlist (Aave Pool, Compound Comet, Morpho Blue, Lido Queue, ` +
-          `EigenLayer, Uniswap NPM, LiFi Diamond). This is the canonical phishing/prompt-injection ` +
+          `EigenLayer, Uniswap NPM, Uniswap SwapRouter02, LiFi Diamond). This is the canonical phishing/prompt-injection ` +
           `pattern. If you need to approve a different spender, do it from the Ledger Live app directly.`
       );
     }
@@ -240,7 +253,7 @@ export async function assertTransactionSafe(tx: UnsignedTx): Promise<void> {
     throw new Error(
       `Pre-sign check: refusing to sign against unknown contract ${tx.to} on ${tx.chain} ` +
         `(selector ${selector}). Accepted destinations: Aave V3 Pool, Compound V3 Comet markets, ` +
-        `Morpho Blue, Lido (stETH/Queue), EigenLayer StrategyManager, Uniswap V3 NPM, LiFi Diamond, ` +
+        `Morpho Blue, Lido (stETH/Queue), EigenLayer StrategyManager, Uniswap V3 NPM, Uniswap V3 SwapRouter02, LiFi Diamond, ` +
         `and known ERC-20s. An unknown destination with non-empty calldata is exactly the shape of ` +
         `a prompt-injection attack.`
     );
@@ -268,6 +281,8 @@ export async function assertTransactionSafe(tx: UnsignedTx): Promise<void> {
         return EIGEN_SELECTORS;
       case "uniswap-v3-npm":
         return UNISWAP_NPM_SELECTORS;
+      case "uniswap-v3-swap-router":
+        return UNISWAP_SWAP_ROUTER_SELECTORS;
       case "known-erc20":
         return ERC20_SELECTORS;
       case "lifi-diamond":

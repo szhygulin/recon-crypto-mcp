@@ -106,6 +106,26 @@ describe("Pre-sign check: approve() spender allowlist", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("accepts approve(Uniswap SwapRouter02, amount) — prepare_uniswap_swap's approve step", async () => {
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const SWAP_ROUTER_02 = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45";
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [SWAP_ROUTER_02 as `0x${string}`, 100_000_000n],
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: USDC_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "approve USDC for Uniswap SwapRouter02",
+      })
+    ).resolves.toBeUndefined();
+  });
+
   it("REJECTS approve(ATTACKER, max) — the classic prompt-injection attack", async () => {
     const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
     const data = encodeFunctionData({
@@ -242,6 +262,45 @@ describe("Pre-sign check: protocol calls", () => {
         description: "bogus call on Aave",
       })
     ).rejects.toThrow(/not a known function on aave-v3-pool/);
+  });
+
+  it("accepts a multicall() to Uniswap SwapRouter02 — prepare_uniswap_swap's swap step", async () => {
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const { swapRouter02Abi } = await import("../src/abis/uniswap-swap-router-02.js");
+    const SWAP_ROUTER_02 = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45";
+    // multicall is one of the SwapRouter02 functions; the selector must pass
+    // the per-ABI gate.
+    const data = encodeFunctionData({
+      abi: swapRouter02Abi,
+      functionName: "multicall",
+      args: [["0xdeadbeef" as `0x${string}`]],
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: SWAP_ROUTER_02 as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "Uniswap V3 swap",
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects a random selector aimed at Uniswap SwapRouter02", async () => {
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const SWAP_ROUTER_02 = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45";
+    const data = "0xdeadbeef" + "00".repeat(32);
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: SWAP_ROUTER_02 as `0x${string}`,
+        data: data as `0x${string}`,
+        value: "0",
+        from: WALLET,
+        description: "bogus call on SwapRouter02",
+      })
+    ).rejects.toThrow(/not a known function on uniswap-v3-swap-router/);
   });
 
   it("accepts a call to LiFi Diamond regardless of selector (no ABI gate)", async () => {
