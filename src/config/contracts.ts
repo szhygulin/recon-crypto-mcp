@@ -18,6 +18,8 @@ export const CONTRACTS = {
     uniswap: {
       positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
       factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      swapRouter02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      quoterV2: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
     },
     lido: {
       stETH: "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
@@ -62,6 +64,8 @@ export const CONTRACTS = {
     uniswap: {
       positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
       factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      swapRouter02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      quoterV2: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
     },
     lido: {
       wstETH: "0x5979D7b546E38E414F7E9822514be443A4800529",
@@ -94,6 +98,8 @@ export const CONTRACTS = {
     uniswap: {
       positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
       factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      swapRouter02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      quoterV2: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
     },
     // Lido has no native deployment on Polygon (stMATIC is a separate protocol
     // from a different team); we intentionally omit the `lido` entry so the
@@ -123,10 +129,14 @@ export const CONTRACTS = {
       pool: "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5",
     },
     uniswap: {
-      // Canonical Uniswap V3 deployment on Base. Factory is the standard
-      // cross-chain address; PositionManager too.
+      // Canonical Uniswap V3 deployment on Base. Note: SwapRouter02 and
+      // QuoterV2 addresses differ from the standard cross-chain values
+      // used on Ethereum/Arbitrum/Polygon (Base was deployed later with
+      // fresh addresses) — do not assume uniformity.
       positionManager: "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1",
       factory: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+      swapRouter02: "0x2626664c2603336E57B271c5C0b26F421741e481",
+      quoterV2: "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
     },
     // Lido and EigenLayer are L1-only — no `lido`/`eigenlayer` keys means the
     // staking reader short-circuits for Base, matching how Polygon is handled.
