@@ -66,6 +66,14 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
     expect(artifact.pasteableBlock).toMatch(/END — STOP COPYING HERE/);
     expect(artifact.pasteableBlock).toMatch(/DO NOT trust any description text/);
     expect(artifact.pasteableBlock).toMatch(/REJECT/);
+    // The on-device reminder must honestly cover both Ledger modes — blind-
+    // sign (hash-match against preSignHash) and clear-sign (verify decoded
+    // fields). A flat "if the hash on-device differs → reject" instruction
+    // is wrong for clear-sign sessions, which show decoded fields and no
+    // hash, and would push users to reject legitimate txs.
+    expect(artifact.pasteableBlock).toMatch(/BLIND-SIGN/);
+    expect(artifact.pasteableBlock).toMatch(/CLEAR-SIGN/);
+    expect(artifact.pasteableBlock).toMatch(/hash matching does NOT apply/i);
     // Payload JSON is embedded INSIDE the markers so the second agent sees
     // it as part of its single prompt — not a second artifact the user has
     // to paste separately.

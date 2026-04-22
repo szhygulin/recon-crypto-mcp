@@ -566,6 +566,15 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
   };
   previewToken: string;
   refreshed?: boolean;
+  /**
+   * Swiss-knife decoder URL carried over from prepare-time verification. Echoed
+   * on the preview response so `renderPreviewVerifyAgentTaskBlock` can splice
+   * it directly into the ⚠ DECODE UNAVAILABLE branch of the render template —
+   * without this, the agent was "mentioning" the URL lived in the earlier
+   * prepare block instead of actually surfacing it in the CHECKS PERFORMED
+   * output, forcing the user to scroll up.
+   */
+  decoderUrl?: string;
 }> {
   if (hasTronHandle(args.handle)) {
     throw new Error(
@@ -575,6 +584,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     );
   }
   const tx = consumeHandle(args.handle);
+  const decoderUrl = tx.verification?.decoderUrl;
   const existing = getPinnedGas(args.handle);
   if (existing && !args.refresh) {
     return {
@@ -590,6 +600,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
         gas: existing.gas.toString(),
       },
       previewToken: existing.previewToken,
+      ...(decoderUrl ? { decoderUrl } : {}),
     };
   }
   await runEvmPreSignGuards(tx);
@@ -639,6 +650,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     },
     previewToken,
     ...(existing ? { refreshed: true } : {}),
+    ...(decoderUrl ? { decoderUrl } : {}),
   };
 }
 
@@ -831,10 +843,19 @@ const SECOND_AGENT_INSTRUCTIONS = [
   "     destination was intentional.",
   "  4. If you cannot decode the selector (not in your training data), say so — do",
   "     not guess. 'I don't know this selector' is the correct answer when true.",
-  "  5. Remind the user: before tapping 'Approve' on the Ledger, match the hash shown",
-  "     on the device screen against payload.preSignHash (EVM) or the signed rawData",
-  "     digest (TRON). If they differ, the artifact was fabricated by a compromised",
-  "     intermediary — REJECT.",
+  "  5. Remind the user that the last check happens on-device, before they tap",
+  "     'Approve'. Ledger has two display modes and the check differs between them:",
+  "       - BLIND-SIGN (device shows only a hash — the typical case for swaps and",
+  "         most DeFi calls): the hash on-device MUST equal payload.preSignHash (EVM)",
+  "         or the signed rawData digest (TRON). Mismatch means the artifact was",
+  "         fabricated by a compromised intermediary — REJECT on-device.",
+  "       - CLEAR-SIGN (device shows decoded fields — enabled for Aave, Lido, 1inch,",
+  "         LiFi, approve, and a few other plugins): hash matching does NOT apply.",
+  "         Instead verify that the function name and key fields on-screen (amount,",
+  "         recipient, spender, etc.) match what you described above. If the device",
+  "         shows a different function or different values — REJECT.",
+  "     If you cannot tell which mode the device is in from the user's description,",
+  "     explain both cases so the user picks the right check when they see the screen.",
 ].join("\n");
 
 /**

@@ -161,9 +161,84 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     // whole point of the check is that the second agent decodes with
     // no shared context from this one.
     expect(block).toMatch(/Do\s*NOT pre-decode/);
+    // NEXT ON-DEVICE block: the CHECKS PERFORMED render shape must tell the
+    // user how the Ledger screen check differs between blind-sign and clear-
+    // sign. Without it, users hit clear-sign (Aave/Lido/1inch/LiFi/approve)
+    // and think "there's no hash, did the check fail?" — the honest answer
+    // is the hash-match check doesn't apply; verify decoded fields instead.
+    expect(block).toMatch(/NEXT ON-DEVICE/);
+    expect(block).toMatch(/BLIND-SIGN mode/);
+    expect(block).toMatch(/CLEAR-SIGN mode/);
+    expect(block).toMatch(/hash matching does NOT apply/i);
+    expect(block).toMatch(/decoded fields/);
+    // User-friendly wording for the hash-match step — the old "match it
+    // against <hash>" phrasing read like a developer instruction.
+    expect(block).toMatch(/hash shown on-device is exactly/i);
+    expect(block).not.toMatch(/match it against/);
+    // The blind-sign hash must be wrapped in single backticks so Markdown
+    // clients render it in highlighted inline-code color instead of
+    // blending into prose.
+    expect(block).toMatch(/`0xabc`/);
+    // And the agent must be told to preserve the backticks — without this
+    // guard, paraphrasers strip them and the hash loses its visual
+    // distinction (same live-run bug as the URL-narration issue).
+    expect(block).toMatch(/wrapped in single backticks/i);
     // No menu for the two mandatory checks — the old (1)/(2) shape is gone.
     expect(block).not.toMatch(/EXTRA CHECKS YOU CAN RUN/);
     expect(block).not.toMatch(/\(1\)\s*<plain-English pair-consistency/);
+  });
+
+  it("splices the swiss-knife decoder URL into the ⚠ DECODE UNAVAILABLE branch of the render template", async () => {
+    const { renderPreviewVerifyAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const decoderUrl =
+      "https://calldata.swiss-knife.xyz/decoder?calldata=0x736eac0b00&address=0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE&chainId=1";
+    const block = renderPreviewVerifyAgentTaskBlock({
+      chain: "ethereum",
+      preSignHash: "0xabc",
+      pinned: {
+        nonce: 7,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "21000",
+      },
+      to: "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE",
+      valueWei: "0",
+      decoderUrl,
+    });
+    // The URL must appear INSIDE the render-shape template so the agent's
+    // paraphrase of the template retains it — regression: when instructed
+    // to "include the URL from the earlier prepare block", agents narrated
+    // "see the prepare block above" instead of rendering the URL, forcing
+    // the user to scroll up.
+    expect(block).toContain(decoderUrl);
+    expect(block).toMatch(/Browser-side decode fallback:/);
+    // Instruction must forbid the "see the earlier block" paraphrase.
+    expect(block).toMatch(/Do NOT paraphrase the URL away/);
+  });
+
+  it("when no decoder URL is available (oversized calldata), tells the agent to say so honestly", async () => {
+    const { renderPreviewVerifyAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPreviewVerifyAgentTaskBlock({
+      chain: "ethereum",
+      preSignHash: "0xabc",
+      pinned: {
+        nonce: 7,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "21000",
+      },
+      to: "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE",
+      valueWei: "0",
+      // no decoderUrl — e.g. calldata too large to preload into swiss-knife URL
+    });
+    expect(block).not.toMatch(/Browser-side decode fallback:/);
+    expect(block).toMatch(/browser fallback is unavailable/i);
+    // Second-LLM is the remaining gap-closer in this case.
+    expect(block).toMatch(/second-LLM/);
   });
 });
 
