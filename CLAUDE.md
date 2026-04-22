@@ -13,3 +13,6 @@
 
 ## Security Incident Response Tone
 - When diagnosing malware/compromise, start with evidence-based scoping before recommending destructive actions (wipe, nuke, rotate-all). Never delete evidence files before reading them.
+
+## Chat Output Formatting
+- Prefer Markdown hyperlinks over raw URLs everywhere: `[label](url)` instead of pasting the full URL inline. This keeps the chat scannable — long URLs (especially swiss-knife decoder URLs with multi-KB calldata query strings, Etherscan tx URLs with hashes, tenderly/phalcon simulation URLs) wrap the terminal into unreadable walls when pasted raw. Apply in user-facing responses AND in any text the server instructs the agent to render (verification blocks, prepare receipts, etc.). Raw URLs are acceptable only when the link is short and already scannable (e.g. a bare domain like `https://ledger.com`) or when explicitly required for machine-readable contexts (e.g. inside a JSON paste-block the user copies into another tool).
