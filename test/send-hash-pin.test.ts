@@ -167,22 +167,21 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     // and think "there's no hash, did the check fail?" — the honest answer
     // is the hash-match check doesn't apply; verify decoded fields instead.
     expect(block).toMatch(/NEXT ON-DEVICE/);
-    expect(block).toMatch(/BLIND-SIGNS/);
-    expect(block).toMatch(/CLEAR-SIGNS/);
+    expect(block).toMatch(/BLIND-SIGN mode/);
+    expect(block).toMatch(/CLEAR-SIGN mode/);
     expect(block).toMatch(/hash matching does NOT apply/i);
     expect(block).toMatch(/decoded fields/);
     // User-friendly wording for the hash-match step — the old "match it
-    // against <hash>" phrasing read like a developer instruction. The user
-    // wants "check that the hash on your Ledger screen is the same as".
-    expect(block).toMatch(/hash on your Ledger screen[\s\S]*the same as/i);
+    // against <hash>" phrasing read like a developer instruction.
+    expect(block).toMatch(/hash shown on-device is exactly/i);
     expect(block).not.toMatch(/match it against/);
-    // The blind-sign hash must be wrapped in single backticks on its own
-    // line so Markdown-rendering chat clients display it as highlighted
-    // inline code instead of blending into prose.
+    // The blind-sign hash must be wrapped in single backticks so Markdown
+    // clients render it in highlighted inline-code color instead of
+    // blending into prose.
     expect(block).toMatch(/`0xabc`/);
-    // And the agent must be told explicitly to preserve the backticks —
-    // without this guard, paraphrasers strip them and the hash loses its
-    // visual distinction (same live-run bug as the URL-narration issue).
+    // And the agent must be told to preserve the backticks — without this
+    // guard, paraphrasers strip them and the hash loses its visual
+    // distinction (same live-run bug as the URL-narration issue).
     expect(block).toMatch(/wrapped in single backticks/i);
     // No menu for the two mandatory checks — the old (1)/(2) shape is gone.
     expect(block).not.toMatch(/EXTRA CHECKS YOU CAN RUN/);
