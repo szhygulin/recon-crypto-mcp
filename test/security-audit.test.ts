@@ -104,6 +104,32 @@ describe("C2+M10: WalletConnect peer identity", () => {
     expect(PEER_TRUST_WARNING).toMatch(/confirm|device/i);
   });
 
+  it("tool description + server instructions tell the agent to cross-check the WC session topic against Ledger Live Connected Apps", async () => {
+    // The peer's self-reported name + URL are not a trusted identity — any
+    // peer can claim "Ledger Wallet @ wc.apps.ledger.com". The real
+    // discriminator is the WC session topic, which the user can verify in
+    // Ledger Live → Settings → Connected Apps. If the prose drifts back to
+    // "confirm the name/URL matches" without mentioning the topic, the
+    // guidance is vacuous (all peers claim the same name/URL) and this
+    // regression test catches it.
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(
+      new URL("../src/index.ts", import.meta.url),
+      "utf8",
+    );
+    // get_ledger_status tool description block.
+    expect(src).toMatch(/topic/);
+    expect(src).toMatch(/last 8/i);
+    expect(src).toMatch(/Connected Apps/i);
+    // Both the tool description AND the server-level instructions must carry
+    // the topic-cross-check guidance — the server-level block is the one
+    // loaded at session start; the tool description is what the agent sees
+    // when it invokes get_ledger_status. Dropping either path silently
+    // regresses the defense.
+    const topicHits = src.match(/Connected Apps/gi)?.length ?? 0;
+    expect(topicHits).toBeGreaterThanOrEqual(2);
+  });
+
   it("isKnownLedgerPeer gates the warning — Ledger hosts pass, everything else trips", async () => {
     // Only when the peer URL is NOT a ledger.com host does the server ship the
     // warning. This keeps the common case (pairing with real Ledger Live) quiet
