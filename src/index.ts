@@ -655,11 +655,16 @@ async function main() {
         "option right before signing.",
         "",
         "SECURITY: the `wallet` / `peerUrl` returned by `get_ledger_status` is self-reported",
-        "by the paired WalletConnect peer. Before the FIRST `send_transaction` of a session,",
-        "state the paired wallet name + URL back to the user and have them confirm it matches",
-        "their real Ledger Live install. The Ledger device's on-screen confirmation is the",
-        "ultimate authority — tell the user to verify the recipient, amount, and chain on",
-        "the device, not just in chat.",
+        "by the paired WalletConnect peer and is NOT a trusted identity — any peer can claim",
+        "to be 'Ledger Live' at `wc.apps.ledger.com`. The real discriminator is the WC session",
+        "`topic` (also returned by `get_ledger_status`). Before the FIRST `send_transaction`",
+        "of a session, tell the user to open Ledger Live → Settings → Connected Apps (mobile:",
+        "Manager → WalletConnect) and confirm a WC session is listed there whose topic ends",
+        "with the last 8 characters of the `topic` field. Surface those 8 chars in your",
+        "prompt (e.g. \"…a1b2c3d4\"). No matching session in Ledger Live means a different peer",
+        "is impersonating Ledger Live — do NOT proceed. The Ledger device's on-screen",
+        "confirmation is still the ultimate check on tx contents; the topic cross-check is",
+        "what binds the WC session itself to the user's real Ledger Live install.",
       ].join("\n"),
     }
   );
@@ -848,9 +853,12 @@ async function main() {
         '\"my wallet\", \"my TRON wallet\", \"the first address\", \"account 2\", \"second wallet\", \"second TRON account\" — so you can resolve the reference to a concrete 0x… / T… ' +
         "before invoking any prepare_* / swap / send / portfolio tool that takes a `wallet` / `tronAddress` argument. Do NOT ask the user to paste an " +
         "address if it's already in `accounts` or a `tron[*].address` here. " +
-        "SECURITY: the returned `wallet`/`peerUrl` (EVM) are self-reported by the paired WC app. Before the FIRST send_transaction of a session, " +
-        "state the paired wallet name + URL back to the user and ask them to confirm it matches their Ledger Live install — " +
-        "any WalletConnect peer can claim to be 'Ledger Live'. The physical Ledger device's on-screen confirmation is the final check. " +
+        "SECURITY: the returned `wallet`/`peerUrl` (EVM) are self-reported by the paired WC app — any peer can claim to be 'Ledger Live' at wc.apps.ledger.com, " +
+        "so the wallet name and URL alone do NOT prove identity. The cryptographic discriminator is the WC session `topic` (also returned here). Before the FIRST " +
+        "send_transaction of a session, ask the user to open Ledger Live → Settings → Connected Apps (mobile: Manager → WalletConnect) and confirm a WalletConnect " +
+        "session exists whose topic ends with the last 8 chars of the `topic` field (surface those 8 chars in your prompt, e.g. \"…a1b2c3d4\"). If no matching session " +
+        "is listed there, a different peer is impersonating Ledger Live — do NOT proceed. The physical Ledger device's on-screen confirmation is still the final check " +
+        "on tx contents, but the topic cross-check is what binds the WC session to the user's real Ledger Live install. " +
         "The `tron` array is read from the cache populated by `pair_ledger_tron`; `send_transaction` re-probes USB on every TRON sign, so the cache cannot be spoofed into approving a tx for the wrong account.",
       inputSchema: getLedgerStatusInput.shape,
     },
