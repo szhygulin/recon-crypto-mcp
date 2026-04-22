@@ -216,6 +216,11 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     expect(block).toMatch(/Browser-side decode fallback:/);
     // Instruction must forbid the "see the earlier block" paraphrase.
     expect(block).toMatch(/Do NOT paraphrase the URL away/);
+    // Render the URL as a Markdown hyperlink — raw swiss-knife URLs are
+    // multi-KB of hex calldata and wrap the chat into unreadable walls.
+    // `[Open in swiss-knife decoder](<url>)` keeps it a neat single line.
+    expect(block).toContain(`[Open in swiss-knife decoder](${decoderUrl})`);
+    expect(block).toMatch(/Markdown hyperlink/);
   });
 
   it("when no decoder URL is available (oversized calldata), tells the agent to say so honestly", async () => {
