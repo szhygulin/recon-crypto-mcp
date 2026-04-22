@@ -36,13 +36,15 @@ This is an **agent-driven portfolio management** tool, not a wallet replacement.
 
 ## Security model
 
+**VaultPilot assumes the AI agent can be compromised, the MCP server can be compromised, and your host computer can be compromised. Only your Ledger device is trusted.** Every transaction is cryptographically bound across every layer so that tampering anywhere — a swapped recipient, a rewritten swap route, a smuggled approval — produces a visible mismatch on the device screen, giving you the chance to reject before anything is signed.
+
 Private keys never leave the Ledger device. Every state-changing transaction is prepared read-only by the server, previewed in human-readable form, and approved on the device's own screen — the only display in the pipeline that isn't filtered through the agent.
 
 ```
 user-intent ──► agent ──► MCP server ──► WalletConnect / USB-HID ──► Ledger Live / host ──► Ledger device
 ```
 
-VaultPilot layers defenses so most single-layer compromises are caught by at least one cross-check, and the cases that aren't are called out honestly. The layers include a server-side prepare↔send fingerprint, an independent 4byte.directory selector cross-check, an agent-side ABI decode and pair-consistency pre-sign hash recomputation that auto-run at `preview_send` and are reported in a `CHECKS PERFORMED` block (with a swiss-knife decoder URL as a suggested fallback when the agent's ABI decode is low-confidence), a Ledger blind-sign hash the user matches on-device, a verbatim `PREPARE RECEIPT` of the args the agent actually passed, a `previewToken` + `userDecision` gate against accidental preview-step collapse, and — for skeptical users on high-value flows — a `get_verification_artifact` that routes bytes to a second, independent LLM for cross-verification.
+VaultPilot layers defenses so most single-layer compromises are caught by at least one cross-check, and the cases that aren't are called out honestly. The layers include a server-side prepare↔send fingerprint, an independent 4byte.directory selector cross-check, an agent-side ABI decode and pair-consistency pre-sign hash recomputation that auto-run at `preview_send` and are reported in a `CHECKS PERFORMED` block (with a swiss-knife decoder URL as a suggested fallback when the agent's ABI decode is low-confidence), an on-device final check — in blind-sign mode the user matches a Ledger-displayed hash against the one the server returned; in clear-sign mode (Aave, Lido, 1inch, LiFi, approve plugins) the user checks decoded fields (function name, amount, recipient, spender) against the compact summary shown in chat — a verbatim `PREPARE RECEIPT` of the args the agent actually passed, a `previewToken` + `userDecision` gate against accidental preview-step collapse, a WalletConnect session-topic cross-check (the agent surfaces the last 8 chars of the WC session `topic` and asks the user to confirm a matching session exists in Ledger Live → Settings → Connected Apps, catching peer impersonation any self-reported name/URL can't), and — for skeptical users on high-value flows — a `get_verification_artifact` that routes bytes to a second, independent LLM for cross-verification.
 
 **See [SECURITY.md](./SECURITY.md)** for the full defenses table, threat → catches-it mapping, honest limits, the `payloadFingerprint` verification recipe, and the second-agent verification flow.
 
@@ -88,7 +90,7 @@ Meta:
 
 Execution (Ledger-signed):
 
-- `pair_ledger_live` (WalletConnect, EVM), `pair_ledger_tron` (USB HID, TRON), `get_ledger_status` — session management and account discovery; `get_ledger_status` returns per-chain EVM exposure (`accountDetails[]` with `address`, `chainIds`, `chains`) so duplicate-looking addresses across chains are disambiguated, and a `tron: [{ address, path, appVersion, accountIndex }, …]` array (one entry per paired TRON account) when `pair_ledger_tron` has been called. Pass `accountIndex: 1` (2, 3, …) to pair additional TRON accounts.
+- `pair_ledger_live` (WalletConnect, EVM), `pair_ledger_tron` (USB HID, TRON), `get_ledger_status` — session management and account discovery; `get_ledger_status` returns per-chain EVM exposure (`accountDetails[]` with `address`, `chainIds`, `chains`) so duplicate-looking addresses across chains are disambiguated, the WalletConnect session `topic` (the agent is instructed to surface its last 8 chars and ask the user to verify a matching session in Ledger Live → Settings → Connected Apps before the first `send_transaction` — any WC peer can self-report "Ledger Wallet" / `wc.apps.ledger.com`, but the session topic is unique per pairing), and a `tron: [{ address, path, appVersion, accountIndex }, …]` array (one entry per paired TRON account) when `pair_ledger_tron` has been called. Pass `accountIndex: 1` (2, 3, …) to pair additional TRON accounts.
 - `prepare_aave_supply` / `_withdraw` / `_borrow` / `_repay`
 - `prepare_compound_supply` / `_withdraw` / `_borrow` / `_repay`
 - `prepare_morpho_supply` / `_withdraw` / `_borrow` / `_repay` / `_supply_collateral` / `_withdraw_collateral`

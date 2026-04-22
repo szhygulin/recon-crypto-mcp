@@ -238,9 +238,14 @@ export async function signTronTxOnLedger(
       const { address } = await app.getAddress(path, false);
       if (address !== req.expectedFrom) {
         throw new Error(
-          `Ledger device address (${address}) does not match the prepared tx's \`from\` ` +
-            `(${req.expectedFrom}). Either connect the Ledger that holds keys for \`from\`, ` +
-            `or re-prepare the tx for the Ledger-derived address (\`pair_ledger_tron\`).`
+          `SECURITY: Ledger device address (${address}) does not match the prepared tx's \`from\` ` +
+            `(${req.expectedFrom}). Do NOT retry until you know which of these two is the cause: ` +
+            `(1) the wrong Ledger is connected, or (2) the \`from\` field in the prepared tx was ` +
+            `tampered with between prepare and send. Check the device — if the address it derives ` +
+            `on-screen is the one you expected (${address}), the tx's \`from\` was altered: abort, ` +
+            `re-prepare from scratch, and compare the new preview's \`from\` against user intent. ` +
+            `If the address on-screen is not your expected account, connect the correct Ledger or ` +
+            `re-prepare the tx for the Ledger-derived address via \`pair_ledger_tron\`.`
         );
       }
       const signature = await app.signTransaction(
@@ -251,7 +256,13 @@ export async function signTronTxOnLedger(
       // Ledger returns the signature as a hex string (65 bytes: r || s || v).
       if (!/^[0-9a-fA-F]{130}$/.test(signature)) {
         throw new Error(
-          `Ledger returned an unexpected signature shape (length ${signature.length}). Expected 130 hex chars.`
+          `SECURITY: Ledger returned an unexpected signature shape (length ${signature.length}, ` +
+            `expected 130 hex chars = 65 bytes r‖s‖v). Do NOT retry or broadcast this signature. ` +
+            `A well-formed Ledger TRON signature is always 130 hex chars; anything else means the ` +
+            `signature did not come from a healthy device exchange. Disconnect and reconnect the ` +
+            `Ledger, reopen the TRON app, and re-prepare the transaction from scratch. If the ` +
+            `error repeats on a clean reconnect, treat the host's USB/HID path as potentially ` +
+            `compromised and stop using it for signing until investigated.`
         );
       }
       return { signature, signerAddress: address };

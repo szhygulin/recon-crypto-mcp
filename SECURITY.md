@@ -8,6 +8,22 @@ agent prepare transactions against your Ledger device.
 For the product overview, install instructions, and tool reference, see the
 main [README](./README.md).
 
+## Why trust VaultPilot?
+
+VaultPilot assumes the AI agent can be compromised, the MCP server can be
+compromised, and your host computer can be compromised. Only your Ledger
+hardware is trusted. Every transaction is cryptographically bound across
+every layer so that tampering at any point — a swapped recipient, a
+rewritten swap route, a smuggled approval — produces a visible mismatch
+on your Ledger screen, giving you the chance to reject before anything
+is signed.
+
+In practice: the agent relays a hash it computed locally, the MCP relays
+the bytes it intends to broadcast, and the Ledger re-derives its own hash
+from the bytes it actually receives. You compare the two on the device's
+own screen — the one display in the pipeline that no software on the host
+can forge. No layer in between can fake a match it doesn't have.
+
 ## Trust boundaries
 
 The signing pipeline crosses several independent trust boundaries, each of
