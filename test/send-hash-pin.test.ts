@@ -124,37 +124,46 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
       to: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
       valueWei: "500000000000000000",
     });
-    // Must be an agent directive, not a verbatim-relay block — we don't want
-    // this command surface text dumped into the user's chat.
-    expect(block).toMatch(/AGENT TASK — DO NOT FORWARD/);
-    // Pair-consistency framing (was previously labeled "hash recompute" —
-    // that framing overlapped with option (b) at prepare time). The
-    // narrower attack shape is what makes the check worth running.
-    expect(block).toMatch(/pair-consistency/);
-    expect(block).toMatch(/on-device (hash )?match/);
+    // Agent directive, framed as auto-run (not a menu) — the redesign
+    // flipped "offer both options" to "run both, report in CHECKS PERFORMED".
+    expect(block).toMatch(/AGENT TASK — RUN THESE CHECKS NOW/);
+    expect(block).toMatch(/DO NOT ASK THE USER/);
+    // Pair-consistency framing — the narrower attack shape (pinned tuple
+    // vs. hash of different bytes) is the reason this check exists.
+    expect(block).toMatch(/pair-consistency/i);
+    expect(block).toMatch(/on-device hash match/i);
     // The per-call values are spliced into the viem command so the agent
-    // doesn't have to reconstruct them — keeps the optional check cheap.
+    // doesn't have to reconstruct them — keeps the mandatory check cheap.
     expect(block).toContain("nonce:7");
     expect(block).toContain("maxFeePerGas:22000000000n");
     expect(block).toContain("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
-    // Acknowledges (b) from prepare time so the user doesn't see pair-
-    // consistency as a restatement — the new wording lets them skip the
-    // decode prerequisite if they already ran it.
-    expect(block).toMatch(/already ran (option )?\(b\)/);
-    // "Offer, don't run" is load-bearing UX — the check is heavy and
-    // irrelevant for trusting users.
-    expect(block).toMatch(/Do NOT run either unprompted/);
-    // Second-agent verification option — names the tool explicitly so
-    // the agent knows it's not just narrative advice. This is the only
-    // check that survives a fully-coordinated compromise where this
-    // agent AND the MCP are lying together.
-    expect(block).toContain("second-agent verification");
+    // CHECKS PERFORMED template + the ChecksPayload JSON (structured
+    // threat taxonomy) must be present — the agent renders its user-facing
+    // block from these.
+    expect(block).toMatch(/CHECKS PERFORMED/);
+    expect(block).toMatch(/CHECKS PAYLOAD/);
+    expect(block).toContain('"abiDecode"');
+    expect(block).toContain('"pairConsistencyHash"');
+    expect(block).toContain('"secondLlm"');
+    expect(block).toContain('"autoRun": true');
+    expect(block).toContain('"autoRun": false');
+    expect(block).toContain('"calldata tampering"');
+    expect(block).toContain('"WalletConnect"');
+    expect(block).toContain('"coordinated"');
+    // Second-LLM check — the one remaining opt-in, promoted to a single
+    // one-line prompt instead of a menu item. The tool name must appear
+    // verbatim so the agent knows it's not narrative advice.
+    expect(block).toMatch(/Want an independent second-LLM check\? Reply \(2\)/);
     expect(block).toContain("get_verification_artifact");
-    expect(block).toMatch(/second[,-]? (independent |different )?(LLM|AI)/);
+    expect(block).toMatch(/second-agent verification/);
+    expect(block).toMatch(/coordinated .*(agent|MCP).*compromise/i);
     // Must tell the agent NOT to pre-decode in the same reply — the
     // whole point of the check is that the second agent decodes with
     // no shared context from this one.
     expect(block).toMatch(/Do\s*NOT pre-decode/);
+    // No menu for the two mandatory checks — the old (1)/(2) shape is gone.
+    expect(block).not.toMatch(/EXTRA CHECKS YOU CAN RUN/);
+    expect(block).not.toMatch(/\(1\)\s*<plain-English pair-consistency/);
   });
 });
 
