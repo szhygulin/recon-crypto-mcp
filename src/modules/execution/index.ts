@@ -381,9 +381,13 @@ async function sendTronTransaction(args: SendTransactionArgs): Promise<{
     const rehash = tronPayloadFingerprint(tx.rawDataHex);
     if (rehash !== tx.verification.payloadHash) {
       throw new Error(
-        `TRON payload hash mismatch at send time. Previewed ${tx.verification.payloadHash}, ` +
+        `SECURITY: TRON payload hash mismatch at send time. Previewed ${tx.verification.payloadHash}, ` +
           `about to sign ${rehash}. The rawDataHex changed between preview and send — refusing ` +
-          `to forward to the Ledger.`,
+          `to forward to the Ledger. Do NOT retry this handle. Re-prepare the transaction from ` +
+          `scratch (call the prepare_* tool again) and compare the new preview carefully — a ` +
+          `drift here means the bytes mutated inside the MCP process between the moment the user ` +
+          `reviewed them and the moment they would have been signed, which is not a normal ` +
+          `operating condition and may indicate a compromised intermediary.`,
       );
     }
   }
@@ -522,9 +526,13 @@ async function runEvmPreSignGuards(tx: UnsignedTx): Promise<void> {
     });
     if (rehash !== tx.verification.payloadHash) {
       throw new Error(
-        `Payload hash mismatch at preview/send time. Previewed ${tx.verification.payloadHash}, ` +
-          `about to sign ${rehash}. The transaction bytes changed between prepare and preview — ` +
-          `refusing to proceed.`,
+        `SECURITY: payload hash mismatch at preview/send time. Previewed ${tx.verification.payloadHash}, ` +
+          `about to sign ${rehash}. The transaction bytes (chain/to/value/data) changed between ` +
+          `prepare and preview — refusing to proceed. Do NOT retry this handle. Re-prepare the ` +
+          `transaction from scratch and compare the new preview against user intent carefully: ` +
+          `this drift means the bytes mutated inside the MCP process after the user reviewed ` +
+          `them, which is not a normal operating condition and may indicate a compromised ` +
+          `intermediary swapping bytes at send time.`,
       );
     }
   }
@@ -719,11 +727,14 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   }
   if (args.previewToken !== stashed.previewToken) {
     throw new Error(
-      "`previewToken` does not match the current pin on this handle. This usually means " +
-        "preview_send was re-called with `refresh: true` after you captured the token — the " +
-        "new pin has a new token (and a new preSignHash the user must re-match on-device). " +
-        "Call preview_send again, surface the fresh hash + EXTRA CHECKS menu to the user, and " +
-        "retry with the new token.",
+      "SECURITY: `previewToken` does not match the current pin on this handle. The benign " +
+        "explanation is that preview_send was re-called with `refresh: true` after the token " +
+        "was captured — in that case, the new pin has a new token AND a new preSignHash the " +
+        "user MUST re-match on-device. Do NOT retry with the old token: call preview_send " +
+        "again, surface the fresh CHECKS PERFORMED block and the new blind-sign hash to the " +
+        "user, and pass the new token. If the user did not ask for a refresh and the hash on " +
+        "their Ledger screen no longer matches the one they were shown, reject on-device — a " +
+        "token drift without a user-initiated refresh is not expected.",
     );
   }
   const tx = consumeHandle(args.handle);
