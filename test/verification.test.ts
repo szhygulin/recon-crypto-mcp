@@ -301,32 +301,27 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     // payloadHash does not match what Ledger displays, and leading the user
     // to expect a match trains rubber-stamping.
     expect(task).not.toMatch(/- Short hash:/);
-    // Two trust-boundary options offered, not performed. (c) was dropped —
-    // it collapsed to (b) in practice because WebFetch can't execute
-    // swiss-knife's client-side JS. (b) now optionally extends via a
-    // 4byte / openchain signature-lookup fallback, but that's still (b).
-    expect(task).toMatch(/OFFER/);
-    expect(task).toMatch(/trust boundary/);
-    expect(task).toMatch(/\(a\)/);
-    expect(task).toMatch(/\(b\)/);
+    // Prepare-time no longer surfaces the (a)/(b)/(c) trust-boundary menu.
+    // The mandatory integrity checks (agent-side ABI decode + pair-
+    // consistency hash) now auto-run at preview_send time, so the prepare
+    // reply just ends with one line pointing at "send".
+    expect(task).not.toMatch(/OFFER/);
+    expect(task).not.toMatch(/\(a\)/);
+    expect(task).not.toMatch(/\(b\)/);
     expect(task).not.toMatch(/\(c\)/);
-    // (b) extension: agent may WebFetch the selector registry when its
-    // weights don't recognize a selector, but must say so explicitly.
-    expect(task).toMatch(/4byte\.directory/);
-    expect(task).toMatch(/openchain/);
-    // Final Ledger reminder must honestly cover both modes and NOT claim our
-    // prepare-time payloadHashShort matches Ledger's on-device hash.
-    expect(task).toMatch(/On the Ledger screen/);
-    expect(task).toMatch(/clear-signs/);
-    expect(task).toMatch(/blind-signs/);
-    // Must point at the send-time LEDGER BLIND-SIGN HASH block as the
-    // authoritative source, not claim our prepare-time hash works.
-    expect(task).toMatch(/LEDGER BLIND-SIGN HASH/);
-    expect(task).toMatch(/To = <to address>/);
-    expect(task).toMatch(/Value =\s*<human native amount>/);
+    // Openchain signature-lookup fallback prose is gone — the server's
+    // auto-emitted CROSS-CHECK SUMMARY already covers the signature check,
+    // so the agent has no "do an extra signature lookup" task to offer.
+    expect(task).not.toMatch(/openchain/);
+    // Next-step directive is a single "Reply 'send'" line; the on-device
+    // hash reminder moved into preview_send's LEDGER BLIND-SIGN HASH block.
+    expect(task).toMatch(/Reply 'send' to continue/);
+    expect(task).toMatch(/preview_send/);
+    // Mandatory checks are described as running at preview time, not here.
+    expect(task).toMatch(/CHECKS PERFORMED/);
     // The prepare-time shortHash placeholder must not be substituted anywhere
-    // — the new block refers to it only inside a warning quote, never as a
-    // "Ledger must show X" directive.
+    // — our payloadHash does not match what Ledger displays and we do not
+    // want to train rubber-stamping.
     expect(task).not.toContain(stamped.verification!.payloadHashShort);
   });
 
@@ -954,8 +949,10 @@ describe("agent task block: cross-check relay + on-device guidance", () => {
     expect(task).toMatch(/VERBATIM/);
     // Explicit don't-scrape rule.
     expect(task).toMatch(/do NOT script your own WebFetch/i);
-    // Still carries the on-device reminder and handle-secrecy rule.
-    expect(task).toMatch(/On the Ledger screen/);
+    // Handle-secrecy rule still applies — opaque internal state.
     expect(task).toMatch(/Do NOT echo the handle/);
+    // The on-device reminder moved out of prepare-time and into the
+    // LEDGER BLIND-SIGN HASH block emitted by preview_send.
+    expect(task).toMatch(/preview_send/);
   });
 });
