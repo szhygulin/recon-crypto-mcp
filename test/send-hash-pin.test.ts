@@ -175,6 +175,59 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     expect(block).not.toMatch(/EXTRA CHECKS YOU CAN RUN/);
     expect(block).not.toMatch(/\(1\)\s*<plain-English pair-consistency/);
   });
+
+  it("splices the swiss-knife decoder URL into the ⚠ DECODE UNAVAILABLE branch of the render template", async () => {
+    const { renderPreviewVerifyAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const decoderUrl =
+      "https://calldata.swiss-knife.xyz/decoder?calldata=0x736eac0b00&address=0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE&chainId=1";
+    const block = renderPreviewVerifyAgentTaskBlock({
+      chain: "ethereum",
+      preSignHash: "0xabc",
+      pinned: {
+        nonce: 7,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "21000",
+      },
+      to: "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE",
+      valueWei: "0",
+      decoderUrl,
+    });
+    // The URL must appear INSIDE the render-shape template so the agent's
+    // paraphrase of the template retains it — regression: when instructed
+    // to "include the URL from the earlier prepare block", agents narrated
+    // "see the prepare block above" instead of rendering the URL, forcing
+    // the user to scroll up.
+    expect(block).toContain(decoderUrl);
+    expect(block).toMatch(/Browser-side decode fallback:/);
+    // Instruction must forbid the "see the earlier block" paraphrase.
+    expect(block).toMatch(/Do NOT paraphrase the URL away/);
+  });
+
+  it("when no decoder URL is available (oversized calldata), tells the agent to say so honestly", async () => {
+    const { renderPreviewVerifyAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPreviewVerifyAgentTaskBlock({
+      chain: "ethereum",
+      preSignHash: "0xabc",
+      pinned: {
+        nonce: 7,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "21000",
+      },
+      to: "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE",
+      valueWei: "0",
+      // no decoderUrl — e.g. calldata too large to preload into swiss-knife URL
+    });
+    expect(block).not.toMatch(/Browser-side decode fallback:/);
+    expect(block).toMatch(/browser fallback is unavailable/i);
+    // Second-LLM is the remaining gap-closer in this case.
+    expect(block).toMatch(/second-LLM/);
+  });
 });
 
 describe("renderLedgerHashBlock", () => {

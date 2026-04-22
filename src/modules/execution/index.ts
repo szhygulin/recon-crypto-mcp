@@ -566,6 +566,15 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
   };
   previewToken: string;
   refreshed?: boolean;
+  /**
+   * Swiss-knife decoder URL carried over from prepare-time verification. Echoed
+   * on the preview response so `renderPreviewVerifyAgentTaskBlock` can splice
+   * it directly into the ⚠ DECODE UNAVAILABLE branch of the render template —
+   * without this, the agent was "mentioning" the URL lived in the earlier
+   * prepare block instead of actually surfacing it in the CHECKS PERFORMED
+   * output, forcing the user to scroll up.
+   */
+  decoderUrl?: string;
 }> {
   if (hasTronHandle(args.handle)) {
     throw new Error(
@@ -575,6 +584,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     );
   }
   const tx = consumeHandle(args.handle);
+  const decoderUrl = tx.verification?.decoderUrl;
   const existing = getPinnedGas(args.handle);
   if (existing && !args.refresh) {
     return {
@@ -590,6 +600,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
         gas: existing.gas.toString(),
       },
       previewToken: existing.previewToken,
+      ...(decoderUrl ? { decoderUrl } : {}),
     };
   }
   await runEvmPreSignGuards(tx);
@@ -639,6 +650,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     },
     previewToken,
     ...(existing ? { refreshed: true } : {}),
+    ...(decoderUrl ? { decoderUrl } : {}),
   };
 }
 

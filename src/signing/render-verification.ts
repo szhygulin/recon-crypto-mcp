@@ -329,6 +329,15 @@ export function renderPreviewVerifyAgentTaskBlock(args: {
   };
   to: string;
   valueWei: string;
+  /**
+   * Swiss-knife decoder URL carried from prepare-time verification. Spliced
+   * into the ⚠ DECODE UNAVAILABLE branch of the CHECKS PERFORMED template so
+   * the agent has no ambiguity about where it goes — when agents were told
+   * "include the swiss-knife URL from the prepare block" they paraphrased
+   * "see the earlier block" instead of actually rendering the URL, forcing
+   * the user to scroll back.
+   */
+  decoderUrl?: string;
 }): string {
   const checksPayload = {
     abiDecode: {
@@ -366,10 +375,13 @@ export function renderPreviewVerifyAgentTaskBlock(args: {
     "    separate trust boundary (model weights, not server code).",
     "  - If you don't recognize the 4-byte selector or are low-confidence on",
     "    the arg decoding, mark this check ⚠ DECODE UNAVAILABLE in the",
-    "    CHECKS PERFORMED block below and include the swiss-knife decoder",
-    "    URL (from the VERIFY BEFORE SIGNING block emitted at prepare time)",
-    "    as a suggested third-party check the user can run in their browser.",
-    "    Do NOT fabricate a decode when you aren't sure.",
+    "    CHECKS PERFORMED block below. You MUST render the swiss-knife decoder",
+    "    URL (spliced into the ⚠ render-shape template below) on its own line",
+    "    directly under the ABI DECODE threat clause — a visible, clickable",
+    "    fallback the user can open in their browser to decode the calldata",
+    "    against Etherscan's verified ABI. Do NOT paraphrase the URL away with",
+    '    "see the earlier prepare block" — the user should not have to scroll',
+    "    up to find it. Do NOT fabricate a decode when you aren't sure.",
     "  - If confident, compare your decode against the compact bullet summary",
     "    you showed at prepare time. Report ✓ MATCH or ✗ MISMATCH.",
     "",
@@ -413,6 +425,18 @@ export function renderPreviewVerifyAgentTaskBlock(args: {
     "    ═══════ CHECKS PERFORMED ═══════",
     "    [✓|✗|⚠] ABI DECODE — <one-line verdict>.",
     "        (protects against MCP-side calldata tampering)",
+    ...(args.decoderUrl
+      ? [
+          "        [On ⚠ only — you MUST include this line verbatim so the",
+          "         user has a clickable fallback without scrolling:]",
+          `        Browser-side decode fallback: ${args.decoderUrl}`,
+        ]
+      : [
+          "        [On ⚠ — no swiss-knife URL was available for this tx",
+          "         (calldata too large or TRON chain). Tell the user the",
+          "         browser fallback is unavailable and the second-LLM",
+          "         check (option 2 below) is the remaining gap-closer.]",
+        ]),
     "    [✓|⏸] PAIR-CONSISTENCY HASH — <one-line verdict>.",
     "        (protects against MCP lying about the bytes sent to WalletConnect)",
     "    □ SECOND-LLM CHECK — optional, available on request.",

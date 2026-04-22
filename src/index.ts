@@ -345,6 +345,7 @@ function previewSendHandler(
       gas: string;
     };
     previewToken: string;
+    decoderUrl?: string;
   }>,
 ) {
   return async (args: { handle: string }) => {
@@ -373,6 +374,7 @@ function previewSendHandler(
               pinned: result.pinned,
               to: result.to,
               valueWei: result.valueWei,
+              ...(result.decoderUrl ? { decoderUrl: result.decoderUrl } : {}),
             }),
           },
         ],
