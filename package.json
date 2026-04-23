@@ -20,7 +20,8 @@
     "start": "node dist/index.js",
     "setup": "node dist/setup.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "postinstall": "patch-package"
   },
   "keywords": [
     "mcp",
@@ -133,6 +134,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
+    "patch-package": "^8.0.1",
     "typescript": "^5.6.0",
     "vitest": "^4.1.4"
   },
