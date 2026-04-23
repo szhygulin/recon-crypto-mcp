@@ -25,10 +25,18 @@ export interface CompoundMarketIncidentEntry {
   address: `0x${string}`;
   baseToken: { symbol: string; address: `0x${string}` };
   pausedActions: CometPausedAction[];
+  /**
+   * True when the pause-flags multicall could not be resolved confidently
+   * — whole-call throw (RPC flake, rate-limit under the 12-way incident-scan
+   * concurrency) or per-slot failure. When set, `pausedActions` is a LOWER
+   * BOUND and `flagged` is forced to `true` so the scan errs toward surfacing
+   * a suspected incident rather than silently clearing one. Filed as issue #71.
+   */
+  pausedActionsUnknown?: boolean;
   utilization: number;
   totalSupply: string;
   totalBorrow: string;
-  /** True when any pause flag is set OR utilization ≥ 0.95 (borrowers can't exit). */
+  /** True when any pause flag is set, pausedActionsUnknown is true, OR utilization ≥ 0.95 (borrowers can't exit). */
   flagged: boolean;
 }
 
@@ -132,19 +140,27 @@ async function getCompoundIncidentStatus(
       const baseDecimals = Number(decimals);
       const baseSymbol = symbol as string;
 
-      const pausedActions = await readCometPausedActions(client, m.address).catch(
-        () => [] as CometPausedAction[]
-      );
+      // Drop the old `.catch(() => [])` — it was the root cause of issue
+      // #71: when the pause-multicall failed under scan concurrency, the
+      // scan reported `pausedActions: []` and `flagged: false`, which the
+      // agent treated as "confirmed nothing paused". The function now
+      // returns `{ pausedActions, unknown }` and folds unknown into
+      // `flagged: true` so the scan errs toward surfacing an incident.
+      const pauseRead = await readCometPausedActions(client, m.address);
 
       const utilFraction = Number(formatUnits(utilization, 18));
-      const flagged = pausedActions.length > 0 || utilFraction >= HIGH_UTILIZATION_FLAG;
+      const flagged =
+        pauseRead.pausedActions.length > 0 ||
+        pauseRead.unknown ||
+        utilFraction >= HIGH_UTILIZATION_FLAG;
 
       return {
         chain,
         market: m.name,
         address: m.address,
         baseToken: { symbol: baseSymbol, address: baseAddr },
-        pausedActions,
+        pausedActions: pauseRead.pausedActions,
+        ...(pauseRead.unknown ? { pausedActionsUnknown: true } : {}),
         utilization: round(utilFraction, 6),
         totalSupply: formatUnits(totalSupplyWei, baseDecimals),
         totalBorrow: formatUnits(totalBorrowWei, baseDecimals),
