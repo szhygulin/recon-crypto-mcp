@@ -212,24 +212,119 @@ async function configureTron(p: Prompt): Promise<string | undefined> {
   return apiKey;
 }
 
+const HELIUS_HOST = "mainnet.helius-rpc.com";
+
+function heliusUrlFromKey(apiKey: string): string {
+  return `https://${HELIUS_HOST}/?api-key=${apiKey}`;
+}
+
+/** Extract the api-key query param from a Helius URL. Returns undefined if the URL isn't Helius or lacks the param. */
+function extractHeliusKey(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== HELIUS_HOST) return undefined;
+    return parsed.searchParams.get("api-key") ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Light liveness check: JSON-RPC `getVersion` with a 5s timeout. A working
+ * Solana RPC always returns `result.solana-core` — anything else (HTTP
+ * error, 401 from a bad Helius key, timeout) throws a descriptive error.
+ */
+async function validateSolanaRpcUrl(url: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getVersion" }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`RPC returned ${res.status} ${res.statusText}`);
+    }
+    const body = (await res.json()) as {
+      result?: { "solana-core"?: string };
+      error?: { message?: string };
+    };
+    if (body.error) {
+      throw new Error(`getVersion RPC error: ${body.error.message ?? "unknown"}`);
+    }
+    const version = body.result?.["solana-core"];
+    if (!version) throw new Error(`no solana-core version in response`);
+    return version;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function configureSolana(p: Prompt): Promise<string | undefined> {
   console.log("\n--- Solana (optional — enables SOL + SPL balance reads and history) ---");
   console.log("Solana is non-EVM with its own ecosystem: SPL tokens via Associated Token");
   console.log("Accounts, native validator staking, and DeFi protocols like Jupiter/Marinade/");
-  console.log("Jito/Raydium/Orca. Paste the full RPC URL from your provider — Helius is the");
-  console.log("recommended choice (free tier covers typical portfolio use):");
-  console.log("  Helius:    https://mainnet.helius-rpc.com/?api-key=YOUR_KEY");
-  console.log("  QuickNode: https://your-endpoint.solana-mainnet.quiknode.pro/YOUR_TOKEN/");
-  console.log("  Alchemy:   https://solana-mainnet.g.alchemy.com/v2/YOUR_KEY");
-  console.log("Skip with empty input — Solana reads will be disabled.");
+  console.log("Jito/Raydium/Orca. Public mainnet RPC is rate-limited — use a provider.");
+
   const existing = readUserConfig()?.solanaRpcUrl;
-  const answer = await p.ask(
-    existing
-      ? "Solana RPC URL [press enter to keep existing]: "
-      : "Solana RPC URL (or blank to skip): "
+  const existingHeliusKey = extractHeliusKey(existing);
+
+  const providerIdx = await p.askChoice(
+    "Select a Solana RPC provider:",
+    [
+      "Helius (recommended — enter API key, we build the URL)",
+      "Custom URL (paste full URL from QuickNode / Alchemy / Triton / etc.)",
+      "Skip — disable Solana reads",
+    ],
+    existing && !existingHeliusKey ? 1 : 0
   );
-  const url = answer || existing;
+
+  if (providerIdx === 2) return undefined;
+
+  if (providerIdx === 0) {
+    // Helius flow — mirrors the Infura/Alchemy key-based path for EVM RPC.
+    console.log("Create a free Helius API key at https://dashboard.helius.dev (Project → API Keys).");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const prompt = existingHeliusKey
+        ? "Helius API key [press enter to keep existing]: "
+        : "Helius API key: ";
+      const entered = await p.ask(prompt);
+      const apiKey = entered || existingHeliusKey || "";
+      if (!apiKey) {
+        console.log("  An API key is required. Try again or pick 'Skip'.");
+        continue;
+      }
+      const url = heliusUrlFromKey(apiKey);
+      try {
+        const version = await validateSolanaRpcUrl(url);
+        console.log(`  Helius API key OK — solana-core ${version}.`);
+        return url;
+      } catch (e) {
+        console.warn(`  Validation failed: ${(e as Error).message}`);
+      }
+    }
+    throw new Error("Could not validate Helius API key after 3 attempts.");
+  }
+
+  // Custom URL — user pastes the whole thing. Validate lightly.
+  const existingCustom = !existingHeliusKey ? existing : undefined;
+  const answer = await p.ask(
+    existingCustom
+      ? "Solana RPC URL [press enter to keep existing]: "
+      : "Solana RPC URL: "
+  );
+  const url = answer || existingCustom;
   if (!url) return undefined;
+  try {
+    const version = await validateSolanaRpcUrl(url);
+    console.log(`  Solana RPC OK — solana-core ${version}.`);
+  } catch (e) {
+    console.warn(`  Warning: could not validate Solana RPC — ${(e as Error).message}`);
+    console.warn("  Saving anyway; balance reads will surface the error at query time.");
+  }
   return url;
 }
 
@@ -335,7 +430,15 @@ function summarizeConfig(cfg: UserConfig): void {
   console.log(`  Etherscan API key:   ${cfg.etherscanApiKey ? "set" : "not set"}`);
   console.log(`  1inch API key:       ${cfg.oneInchApiKey ? "set" : "not set"}`);
   console.log(`  TronGrid API key:    ${cfg.tronApiKey ? "set" : "not set"}`);
-  console.log(`  Solana RPC URL:      ${cfg.solanaRpcUrl ? "set" : "not set"}`);
+  console.log(
+    `  Solana RPC URL:      ${
+      cfg.solanaRpcUrl
+        ? extractHeliusKey(cfg.solanaRpcUrl)
+          ? "Helius (API key set)"
+          : "custom URL set"
+        : "not set"
+    }`
+  );
   console.log(
     `  WalletConnect:       ${cfg.walletConnect?.projectId ? "project ID set" : "not set"}`
   );
