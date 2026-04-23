@@ -123,6 +123,144 @@ describe("get_market_incident_status (compound-v3)", () => {
     expect(cusdt.flagged).toBe(false);
   });
 
+  // Regression for issue #71 — pause-flags multicall silently returning
+  // `pausedActions: []` on RPC flake hid real incidents. After the fix,
+  // a whole-call throw must surface as `pausedActionsUnknown: true` AND
+  // `flagged: true`, never as the silent false-negative that motivated
+  // the issue.
+  it("surfaces unknown pause state when the pause multicall throws", async () => {
+    const cUSDCv3 = "0xc3d688B66703497DAA19211EEdff47f25384cdc3".toLowerCase();
+
+    const mockClient = {
+      getBlockNumber: vi.fn(async () => 19_800_000n),
+      multicall: vi.fn(
+        async ({ contracts }: { contracts: { address: string; functionName: string }[] }) => {
+          const first = contracts[0];
+          // Pause-flag multicall for cUSDCv3 throws (simulates RPC flake
+          // under the incident-scan concurrency fan-out).
+          if (
+            first.functionName === "isSupplyPaused" &&
+            first.address.toLowerCase() === cUSDCv3
+          ) {
+            throw new Error("rpc flake");
+          }
+          // Other cometes' pause reads return clean.
+          if (first.functionName === "isSupplyPaused") {
+            return Array.from({ length: 5 }, () => ({ status: "success", result: false }));
+          }
+          // Core reads: baseToken + utilization + supply + borrow.
+          if (first.functionName === "baseToken") {
+            return [
+              "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              500_000_000_000_000_000n,
+              1_000_000_000_000n,
+              500_000_000_000n,
+            ];
+          }
+          if (first.functionName === "decimals") {
+            return [6, "USDC"];
+          }
+          return [];
+        }
+      ),
+    };
+
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => mockClient,
+      resetClients: () => {},
+    }));
+
+    const { getMarketIncidentStatus } = await import(
+      "../src/modules/incidents/index.js"
+    );
+    const result = await getMarketIncidentStatus({
+      protocol: "compound-v3",
+      chain: "ethereum",
+    });
+
+    const cusdc = result.markets.find(
+      (m) => m.address.toLowerCase() === cUSDCv3
+    );
+    if (cusdc && "pausedActionsUnknown" in cusdc) {
+      expect(cusdc.pausedActionsUnknown).toBe(true);
+      expect(cusdc.flagged).toBe(true);
+      // Top-level `incident` must also trip so the tool doesn't report "all clear".
+      expect(result.incident).toBe(true);
+    } else {
+      throw new Error(
+        "expected cUSDCv3 entry with pausedActionsUnknown: true after pause multicall throw"
+      );
+    }
+  });
+
+  // Regression for the per-slot failure branch: `allowFailure: true` means
+  // one failed slot returns a failure row rather than throwing. The fix
+  // treats that as unknown too — the whole list isn't trustworthy if
+  // `isWithdrawPaused` failed while the other four succeeded.
+  it("surfaces unknown pause state when one pause slot fails (per-slot allowFailure path)", async () => {
+    const cUSDCv3 = "0xc3d688B66703497DAA19211EEdff47f25384cdc3".toLowerCase();
+
+    const mockClient = {
+      getBlockNumber: vi.fn(async () => 19_800_000n),
+      multicall: vi.fn(
+        async ({ contracts }: { contracts: { address: string; functionName: string }[] }) => {
+          const first = contracts[0];
+          if (
+            first.functionName === "isSupplyPaused" &&
+            first.address.toLowerCase() === cUSDCv3
+          ) {
+            // 4 of 5 succeed; isWithdrawPaused fails with allowFailure:true.
+            return [
+              { status: "success", result: false },
+              { status: "success", result: false },
+              { status: "failure", error: new Error("reverted") },
+              { status: "success", result: false },
+              { status: "success", result: false },
+            ];
+          }
+          if (first.functionName === "isSupplyPaused") {
+            return Array.from({ length: 5 }, () => ({ status: "success", result: false }));
+          }
+          if (first.functionName === "baseToken") {
+            return [
+              "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              500_000_000_000_000_000n,
+              1_000_000_000_000n,
+              500_000_000_000n,
+            ];
+          }
+          if (first.functionName === "decimals") return [6, "USDC"];
+          return [];
+        }
+      ),
+    };
+
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => mockClient,
+      resetClients: () => {},
+    }));
+
+    const { getMarketIncidentStatus } = await import(
+      "../src/modules/incidents/index.js"
+    );
+    const result = await getMarketIncidentStatus({
+      protocol: "compound-v3",
+      chain: "ethereum",
+    });
+
+    const cusdc = result.markets.find(
+      (m) => m.address.toLowerCase() === cUSDCv3
+    );
+    if (cusdc && "pausedActionsUnknown" in cusdc) {
+      expect(cusdc.pausedActionsUnknown).toBe(true);
+      expect(cusdc.flagged).toBe(true);
+    } else {
+      throw new Error(
+        "expected cUSDCv3 entry with pausedActionsUnknown: true after per-slot failure"
+      );
+    }
+  });
+
   it("flags a paused Aave reserve and a high-utilization reserve", async () => {
     // Three reserves: WETH (paused, low utilization), USDC (clean, 99% utilization),
     // DAI (clean, normal utilization). Expect incident=true with two flagged entries.

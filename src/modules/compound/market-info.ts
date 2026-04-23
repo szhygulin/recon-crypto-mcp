@@ -44,6 +44,12 @@ export interface CompoundMarketInfo {
   supplyApr: number;
   borrowApr: number;
   pausedActions: CometPausedAction[];
+  /**
+   * True when the pause-flags multicall could not be resolved confidently.
+   * When set, `pausedActions` is a LOWER BOUND — callers MUST treat it as
+   * "state unknown" rather than "confirmed unpaused". See issue #71.
+   */
+  pausedActionsUnknown?: boolean;
   collateralAssets: CometCollateralAssetInfo[];
 }
 
@@ -200,7 +206,8 @@ export async function getCompoundMarketInfo(
       Number(formatUnits(borrowRatePerSec * SECONDS_PER_YEAR, 18)),
       6
     ),
-    pausedActions,
+    pausedActions: pausedActions.pausedActions,
+    ...(pausedActions.unknown ? { pausedActionsUnknown: true } : {}),
     collateralAssets,
   };
 }

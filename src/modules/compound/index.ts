@@ -41,18 +41,52 @@ export interface CompoundPosition {
    * prepare_compound_withdraw.
    */
   pausedActions?: CometPausedAction[];
+  /**
+   * True when the pause-flags multicall could not be resolved confidently
+   * (whole-call failure, or one of the five per-slot reads failed). When this
+   * is set, `pausedActions` is a LOWER BOUND — callers MUST treat it as
+   * "state unknown" rather than "confirmed unpaused". Issue #71 traced a
+   * silent false-negative to callers treating `pausedActions: []` as
+   * confirmation that nothing was paused when in reality the read had
+   * failed under concurrency pressure.
+   */
+  pausedActionsUnknown?: boolean;
 }
 
 /**
- * Reads all five Comet pause flags in a single multicall and returns the subset
- * that are currently `true`. Split out from readMarketPosition so:
- *   (a) a failed pause-read never masks a position; worst case it returns [].
- *   (b) the get_compound_market_info tool can reuse it without duplicating ABI.
+ * Discriminated result of a Comet pause-flag read. `unknown: true` means the
+ * caller CANNOT treat `pausedActions: []` as "confirmed nothing paused" —
+ * either the multicall failed entirely, or at least one per-slot read came
+ * back as failure. `pausedActions` is always a lower bound on what's paused
+ * (slots that successfully returned `true`), never a false positive.
+ */
+export interface CometPauseRead {
+  pausedActions: CometPausedAction[];
+  unknown: boolean;
+}
+
+/**
+ * Reads all five Comet pause flags in a single multicall and returns them
+ * as `{ pausedActions, unknown }`.
+ *
+ *  - `pausedActions` is always a LOWER BOUND on what's paused — only slots
+ *    that successfully returned `true` land in it. Never a false positive.
+ *  - `unknown` is `true` when the caller cannot trust an empty list as
+ *    "confirmed not paused": either the whole multicall threw (network
+ *    flake, RPC timeout under the `get_market_incident_status` 12-way
+ *    concurrency fan-out — issue #71), or at least one per-slot read
+ *    returned failure.
+ *
+ * Split out from readMarketPosition so (a) the incident-scan and the
+ * single-market info tools reuse one ABI list, (b) the decision of how to
+ * treat an unknown read (flag it, propagate, throw) lives with the caller.
+ * Never throws — failures are folded into `unknown: true` so the caller
+ * doesn't need a try/catch around every call site.
  */
 export async function readCometPausedActions(
   client: ReturnType<typeof getClient>,
   comet: `0x${string}`
-): Promise<CometPausedAction[]> {
+): Promise<CometPauseRead> {
   const pauseSlots: [string, CometPausedAction][] = [
     ["isSupplyPaused", "supply"],
     ["isTransferPaused", "transfer"],
@@ -60,24 +94,36 @@ export async function readCometPausedActions(
     ["isAbsorbPaused", "absorb"],
     ["isBuyPaused", "buy"],
   ];
-  const results = await client.multicall({
-    contracts: pauseSlots.map(([fn]) => ({
-      address: comet,
-      abi: cometAbi,
-      functionName: fn as
-        | "isSupplyPaused"
-        | "isTransferPaused"
-        | "isWithdrawPaused"
-        | "isAbsorbPaused"
-        | "isBuyPaused",
-    })),
-    allowFailure: true,
-  });
+  let results;
+  try {
+    results = await client.multicall({
+      contracts: pauseSlots.map(([fn]) => ({
+        address: comet,
+        abi: cometAbi,
+        functionName: fn as
+          | "isSupplyPaused"
+          | "isTransferPaused"
+          | "isWithdrawPaused"
+          | "isAbsorbPaused"
+          | "isBuyPaused",
+      })),
+      allowFailure: true,
+    });
+  } catch {
+    // Whole-call failure — RPC dropped the request, rate-limited, or the
+    // client itself errored. Treat as unknown rather than confirmed-clean.
+    return { pausedActions: [], unknown: true };
+  }
   const paused: CometPausedAction[] = [];
+  let perSlotFailure = false;
   results.forEach((r, i) => {
-    if (r.status === "success" && r.result === true) paused.push(pauseSlots[i][1]);
+    if (r.status === "success") {
+      if (r.result === true) paused.push(pauseSlots[i][1]);
+    } else {
+      perSlotFailure = true;
+    }
   });
-  return paused;
+  return { pausedActions: paused, unknown: perSlotFailure };
 }
 
 function listMarkets(chain: SupportedChain): { name: string; address: `0x${string}` }[] {
@@ -131,11 +177,11 @@ async function readMarketPosition(
   const n = results[1].status === "success" ? Number(results[1].result) : 0;
 
   // Pause-flag reads are best-effort and completely detached from the
-  // position-critical reads above. If this multicall errors on the way in
-  // (older Comet forks without some of these selectors, rate-limit, or a
-  // client mock that doesn't expect the call), we silently omit pausedActions
-  // rather than failing the position read.
-  const pausedActions = await readCometPausedActions(client, comet).catch(() => [] as CometPausedAction[]);
+  // position-critical reads above. `readCometPausedActions` never throws;
+  // on failure it returns `{ unknown: true }` which we propagate so the
+  // caller can tell "pause state unknown" (silent false negative — issue
+  // #71) from "confirmed not paused".
+  const pauseRead = await readCometPausedActions(client, comet);
 
   // Fetch base token metadata + enumerate collateral asset addresses. allowFailure:true
   // so one weird collateral (non-standard decimals/symbol, rate-limit) doesn't nuke the
@@ -251,7 +297,8 @@ async function readMarketPosition(
     totalDebtUsd: round(totalDebtUsd, 2),
     totalSuppliedUsd: round(totalSuppliedUsd, 2),
     netValueUsd: round(totalSuppliedUsd + totalCollateralUsd - totalDebtUsd, 2),
-    ...(pausedActions.length > 0 ? { pausedActions } : {}),
+    ...(pauseRead.pausedActions.length > 0 ? { pausedActions: pauseRead.pausedActions } : {}),
+    ...(pauseRead.unknown ? { pausedActionsUnknown: true } : {}),
   };
 }
 
