@@ -86,12 +86,18 @@ async function validateRpcUrl(url: string): Promise<number> {
 
 async function configureRpc(p: Prompt): Promise<UserConfig["rpc"]> {
   console.log("\n--- RPC Provider ---");
+  // Default to the currently-configured provider if any, so re-running the
+  // wizard doesn't force the user to re-pick every time. Index order matches
+  // the `providerOrder` array below.
+  const providerOrder = ["infura", "alchemy", "custom"] as const satisfies readonly RpcProvider[];
+  const existing = readUserConfig();
+  const defaultIdx = existing ? providerOrder.indexOf(existing.rpc.provider) : 0;
   const providerIdx = await p.askChoice(
     "Select an RPC provider:",
     ["Infura", "Alchemy", "Custom (bring your own URLs)"],
-    0
+    defaultIdx >= 0 ? defaultIdx : 0
   );
-  const provider = (["infura", "alchemy", "custom"] as RpcProvider[])[providerIdx];
+  const provider = providerOrder[providerIdx];
 
   if (provider === "custom") {
     const ethUrl = await p.ask("Ethereum RPC URL: ");
@@ -119,7 +125,6 @@ async function configureRpc(p: Prompt): Promise<UserConfig["rpc"]> {
   }
 
   // infura / alchemy
-  const existing = readUserConfig();
   const prevKey = existing?.rpc.provider === provider ? existing.rpc.apiKey : undefined;
   let apiKey = prevKey ?? "";
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -286,40 +291,166 @@ function printClaudeDesktopSnippet(): void {
   );
 }
 
+/**
+ * Print a redacted summary of the current config so the user can decide what
+ * (if anything) to change. API keys are shown as "set" / "not set" rather
+ * than the raw value — this file gets shown in terminals with scrollback and
+ * we don't want the keys hanging around up there.
+ */
+function summarizeConfig(cfg: UserConfig): void {
+  console.log("\n--- Current configuration ---");
+  if (cfg.rpc.provider === "custom") {
+    console.log(`  RPC provider:        custom`);
+    const urls = cfg.rpc.customUrls ?? {};
+    const chains = Object.keys(urls).filter((c) => (urls as Record<string, string>)[c]);
+    if (chains.length > 0) {
+      console.log(`    chains configured: ${chains.join(", ")}`);
+    }
+  } else {
+    console.log(
+      `  RPC provider:        ${cfg.rpc.provider}${cfg.rpc.apiKey ? " (API key set)" : " (API key MISSING)"}`
+    );
+  }
+  console.log(`  Etherscan API key:   ${cfg.etherscanApiKey ? "set" : "not set"}`);
+  console.log(`  1inch API key:       ${cfg.oneInchApiKey ? "set" : "not set"}`);
+  console.log(`  TronGrid API key:    ${cfg.tronApiKey ? "set" : "not set"}`);
+  console.log(
+    `  WalletConnect:       ${cfg.walletConnect?.projectId ? "project ID set" : "not set"}`
+  );
+}
+
+/**
+ * Section-by-section edit loop. The user picks a setting, we call the
+ * corresponding `configure*` function (which already supports "press enter
+ * to keep existing" for API-key fields), and loop until the user picks
+ * "Done". This is the ergonomic path for updating one setting without
+ * re-entering the whole wizard.
+ */
+async function editSectionMenu(p: Prompt): Promise<void> {
+  const sections = [
+    { label: "RPC provider / API key", action: "rpc" as const },
+    { label: "Etherscan API key", action: "etherscan" as const },
+    { label: "1inch API key", action: "oneinch" as const },
+    { label: "TronGrid API key", action: "tron" as const },
+    { label: "WalletConnect project ID", action: "wc" as const },
+    { label: "Pair Ledger Live now", action: "pair" as const },
+    { label: "Done — exit setup", action: "done" as const },
+  ];
+  while (true) {
+    const idx = await p.askChoice(
+      "\nWhich setting would you like to edit?",
+      sections.map((s) => s.label),
+      sections.length - 1
+    );
+    const action = sections[idx].action;
+    if (action === "done") return;
+    switch (action) {
+      case "rpc": {
+        const rpc = await configureRpc(p);
+        patchUserConfig({ rpc });
+        break;
+      }
+      case "etherscan": {
+        const k = await configureEtherscan(p);
+        if (k !== undefined) patchUserConfig({ etherscanApiKey: k });
+        break;
+      }
+      case "oneinch": {
+        const k = await configureOneInch(p);
+        if (k !== undefined) patchUserConfig({ oneInchApiKey: k });
+        break;
+      }
+      case "tron": {
+        const k = await configureTron(p);
+        if (k !== undefined) patchUserConfig({ tronApiKey: k });
+        break;
+      }
+      case "wc": {
+        const k = await configureWalletConnect(p);
+        if (k !== undefined) patchUserConfig({ walletConnect: { projectId: k } });
+        break;
+      }
+      case "pair": {
+        await pairLedgerLiveFlow(p);
+        break;
+      }
+    }
+    console.log(`  Saved to ${getConfigPath()}.`);
+  }
+}
+
+/**
+ * Full first-time (or opt-in re-run) wizard. Walks every section in order.
+ * Extracted from main() so the edit-mode branch can skip it cleanly.
+ */
+async function runFullWizard(p: Prompt): Promise<void> {
+  const rpc = await configureRpc(p);
+  patchUserConfig({ rpc });
+
+  const etherscanApiKey = await configureEtherscan(p);
+  if (etherscanApiKey !== undefined) {
+    patchUserConfig({ etherscanApiKey });
+  }
+
+  const oneInchApiKey = await configureOneInch(p);
+  if (oneInchApiKey !== undefined) {
+    patchUserConfig({ oneInchApiKey });
+  }
+
+  const tronApiKey = await configureTron(p);
+  if (tronApiKey !== undefined) {
+    patchUserConfig({ tronApiKey });
+  }
+
+  const wcProjectId = await configureWalletConnect(p);
+  if (wcProjectId !== undefined) {
+    patchUserConfig({ walletConnect: { projectId: wcProjectId } });
+  }
+
+  // Pairing needs the project ID to be in config already (getSignClient reads it).
+  if (wcProjectId) {
+    await pairLedgerLiveFlow(p);
+  } else {
+    console.log("\nSkipping Ledger Live pairing (no WalletConnect project ID set).");
+  }
+}
+
 async function main() {
   console.log("VaultPilot MCP — interactive setup\n");
   console.log(`Config path: ${getConfigPath()}`);
 
   const p = new Prompt();
   try {
-    const rpc = await configureRpc(p);
-    patchUserConfig({ rpc });
-
-    const etherscanApiKey = await configureEtherscan(p);
-    if (etherscanApiKey !== undefined) {
-      patchUserConfig({ etherscanApiKey });
-    }
-
-    const oneInchApiKey = await configureOneInch(p);
-    if (oneInchApiKey !== undefined) {
-      patchUserConfig({ oneInchApiKey });
-    }
-
-    const tronApiKey = await configureTron(p);
-    if (tronApiKey !== undefined) {
-      patchUserConfig({ tronApiKey });
-    }
-
-    const wcProjectId = await configureWalletConnect(p);
-    if (wcProjectId !== undefined) {
-      patchUserConfig({ walletConnect: { projectId: wcProjectId } });
-    }
-
-    // Pairing needs the project ID to be in config already (getSignClient reads it).
-    if (wcProjectId) {
-      await pairLedgerLiveFlow(p);
+    const existing = readUserConfig();
+    if (existing) {
+      // Re-run with existing config: show what's there and offer a menu so
+      // the user can tweak one thing without re-entering everything. The
+      // previous behavior (no branch) forced a full re-run and relied on
+      // per-prompt "keep existing" affordances, which was confusing for
+      // users who just wanted to update one API key.
+      summarizeConfig(existing);
+      const mode = await p.askChoice(
+        "\nConfig already exists. What would you like to do?",
+        [
+          "Edit specific settings",
+          "Re-run the full setup wizard",
+          "Skip to Ledger Live pairing",
+          "Exit without changes",
+        ],
+        0
+      );
+      if (mode === 0) {
+        await editSectionMenu(p);
+      } else if (mode === 1) {
+        await runFullWizard(p);
+      } else if (mode === 2) {
+        await pairLedgerLiveFlow(p);
+      } else {
+        console.log("\nNo changes.");
+        return;
+      }
     } else {
-      console.log("\nSkipping Ledger Live pairing (no WalletConnect project ID set).");
+      await runFullWizard(p);
     }
 
     console.log(`\nConfig written to ${getConfigPath()}.`);
