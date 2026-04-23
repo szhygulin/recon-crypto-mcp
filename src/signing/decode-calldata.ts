@@ -13,6 +13,7 @@ import { stETHAbi, lidoWithdrawalQueueAbi } from "../abis/lido.js";
 import { eigenStrategyManagerAbi } from "../abis/eigenlayer-strategy-manager.js";
 import { uniswapPositionManagerAbi } from "../abis/uniswap-position-manager.js";
 import { lifiDiamondAbi } from "../abis/lifi-diamond.js";
+import { wethAbi } from "../abis/weth.js";
 import { CONTRACTS, NATIVE_SYMBOL, TOKEN_META } from "../config/contracts.js";
 import type {
   DecodedArg,
@@ -41,8 +42,18 @@ type DestinationKind =
   | "lido-withdrawalQueue"
   | "eigenlayer-strategyManager"
   | "uniswap-v3-npm"
+  | "weth9"
   | "known-erc20"
   | "lifi-diamond";
+
+/**
+ * WETH9 surface merged with the standard ERC-20 surface: `withdraw(uint256)`
+ * and `deposit()` are WETH9-specific, while `transfer`/`approve`/... are
+ * also emitted against WETH for Uniswap/Compound/Morpho supply flows.
+ * Classifying WETH as plain `known-erc20` would leave the decoder blind to
+ * `withdraw` calldata that `prepare_weth_unwrap` legitimately emits.
+ */
+const weth9Abi = [...erc20Abi, ...wethAbi] as Abi;
 
 interface Destination {
   kind: DestinationKind;
@@ -91,6 +102,13 @@ function classifyDestination(chain: SupportedChain, to: `0x${string}`): Destinat
   }
 
   if (lo === LIFI_DIAMOND) return { kind: "lifi-diamond", abi: lifiDiamondAbi as Abi };
+
+  // WETH9 — matched BEFORE the generic tokens loop so `withdraw(uint256)` /
+  // `deposit()` decode cleanly instead of falling through to plain ERC-20.
+  const wethAddr = (CONTRACTS[chain] as { tokens?: { WETH?: string } }).tokens?.WETH;
+  if (wethAddr && lo === wethAddr.toLowerCase()) {
+    return { kind: "weth9", abi: weth9Abi };
+  }
 
   const tokens = (CONTRACTS[chain] as { tokens?: Record<string, string> }).tokens;
   if (tokens) {
@@ -144,7 +162,8 @@ function formatErc20ArgHuman(
   raw: unknown,
 ): string | undefined {
   if (argType !== "uint256" || typeof raw !== "bigint") return undefined;
-  if (argName !== "amount" && argName !== "value") return undefined;
+  // `wad` is the canonical WETH9 arg name for withdraw(uint256).
+  if (argName !== "amount" && argName !== "value" && argName !== "wad") return undefined;
   const meta = TOKEN_META[chain][to.toLowerCase()];
   if (!meta) return undefined;
   return `${formatUnits(raw, meta.decimals)} ${meta.symbol}`;
@@ -195,7 +214,7 @@ export function decodeCalldata(
       value: stringifyArg(raw),
     };
     const human =
-      dest.kind === "known-erc20"
+      dest.kind === "known-erc20" || dest.kind === "weth9"
         ? formatErc20ArgHuman(chain, to, base.name, input.type, raw)
         : undefined;
     if (input.type === "address" && typeof raw === "string") {
