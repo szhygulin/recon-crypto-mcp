@@ -1,0 +1,19 @@
+# Snyk (https://snyk.io) policy file
+version: v1.25.0
+ignore:
+  SNYK-JS-BIGINTBUFFER-3364597:
+    - '*':
+        reason: >-
+          Patched at the library level via patch-package (see
+          patches/bigint-buffer+1.1.5.patch). No upstream fix exists for
+          any version of bigint-buffer; maintainer has not responded.
+          Our patch adds a null / non-Buffer type guard to toBigIntLE
+          and toBigIntBE so the exact inputs that trigger the buffer
+          overflow (CVE-2025-3194) throw TypeError instead of reaching
+          the vulnerable native binding. The postinstall hook in
+          package.json reapplies the patch on every install.
+          Re-evaluate when a fixed upstream version ships or when
+          @solana/spl-token drops its @solana/buffer-layout-utils
+          dependency.
+        created: 2026-04-23T00:00:00.000Z
+        expires: 2027-04-23T00:00:00.000Z
