@@ -29,6 +29,7 @@ const AAVE_POOL_ETH = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2";
 const LIFI_DIAMOND = "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE";
 const USDC_ETH = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const USDT_ETH = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+const WETH_ETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 const ATTACKER = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 const WALLET = "0x1111111111111111111111111111111111111111";
 
@@ -329,5 +330,101 @@ describe("Pre-sign check: protocol calls", () => {
         description: "unknown call",
       })
     ).rejects.toThrow(/refusing to sign against unknown contract/);
+  });
+});
+
+describe("Pre-sign check: WETH9-specific selectors", () => {
+  it("accepts WETH.withdraw(uint256) — the prepare_weth_unwrap path", async () => {
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const { wethAbi } = await import("../src/abis/weth.js");
+    const data = encodeFunctionData({
+      abi: wethAbi,
+      functionName: "withdraw",
+      args: [500_000_100_000_000_000n], // 0.5000001 WETH
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: WETH_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "Unwrap WETH",
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("accepts WETH.deposit()", async () => {
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const { wethAbi } = await import("../src/abis/weth.js");
+    const data = encodeFunctionData({ abi: wethAbi, functionName: "deposit", args: [] });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: WETH_ETH as `0x${string}`,
+        data,
+        value: "1000000000000000000",
+        from: WALLET,
+        description: "Wrap ETH",
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("still accepts approve(WETH, SwapRouter02) — ERC-20 approvals on WETH must keep working", async () => {
+    // Uniswap V3 swaps with WETH as the input token need this approval; a naive
+    // fix that made WETH reject ERC-20 selectors would break prepare_uniswap_swap.
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const SWAP_ROUTER_02 = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45";
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [SWAP_ROUTER_02 as `0x${string}`, maxUint256],
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: WETH_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "approve WETH for Uniswap",
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("still accepts transfer(WETH, recipient)", async () => {
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "transfer",
+      args: [ATTACKER as `0x${string}`, 100n],
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: WETH_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "transfer WETH",
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects a random selector aimed at WETH9", async () => {
+    // The per-selector gate is the reason we don't just classify WETH as
+    // some catch-all kind. An arbitrary selector on WETH must still refuse.
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const data = "0xdeadbeef" + "00".repeat(32);
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: WETH_ETH as `0x${string}`,
+        data: data as `0x${string}`,
+        value: "0",
+        from: WALLET,
+        description: "bogus call on WETH",
+      })
+    ).rejects.toThrow(/not a known function on weth9/);
   });
 });

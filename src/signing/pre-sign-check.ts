@@ -7,6 +7,7 @@ import { cometAbi } from "../abis/compound-comet.js";
 import { morphoBlueAbi } from "../abis/morpho-blue.js";
 import { uniswapPositionManagerAbi } from "../abis/uniswap-position-manager.js";
 import { swapRouter02Abi } from "../abis/uniswap-swap-router-02.js";
+import { wethAbi } from "../abis/weth.js";
 import { CONTRACTS } from "../config/contracts.js";
 import type { SupportedChain, UnsignedTx } from "../types/index.js";
 
@@ -55,6 +56,7 @@ type DestinationKind =
   | "eigenlayer-strategyManager"
   | "uniswap-v3-npm"
   | "uniswap-v3-swap-router"
+  | "weth9"
   | "known-erc20"
   | "lifi-diamond";
 
@@ -86,6 +88,12 @@ const EIGEN_SELECTORS = computeSelectorsFromAbi(eigenStrategyManagerAbi);
 const UNISWAP_NPM_SELECTORS = computeSelectorsFromAbi(uniswapPositionManagerAbi);
 const UNISWAP_SWAP_ROUTER_SELECTORS = computeSelectorsFromAbi(swapRouter02Abi);
 const ERC20_SELECTORS = computeSelectorsFromAbi(erc20Abi);
+// WETH9 is also an ERC-20 (approve/transfer for Uniswap/Compound/Morpho
+// supply flows), so the accepted surface is ERC-20 ∪ {withdraw, deposit}.
+const WETH9_SELECTORS = new Set<string>([
+  ...ERC20_SELECTORS,
+  ...computeSelectorsFromAbi(wethAbi),
+]);
 
 async function classifyDestination(
   chain: SupportedChain,
@@ -139,7 +147,16 @@ async function classifyDestination(
   // LiFi Diamond — accept but skip per-selector check (LiFi's ABI is huge and dynamic).
   if (lo === LIFI_DIAMOND) return { kind: "lifi-diamond", allowedAbi: null };
 
-  // Known ERC-20s (USDC, USDT, DAI, WETH, ...). Tokens ONLY — this path never
+  // WETH9 — matched BEFORE the generic tokens loop so the WETH9-specific
+  // `withdraw` / `deposit` selectors pass the per-selector check. Classified
+  // as plain `known-erc20` those selectors would be rejected even though
+  // `prepare_weth_unwrap` legitimately emits them.
+  const wethAddr = (CONTRACTS[chain].tokens as { WETH?: string } | undefined)?.WETH;
+  if (wethAddr && lo === wethAddr.toLowerCase()) {
+    return { kind: "weth9", allowedAbi: erc20Abi };
+  }
+
+  // Known ERC-20s (USDC, USDT, DAI, ...). Tokens ONLY — this path never
   // covers a protocol contract that exposes transfer-like selectors, because
   // the protocol branches above match first.
   const tokens = CONTRACTS[chain].tokens as Record<string, string> | undefined;
@@ -207,7 +224,8 @@ export async function assertTransactionSafe(tx: UnsignedTx): Promise<void> {
     // not, say, the Aave Pool. approve() on the pool itself is nonsensical.
     if (
       dest.kind !== "known-erc20" &&
-      dest.kind !== "lido-stETH" // stETH IS an ERC-20; approvals to spenders happen on it
+      dest.kind !== "lido-stETH" && // stETH IS an ERC-20; approvals to spenders happen on it
+      dest.kind !== "weth9" // WETH IS an ERC-20; Uniswap/Compound/Morpho supply flows approve it
     ) {
       throw new Error(
         `Pre-sign check: refusing approve() on ${dest.kind} (${tx.to}) — approvals should ` +
@@ -239,7 +257,10 @@ export async function assertTransactionSafe(tx: UnsignedTx): Promise<void> {
   //    we recognize (otherwise the agent is calling transfer() on an arbitrary
   //    contract with matching 4-byte — unlikely but worth rejecting).
   if (selector === SELECTOR.transfer) {
-    if (!dest || (dest.kind !== "known-erc20" && dest.kind !== "lido-stETH")) {
+    if (
+      !dest ||
+      (dest.kind !== "known-erc20" && dest.kind !== "lido-stETH" && dest.kind !== "weth9")
+    ) {
       throw new Error(
         `Pre-sign check: refusing transfer() on ${tx.to} (${tx.chain}) — token is not in our ` +
           `recognized set. Add it to CONTRACTS[${tx.chain}].tokens if this is a legitimate asset.`
@@ -283,6 +304,8 @@ export async function assertTransactionSafe(tx: UnsignedTx): Promise<void> {
         return UNISWAP_NPM_SELECTORS;
       case "uniswap-v3-swap-router":
         return UNISWAP_SWAP_ROUTER_SELECTORS;
+      case "weth9":
+        return WETH9_SELECTORS;
       case "known-erc20":
         return ERC20_SELECTORS;
       case "lifi-diamond":
