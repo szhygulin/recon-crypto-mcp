@@ -29,6 +29,7 @@ import {
   payloadFingerprint,
   tronPayloadFingerprint,
 } from "../../signing/verification.js";
+import { isClearSignOnlyTx } from "../../signing/render-verification.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { resolveTokenMeta } from "../shared/token-meta.js";
@@ -595,6 +596,16 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
    * output, forcing the user to scroll up.
    */
   decoderUrl?: string;
+  /**
+   * True for the three Ledger clear-sign-only tx types: native ETH send
+   * (empty calldata), ERC-20 `transfer`, ERC-20 `approve`. The preview
+   * handler uses this to render a reduced CHECKS PERFORMED template —
+   * no PAIR-CONSISTENCY HASH line, no BLIND-SIGN branch of NEXT ON-DEVICE
+   * (both are noise for these tx types; Ledger clear-signs decoded
+   * fields and the hash-match path never fires). No security posture
+   * change; the server still pins and re-hashes at send time.
+   */
+  clearSignOnly?: boolean;
 }> {
   if (hasTronHandle(args.handle)) {
     throw new Error(
@@ -605,6 +616,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
   }
   const tx = consumeHandle(args.handle);
   const decoderUrl = tx.verification?.decoderUrl;
+  const clearSignOnly = isClearSignOnlyTx(tx);
   const existing = getPinnedGas(args.handle);
   if (existing && !args.refresh) {
     return {
@@ -621,6 +633,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
       },
       previewToken: existing.previewToken,
       ...(decoderUrl ? { decoderUrl } : {}),
+      ...(clearSignOnly ? { clearSignOnly: true } : {}),
     };
   }
   await runEvmPreSignGuards(tx);
@@ -671,6 +684,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     previewToken,
     ...(existing ? { refreshed: true } : {}),
     ...(decoderUrl ? { decoderUrl } : {}),
+    ...(clearSignOnly ? { clearSignOnly: true } : {}),
   };
 }
 

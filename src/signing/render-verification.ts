@@ -16,11 +16,49 @@ import type { SupportedChain, TxVerification, UnsignedTronTx, UnsignedTx } from 
  */
 const ERC20_APPROVE_SELECTOR = "0x095ea7b3";
 
+/**
+ * ERC-20 `transfer(address,uint256)` selector. Same reason as
+ * `approve`: Ledger's Ethereum app + ERC-20 plugin clear-signs token
+ * transfers on-device (shows recipient + amount + token symbol). The
+ * blind-sign hash-match check never fires for these, and the
+ * pair-consistency recompute adds no information that the clear-sign
+ * screens don't already give the user.
+ */
+const ERC20_TRANSFER_SELECTOR = "0xa9059cbb";
+
 /** Returns false for txs whose verification block should be suppressed. */
 export function shouldRenderVerificationBlock(
   tx: Pick<UnsignedTx, "data">,
 ): boolean {
   return !tx.data.toLowerCase().startsWith(ERC20_APPROVE_SELECTOR);
+}
+
+/**
+ * True for txs the Ledger Ethereum app is guaranteed to clear-sign —
+ * native-value sends (empty calldata), ERC-20 `transfer`, and ERC-20
+ * `approve`. For these, the CHECKS PERFORMED block should be trimmed:
+ *
+ *   - drop the PAIR-CONSISTENCY HASH line entirely (no value; clear-sign
+ *     screens + 4byte-decode cover intent),
+ *   - drop the BLIND-SIGN branch of the NEXT ON-DEVICE section (it
+ *     never fires for these txs, so the instruction is noise under
+ *     device-screen time pressure),
+ *   - expand the CLEAR-SIGN branch to explicitly list native + ERC-20
+ *     transfer + approve so the user sees their tx type named.
+ *
+ * DOES NOT change security guarantees — the server still pins the tuple,
+ * computes the preSignHash, and enforces the payload-hash match at send
+ * time. Only the user-facing render is simplified for the three cases
+ * where extra lines create confusion rather than signal.
+ */
+export function isClearSignOnlyTx(tx: Pick<UnsignedTx, "data">): boolean {
+  const data = tx.data.toLowerCase();
+  // Empty calldata = native send (SystemProgram-equivalent). Any form of
+  // "0x" / "" / "0x0" (some older paths emit without the prefix) counts.
+  if (data === "" || data === "0x") return true;
+  if (data.startsWith(ERC20_APPROVE_SELECTOR)) return true;
+  if (data.startsWith(ERC20_TRANSFER_SELECTOR)) return true;
+  return false;
 }
 
 function truncateHex(data: string, bytelenLabel: boolean): string {
@@ -344,18 +382,36 @@ export function renderPreviewVerifyAgentTaskBlock(args: {
    * the user to scroll back.
    */
   decoderUrl?: string;
+  /**
+   * True when the tx is a Ledger clear-sign-only type (native send,
+   * ERC-20 transfer, ERC-20 approve). When set, the CHECKS PERFORMED
+   * template drops the PAIR-CONSISTENCY HASH line and the BLIND-SIGN
+   * branch of NEXT ON-DEVICE — those are noise for clear-sign-only txs
+   * (the Ledger shows decoded fields; no hash-match ever applies; the
+   * on-device `to` + `value` + token-symbol read covers intent).
+   * Computed server-side via `isClearSignOnlyTx(tx.data)` at preview
+   * time. No security posture change — the server still pins fields and
+   * checks the payload hash at send time.
+   */
+  clearSignOnly?: boolean;
 }): string {
+  const simple = args.clearSignOnly === true;
   const checksPayload = {
     abiDecode: {
       autoRun: true,
       threat: "MCP-side calldata tampering",
       keywords: ["calldata tampering"],
     },
-    pairConsistencyHash: {
-      autoRun: true,
-      threat: "MCP lying about the bytes it will forward to WalletConnect",
-      keywords: ["bytes", "WalletConnect"],
-    },
+    ...(simple
+      ? {}
+      : {
+          pairConsistencyHash: {
+            autoRun: true,
+            threat:
+              "MCP lying about the bytes it will forward to WalletConnect",
+            keywords: ["bytes", "WalletConnect"],
+          },
+        }),
     secondLlm: {
       autoRun: false,
       threat: "coordinated agent compromise",
@@ -364,11 +420,23 @@ export function renderPreviewVerifyAgentTaskBlock(args: {
   };
   const lines = [
     "[AGENT TASK — RUN THESE CHECKS NOW, DO NOT ASK THE USER]",
-    "You MUST run BOTH of the following integrity checks UNPROMPTED and",
-    "report results in a prominent CHECKS PERFORMED block. The user already",
-    "consented to verification by calling preview_send — do NOT surface a",
-    "yes/no menu for these two. They run every send, no exceptions (except",
-    "the narrow native-send case noted on CHECK 2).",
+    ...(simple
+      ? [
+          "You MUST run the ABI DECODE integrity check UNPROMPTED and report",
+          "the result in a prominent CHECKS PERFORMED block. The user already",
+          "consented to verification by calling preview_send — do NOT surface",
+          "a yes/no menu. This tx is a Ledger clear-sign type (native send,",
+          "ERC-20 transfer, or ERC-20 approve), so the PAIR-CONSISTENCY HASH",
+          "check is skipped: Ledger shows decoded fields on-device and the",
+          "hash-match path never fires, so the recompute adds no information",
+          "the user can act on.",
+        ]
+      : [
+          "You MUST run BOTH of the following integrity checks UNPROMPTED and",
+          "report results in a prominent CHECKS PERFORMED block. The user already",
+          "consented to verification by calling preview_send — do NOT surface a",
+          "yes/no menu for these two. They run every send, no exceptions.",
+        ]),
     "",
     "CHECK 1 — AGENT-SIDE ABI DECODE",
     "  Protects against: MCP-side calldata tampering. If the server rewrote",
@@ -394,31 +462,30 @@ export function renderPreviewVerifyAgentTaskBlock(args: {
     "  - If confident, compare your decode against the compact bullet summary",
     "    you showed at prepare time. Report ✓ MATCH or ✗ MISMATCH.",
     "",
-    "CHECK 2 — PAIR-CONSISTENCY HASH",
-    "  Protects against: the server reporting tuple T with preSignHash=hash(Y)",
-    "  where Y≠T, then forwarding Y to WalletConnect. The on-device hash match",
-    "  alone does NOT catch that (device sees hash(Y), chat sees hash(Y), they",
-    "  agree); only a local recompute of hash(T) from the pinned tuple catches",
-    "  the discrepancy.",
-    "",
-    "  Run in-process with viem. The per-call values are spliced in below so",
-    "  you do not have to reconstruct them:",
-    "",
-    "    node -e \"const {keccak256,serializeTransaction}=require('viem');",
-    "    console.log(keccak256(serializeTransaction({type:'eip1559',",
-    `    chainId:<${args.chain}-id>,nonce:${args.pinned.nonce},`,
-    `    maxFeePerGas:${args.pinned.maxFeePerGas}n,`,
-    `    maxPriorityFeePerGas:${args.pinned.maxPriorityFeePerGas}n,`,
-    `    gas:${args.pinned.gas}n,to:'${args.to}',value:${args.valueWei}n,`,
-    "    data:'<data from the prepare_* result>'})))\"",
-    "",
-    `  Compare the output to ${args.preSignHash}. Report ✓ MATCH or ✗ MISMATCH.`,
-    "",
-    "  Native-send skip: when data === \"0x\" the agent already knows the full",
-    "  tuple and `to`/`value` eyeballing on-device covers intent. In that case",
-    "  report this check as \"⏸ N/A for native send — `to` + `value` on-device",
-    "  cover intent\" and proceed.",
-    "",
+    ...(simple
+      ? []
+      : [
+          "CHECK 2 — PAIR-CONSISTENCY HASH",
+          "  Protects against: the server reporting tuple T with preSignHash=hash(Y)",
+          "  where Y≠T, then forwarding Y to WalletConnect. The on-device hash match",
+          "  alone does NOT catch that (device sees hash(Y), chat sees hash(Y), they",
+          "  agree); only a local recompute of hash(T) from the pinned tuple catches",
+          "  the discrepancy.",
+          "",
+          "  Run in-process with viem. The per-call values are spliced in below so",
+          "  you do not have to reconstruct them:",
+          "",
+          "    node -e \"const {keccak256,serializeTransaction}=require('viem');",
+          "    console.log(keccak256(serializeTransaction({type:'eip1559',",
+          `    chainId:<${args.chain}-id>,nonce:${args.pinned.nonce},`,
+          `    maxFeePerGas:${args.pinned.maxFeePerGas}n,`,
+          `    maxPriorityFeePerGas:${args.pinned.maxPriorityFeePerGas}n,`,
+          `    gas:${args.pinned.gas}n,to:'${args.to}',value:${args.valueWei}n,`,
+          "    data:'<data from the prepare_* result>'})))\"",
+          "",
+          `  Compare the output to ${args.preSignHash}. Report ✓ MATCH or ✗ MISMATCH.`,
+          "",
+        ]),
     "CHECKS PAYLOAD (the threat taxonomy + required keywords the user-facing",
     "block below MUST cover — paraphrase naturally but every listed keyword",
     "must appear verbatim somewhere in the matching line):",
@@ -463,37 +530,64 @@ export function renderPreviewVerifyAgentTaskBlock(args: {
           "         browser fallback is unavailable and the second-LLM",
           "         check (option 2 below) is the remaining gap-closer.)",
         ]),
-    "    {✓|⏸} PAIR-CONSISTENCY HASH — <one-line verdict>.",
-    "        (protects against MCP lying about the bytes sent to WalletConnect)",
+    ...(simple
+      ? []
+      : [
+          "    {✓|⏸} PAIR-CONSISTENCY HASH — <one-line verdict>.",
+          "        (protects against MCP lying about the bytes sent to WalletConnect)",
+        ]),
     "    □ SECOND-LLM CHECK — optional, available on request.",
     "        (protects against a coordinated agent compromise)",
     "    ────────────────────────────────",
     "    NEXT ON-DEVICE — final check happens on your Ledger screen:",
-    "      • BLIND-SIGN mode (hash only — swaps, most DeFi):",
-    `          check the hash shown on-device is exactly **\`${args.preSignHash}\`**.`,
-    "          Any difference → REJECT.",
-    "      • CLEAR-SIGN mode (decoded fields — Aave / Lido / 1inch / LiFi /",
-    "        approve plugins): hash matching does NOT apply. Check the",
-    "        function name + key fields (amount, recipient, spender) on-device",
-    "        match the compact summary above. Any difference → REJECT.",
+    ...(simple
+      ? [
+          "      • CLEAR-SIGN (this tx: native ETH send, ERC-20 transfer, or",
+          "        ERC-20 approve — Ledger decodes and shows amount + recipient",
+          "        + token on-device). Hash matching does NOT apply. Confirm",
+          "        the on-device values equal the compact summary above.",
+          "        Any difference → REJECT.",
+        ]
+      : [
+          "      • BLIND-SIGN mode (hash only — swaps, most DeFi):",
+          `          check the hash shown on-device is exactly **\`${args.preSignHash}\`**.`,
+          "          Any difference → REJECT.",
+          "      • CLEAR-SIGN mode (decoded fields — Aave / Lido / 1inch / LiFi /",
+          "        approve / ERC-20 transfer plugins, including native ETH send):",
+          "        hash matching does NOT apply. Check the function name + key",
+          "        fields (amount, recipient, spender) on-device match the",
+          "        compact summary above. Any difference → REJECT.",
+        ]),
     "    ════════════════════════════════",
     "",
-    "The NEXT ON-DEVICE lines are mandatory — do NOT drop them. Users can only",
-    "tell blind-sign from clear-sign when the device prompt actually appears,",
-    "so we must explain BOTH paths. Dropping the clear-sign branch has caused",
-    "live confusion (\"my device shows decoded fields and no hash, so the hash",
-    "check must have failed?\") — it hasn't, the check just does not apply.",
-    "",
-    "Render the blind-sign hash with BOTH bold AND single-backtick inline code",
-    "— i.e. `**\\`0x…\\`**` — exactly as shown in the template above. Backticks",
-    "alone render as muted inline-code color in many chat clients (verified in",
-    "Claude Code: the backticked hash blended into prose and the user could",
-    "not visually pick it out under device-screen time pressure). Bold + code",
-    "combines the two strongest emphasis markers Markdown supports, and reads",
-    "with clear contrast in every client tested. Do NOT strip either marker.",
-    "Whenever you reference the hash elsewhere in your reply (e.g. a summary",
-    "line), use the same `**\\`0x…\\`**` wrapper so the hash looks identical at",
-    "every appearance — inconsistent emphasis slows the user's match-check.",
+    ...(simple
+      ? [
+          "The NEXT ON-DEVICE line is mandatory — do NOT drop it. For this tx",
+          "type (native send / ERC-20 transfer / ERC-20 approve) Ledger will",
+          "clear-sign; no blind-sign hash applies, so the blind-sign branch is",
+          "omitted to keep the checklist scannable under device-screen time",
+          "pressure. Including a hash-match instruction the user cannot act on",
+          "has caused live confusion before.",
+          "",
+        ]
+      : [
+          "The NEXT ON-DEVICE lines are mandatory — do NOT drop them. Users can only",
+          "tell blind-sign from clear-sign when the device prompt actually appears,",
+          "so we must explain BOTH paths. Dropping the clear-sign branch has caused",
+          "live confusion (\"my device shows decoded fields and no hash, so the hash",
+          "check must have failed?\") — it hasn't, the check just does not apply.",
+          "",
+          "Render the blind-sign hash with BOTH bold AND single-backtick inline code",
+          "— i.e. `**\\`0x…\\`**` — exactly as shown in the template above. Backticks",
+          "alone render as muted inline-code color in many chat clients (verified in",
+          "Claude Code: the backticked hash blended into prose and the user could",
+          "not visually pick it out under device-screen time pressure). Bold + code",
+          "combines the two strongest emphasis markers Markdown supports, and reads",
+          "with clear contrast in every client tested. Do NOT strip either marker.",
+          "Whenever you reference the hash elsewhere in your reply (e.g. a summary",
+          "line), use the same `**\\`0x…\\`**` wrapper so the hash looks identical at",
+          "every appearance — inconsistent emphasis slows the user's match-check.",
+        ]),
     "",
     "After the CHECKS PERFORMED block, append EXACTLY one line, no menu:",
     "",

@@ -351,6 +351,7 @@ function previewSendHandler(
     };
     previewToken: string;
     decoderUrl?: string;
+    clearSignOnly?: boolean;
   }>,
 ) {
   return async (args: { handle: string }) => {
@@ -380,6 +381,7 @@ function previewSendHandler(
               to: result.to,
               valueWei: result.valueWei,
               ...(result.decoderUrl ? { decoderUrl: result.decoderUrl } : {}),
+              ...(result.clearSignOnly ? { clearSignOnly: true } : {}),
             }),
           },
         ],

@@ -264,6 +264,122 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     // Second-LLM is the remaining gap-closer in this case.
     expect(block).toMatch(/second-LLM/);
   });
+
+  // Clear-sign-only txs (native send, ERC-20 transfer, ERC-20 approve): the
+  // PAIR-CONSISTENCY HASH line and the BLIND-SIGN branch of NEXT ON-DEVICE
+  // were noise under device-screen time pressure (user complaint 2026-04-24
+  // — "add about native eth transfers and erc20 transfers"). For these tx
+  // types the reduced template drops both sections and expands CLEAR-SIGN
+  // to name the tx type explicitly.
+  it("clearSignOnly: true → drops PAIR-CONSISTENCY HASH + BLIND-SIGN branch", async () => {
+    const { renderPreviewVerifyAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPreviewVerifyAgentTaskBlock({
+      chain: "ethereum",
+      preSignHash: "0xabc",
+      pinned: {
+        nonce: 7,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "21000",
+      },
+      to: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      valueWei: "500000000000000000",
+      clearSignOnly: true,
+    });
+    // PAIR-CONSISTENCY HASH verdict line (the user-facing render-template
+    // line the agent copies into its CHECKS PERFORMED block) must be gone.
+    // The opening explanation may still *mention* pair-consistency by name
+    // (explaining why the check was skipped) — that's agent-facing prose,
+    // not part of the template the user sees.
+    expect(block).not.toMatch(/\{✓\|⏸\} PAIR-CONSISTENCY HASH/);
+    // Matching "(protects against MCP lying about the bytes sent to
+    // WalletConnect)" — the threat-clause under the PAIR-CONSISTENCY line —
+    // must also be gone, since that line attaches to the removed verdict.
+    expect(block).not.toMatch(/bytes sent to WalletConnect/);
+    // And the full CHECK 2 section (running the viem recompute) should not
+    // be in the agent-task body either, since the check is skipped.
+    expect(block).not.toMatch(/CHECK 2 — PAIR-CONSISTENCY HASH/);
+    // CHECKS PAYLOAD JSON must not include the pairConsistencyHash key.
+    expect(block).not.toContain('"pairConsistencyHash"');
+    // NEXT ON-DEVICE must still exist (without it, users don't know to
+    // check the Ledger screen at all) but the BLIND-SIGN branch is gone.
+    expect(block).toMatch(/NEXT ON-DEVICE/);
+    expect(block).not.toMatch(/BLIND-SIGN mode/);
+    // The expanded CLEAR-SIGN branch names the tx types this flag covers.
+    expect(block).toMatch(/native ETH send, ERC-20 transfer, or[\s\S]*ERC-20 approve/);
+    // The ABI DECODE check still runs — it's the one integrity check we keep.
+    expect(block).toMatch(/CHECK 1 — AGENT-SIDE ABI DECODE/);
+    expect(block).toContain('"abiDecode"');
+    // SECOND-LLM stays available; it's the user's explicit opt-in path.
+    expect(block).toMatch(/SECOND-LLM CHECK/);
+  });
+
+  it("clearSignOnly defaults to false → full template (regression: swaps / DeFi path unchanged)", async () => {
+    const { renderPreviewVerifyAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPreviewVerifyAgentTaskBlock({
+      chain: "ethereum",
+      preSignHash: "0xabc",
+      pinned: {
+        nonce: 7,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "21000",
+      },
+      to: "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE",
+      valueWei: "0",
+      // clearSignOnly omitted — full template
+    });
+    expect(block).toMatch(/PAIR-CONSISTENCY HASH/);
+    expect(block).toMatch(/BLIND-SIGN mode/);
+    expect(block).toContain('"pairConsistencyHash"');
+  });
+});
+
+describe("isClearSignOnlyTx selector detection", () => {
+  it("returns true for empty data (native send)", async () => {
+    const { isClearSignOnlyTx } = await import(
+      "../src/signing/render-verification.js"
+    );
+    expect(isClearSignOnlyTx({ data: "0x" as `0x${string}` })).toBe(true);
+  });
+
+  it("returns true for ERC-20 transfer(address,uint256) = 0xa9059cbb", async () => {
+    const { isClearSignOnlyTx } = await import(
+      "../src/signing/render-verification.js"
+    );
+    // transfer(0xrecipient..., 1 USDC) calldata prefix
+    const data = "0xa9059cbb000000000000000000000000c0f5b7f7703ba95dc7c09d4ef50a830622234075000000000000000000000000000000000000000000000000000000000000000a" as `0x${string}`;
+    expect(isClearSignOnlyTx({ data })).toBe(true);
+  });
+
+  it("returns true for ERC-20 approve(address,uint256) = 0x095ea7b3", async () => {
+    const { isClearSignOnlyTx } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const data = "0x095ea7b3000000000000000000000000c0f5b7f7703ba95dc7c09d4ef50a830622234075000000000000000000000000000000000000000000000000000000000000000a" as `0x${string}`;
+    expect(isClearSignOnlyTx({ data })).toBe(true);
+  });
+
+  it("returns false for a LiFi swap selector (protects the swaps path)", async () => {
+    const { isClearSignOnlyTx } = await import(
+      "../src/signing/render-verification.js"
+    );
+    // swapAndStartBridgeTokensViaAcrossV4 — from a live capture
+    const data = "0x1794958f0000000000000000000000000000000000000000000000000000000000000060" as `0x${string}`;
+    expect(isClearSignOnlyTx({ data })).toBe(false);
+  });
+
+  it("returns false for an unknown 4-byte selector", async () => {
+    const { isClearSignOnlyTx } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const data = "0xdeadbeef" as `0x${string}`;
+    expect(isClearSignOnlyTx({ data })).toBe(false);
+  });
 });
 
 describe("renderLedgerHashBlock", () => {
