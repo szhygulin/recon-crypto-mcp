@@ -1,5 +1,7 @@
 import { formatUnits } from "viem";
 import { getClient } from "../../data/rpc.js";
+import { cache } from "../../data/cache.js";
+import { CACHE_TTL } from "../../config/cache.js";
 import { CONTRACTS } from "../../config/contracts.js";
 import { cometAbi } from "../../abis/compound-comet.js";
 import { erc20Abi } from "../../abis/erc20.js";
@@ -166,6 +168,19 @@ function multicallErrorMessage(entry: { status: "failure"; error?: unknown }): s
  * as `readMarketPosition` for consistency with the coverage note).
  */
 async function probeCompoundMarkets(
+  wallet: `0x${string}`,
+  chain: SupportedChain,
+): Promise<{
+  active: { name: string; address: `0x${string}` }[];
+  errored: { name: string; error: string }[];
+}> {
+  const cacheKey = `compound-probe:${chain}:${wallet.toLowerCase()}`;
+  return cache.remember(cacheKey, CACHE_TTL.POSITION, () =>
+    runCompoundProbe(wallet, chain),
+  );
+}
+
+async function runCompoundProbe(
   wallet: `0x${string}`,
   chain: SupportedChain,
 ): Promise<{

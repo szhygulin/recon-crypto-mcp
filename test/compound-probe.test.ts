@@ -161,6 +161,31 @@ describe("getCompoundPositions — exposure probe (#88)", () => {
     ).toBe(true);
   });
 
+  it("caches probe results per (chain, wallet) so repeat portfolio calls skip the wire (#88 follow-up)", async () => {
+    // Clear any prior cache entries leaking in from other tests (shared
+    // module-scoped singleton). A fresh resetModules in beforeEach gets
+    // a fresh cache — this is belt-and-suspenders.
+    const { cache } = await import("../src/data/cache.js");
+    cache.clear();
+    const zeros = Array(8).fill({ status: "success", result: 0n });
+    const multicall = vi.fn().mockResolvedValue(zeros);
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({ multicall }),
+      verifyChainId: vi.fn().mockResolvedValue(undefined),
+      resetClients: () => {},
+    }));
+    const { getCompoundPositions } = await import(
+      "../src/modules/compound/index.js"
+    );
+    await getCompoundPositions({ wallet: WALLET, chains: ["arbitrum"] });
+    await getCompoundPositions({ wallet: WALLET, chains: ["arbitrum"] });
+    await getCompoundPositions({ wallet: WALLET, chains: ["arbitrum"] });
+    // Critical assertion: the probe multicall fired exactly ONCE across
+    // three back-to-back calls for the same (chain, wallet). Without the
+    // cache, each call would re-probe — 3× the RPC pressure.
+    expect(multicall).toHaveBeenCalledTimes(1);
+  });
+
   it("honors VAULTPILOT_COMPOUND_FULL_READ=1 (escape hatch for pure-collateral wallets)", async () => {
     // A wallet with collateral-only exposure (no base balance) would be
     // invisible to the probe. The env var bypasses the probe and falls

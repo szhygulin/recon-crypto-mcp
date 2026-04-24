@@ -9,14 +9,18 @@ const verifiedChains = new Set<SupportedChain>();
 /**
  * Default per-chain concurrency cap — the hard ceiling on how many RPC
  * requests can be in flight against a single chain's endpoint at once.
- * Free-tier Infura / Alchemy typically tolerate ~25 req/s per key; a
- * cap of 4 at ~500ms per request keeps us well under that while still
- * letting a single portfolio subsystem (e.g. Compound markets) pipeline
- * in parallel. Users on premium endpoints can raise via
- * VAULTPILOT_RPC_CONCURRENCY. Separate limiter per chain so a saturated
- * mainnet queue doesn't back-pressure independent arbitrum reads.
+ * Empirically the #88 trace kept hitting 429s at cap=4 on free-tier
+ * Infura, even after the Morpho opt-in and the Compound probe-first
+ * flow cut total request volume. Free-tier endpoints tolerate brief
+ * bursts but not sustained ~10 req/s (what 4 concurrent at ~400ms each
+ * produces during a multi-wallet portfolio fan-out).
+ *
+ * Lowered to 2 as the safe default. Users on premium endpoints can
+ * raise via VAULTPILOT_RPC_CONCURRENCY and regain the parallelism.
+ * Separate limiter per chain so saturated mainnet doesn't back-pressure
+ * independent arbitrum reads.
  */
-const RPC_CONCURRENCY_DEFAULT = 4;
+const RPC_CONCURRENCY_DEFAULT = 2;
 const RPC_CONCURRENCY = (() => {
   const raw = process.env.VAULTPILOT_RPC_CONCURRENCY;
   if (!raw) return RPC_CONCURRENCY_DEFAULT;

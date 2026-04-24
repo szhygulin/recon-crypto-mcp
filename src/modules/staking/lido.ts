@@ -8,8 +8,25 @@ import { getTokenPrice } from "../../data/prices.js";
 import { makeTokenAmount, round } from "../../data/format.js";
 import type { StakingPosition, SupportedChain } from "../../types/index.js";
 
-/** Lido staking positions across Ethereum (stETH + wstETH) and Arbitrum (wstETH only). */
+/**
+ * Lido staking positions across Ethereum (stETH + wstETH) and Arbitrum
+ * (wstETH only). Results are cached per-wallet for CACHE_TTL.POSITION
+ * (60s) so a multi-wallet portfolio summary calling repeatedly in a
+ * short window doesn't re-hit the mainnet RPC — a live #88 trace
+ * showed Lido 429ing on 3 of 4 wallets when every wallet's fetch hit
+ * Infura fresh. The `chains` filter is folded into the cache key so a
+ * partial-chain call (e.g. just mainnet) doesn't cache-poison a later
+ * multi-chain read.
+ */
 export async function getLidoPositions(wallet: `0x${string}`, chains: SupportedChain[]): Promise<StakingPosition[]> {
+  const chainsKey = [...chains].sort().join(",");
+  const cacheKey = `lido:${wallet.toLowerCase()}:${chainsKey}`;
+  return cache.remember(cacheKey, CACHE_TTL.POSITION, () =>
+    fetchLidoPositions(wallet, chains),
+  );
+}
+
+async function fetchLidoPositions(wallet: `0x${string}`, chains: SupportedChain[]): Promise<StakingPosition[]> {
   const positions: StakingPosition[] = [];
   const ethPrice = await getTokenPrice("ethereum", "native");
 

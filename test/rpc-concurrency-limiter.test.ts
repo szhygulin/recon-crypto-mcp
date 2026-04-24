@@ -113,7 +113,7 @@ describe("per-chain RPC concurrency limiter (#88)", () => {
     expect(totalPeak).toBeGreaterThanOrEqual(3);
   });
 
-  it("defaults to 4 concurrent when VAULTPILOT_RPC_CONCURRENCY is unset", async () => {
+  it("defaults to 2 concurrent when VAULTPILOT_RPC_CONCURRENCY is unset (conservative for free-tier RPCs)", async () => {
     delete process.env.VAULTPILOT_RPC_CONCURRENCY;
     process.env.ETHEREUM_RPC_URL = "https://stub.example/eth-default";
 
@@ -135,8 +135,9 @@ describe("per-chain RPC concurrency limiter (#88)", () => {
     const client = getClient("ethereum");
     await Promise.all(Array.from({ length: 15 }, () => client.getChainId()));
 
-    // Default cap of 4; peak must be <= 4 and > 0.
-    expect(peak).toBeLessThanOrEqual(4);
+    // Default cap of 2 (was 4 before live-test showed that cap kept
+    // saturating free-tier Infura under multi-wallet fan-outs).
+    expect(peak).toBeLessThanOrEqual(2);
     expect(peak).toBeGreaterThan(0);
   });
 });
