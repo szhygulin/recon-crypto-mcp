@@ -59,8 +59,8 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 ## Roadmap
 
 - **MetaMask support** (WalletConnect) — alongside the existing Ledger Live integration.
-- **More Solana protocols** — Kamino, Drift, Solend lending; Marinade/Jito/native staking. Tracked in [`solana-roadmap.md`](./solana-roadmap.md).
-- **Nonce-aware dropped-tx polling** (Solana) — use the on-chain nonce as the authoritative signal for whether a durable-nonce tx can still land; replaces the `lastValidBlockHeight` path that's meaningless for nonce-protected sends. Next-up in `solana-roadmap.md`.
+- **More Solana protocols** — Kamino, Drift, Solend lending; Marinade/Jito/native staking.
+- **Nonce-aware dropped-tx polling** (Solana) — use the on-chain nonce as the authoritative signal for whether a durable-nonce tx can still land; replaces the `lastValidBlockHeight` path that's meaningless for nonce-protected sends.
 - **Server-integrated second-agent verification** — MCP calls an independent LLM directly on high-value sends and blocks on disagreement. Structurally closes the coordinated-agent gap that today's copy-paste `get_verification_artifact` flow only narrows.
 - **PreToolUse hook for mechanical hash enforcement** — host-side code that recomputes the pre-sign hash and blocks the MCP tool call on divergence, making the check mechanical rather than prose-based. Ships as a separate `vaultpilot-hook` repo.
 
