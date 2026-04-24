@@ -421,41 +421,53 @@ describe("buildMarginfiSupply / Withdraw / Borrow / Repay", () => {
  * at the module boundary) and verify the override is present.
  */
 describe("hardened MarginfiClient.fetch (issue #105)", () => {
-  // Issue #105 — documentation test for the Anchor 0.30.1 coder API that
-  // our hardened override depends on. A real BorshAccountsCoder:
-  //   • exposes .decode(name, data) — the flat API we USE
-  //   • has NO .accounts namespace (coder.accounts === undefined)
-  // If Anchor ever changes the shape (e.g. reintroduces .accounts.decode)
-  // or we accidentally reach for the wrong method, this test forces the
-  // decision to be made consciously. Guards against the exact regression
-  // we caught in live probing where coder.accounts.decode silently failed
-  // every bank (issue #105, 2026-04-24).
-  it("BorshAccountsCoder exposes .decode(name, data) but not .accounts", async () => {
-    const { BorshAccountsCoder } = await vi.importActual<
+  // Issue #108 — guard the exact shape the hardened override touches on
+  // a real Anchor `Program` instance. `program.coder` is a `BorshCoder`
+  // (top-level facade) whose account decoding lives at
+  // `coder.accounts.decode(name, data)`, NOT at a flat `coder.decode`.
+  //
+  // The prior version of this test constructed a `BorshAccountsCoder`
+  // directly (which IS the accounts coder and DOES have a top-level
+  // `.decode`) and concluded the same was true of `program.coder`. It
+  // wasn't — #108 caught 188/188 banks failing with
+  // `p.coder.decode is not a function` because we'd flattened the call
+  // based on that wrong premise. This version instantiates a real
+  // Program so the shape that matters (program.coder) is the one
+  // under assertion.
+  it("program.coder decodes accounts through .accounts.decode (not a flat .decode)", async () => {
+    const { Program, AnchorProvider, BorshAccountsCoder } = await vi.importActual<
       typeof import("@coral-xyz/anchor")
     >("@coral-xyz/anchor");
-    // Minimum valid IDL — one empty-struct account is enough.
+    // Real Anchor Program needs a valid IDL + provider. Minimal struct
+    // account is enough; we never actually decode anything here.
     const minimalIdl = {
-      version: "0.1.0",
-      name: "probe",
+      address: "11111111111111111111111111111111",
+      metadata: { name: "probe", version: "0.1.0", spec: "0.1.0" },
       instructions: [],
-      accounts: [
-        {
-          name: "Thing",
-          discriminator: [1, 2, 3, 4, 5, 6, 7, 8],
-        },
-      ],
-      types: [
-        {
-          name: "Thing",
-          type: { kind: "struct", fields: [] },
-        },
-      ],
+      accounts: [{ name: "Thing", discriminator: [1, 2, 3, 4, 5, 6, 7, 8] }],
+      types: [{ name: "Thing", type: { kind: "struct", fields: [] } }],
     };
-    const coder = new BorshAccountsCoder(minimalIdl as never);
-    expect(typeof coder.decode).toBe("function");
-    // The key invariant: no .accounts namespace on the accounts-coder.
-    expect((coder as unknown as { accounts?: unknown }).accounts).toBeUndefined();
+    const provider = {
+      connection: {},
+      publicKey: undefined,
+    } as unknown as InstanceType<typeof AnchorProvider>;
+    const program = new Program(minimalIdl as never, provider);
+    // The invariant that drove #108: flat .decode does NOT exist on
+    // program.coder — any call site reaching for it regresses to the
+    // 188/188-banks-skipped failure.
+    expect(
+      (program.coder as unknown as { decode?: unknown }).decode,
+    ).toBeUndefined();
+    // And the correct path IS a function.
+    expect(typeof program.coder.accounts.decode).toBe("function");
+    // Cross-check: a free-standing BorshAccountsCoder (what 44408ed's
+    // "verification" probe actually inspected) does expose a flat
+    // .decode — that's why the probe was misleading. Keep this line
+    // so future readers see why it was easy to get wrong.
+    const standaloneAccountsCoder = new BorshAccountsCoder(
+      minimalIdl as never,
+    );
+    expect(typeof standaloneAccountsCoder.decode).toBe("function");
   });
 
   it("passes fetchGroupDataOverride to MarginfiClient.fetch", async () => {
@@ -514,7 +526,7 @@ describe("hardenedFetchGroupData fetch path (issue #106)", () => {
 
     const program = {
       provider: { connection: conn },
-      coder: { decode: () => ({}) },
+      coder: { accounts: { decode: () => ({}) } },
       programId: new PublicKey(SYSTEM_PROGRAM),
       idl: {},
     };
@@ -707,8 +719,10 @@ describe("hardenedFetchGroupData diagnostic recording (issue #107)", () => {
       provider: { connection: conn },
       // Force a decode failure to exercise the skip path.
       coder: {
-        decode: () => {
-          throw new Error("probe-induced decode failure");
+        accounts: {
+          decode: () => {
+            throw new Error("probe-induced decode failure");
+          },
         },
       },
       programId: new PublicKey(SYSTEM_PROGRAM),

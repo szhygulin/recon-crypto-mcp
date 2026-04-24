@@ -371,13 +371,23 @@ async function hardenedFetchGroupData(
 
   const p = program as {
     provider: { connection: Connection };
-    // Anchor 0.30.1's coder exposes decode/encode directly — there is NO
-    // `coder.accounts` namespace (unlike the `program.account` namespace
-    // off a Program instance, which is a different object). Verified via
-    // empirical probe against `@coral-xyz/anchor@0.30.1`
-    // (`dist/cjs/coder/borsh/accounts.js` — the class is
-    // `BorshAccountsCoder` with top-level `decode`/`encode` methods).
-    coder: { decode(name: string, data: Buffer): unknown };
+    // `program.coder` is a BorshCoder (top-level facade). Account decoding
+    // goes through the namespaced accounts coder: `coder.accounts.decode`.
+    //
+    // History: issue #105 fixed a coder.accounts.decode → coder.accounts
+    // nil-deref in a now-superseded SDK; commit 44408ed then "verified"
+    // the API by probing BorshAccountsCoder in isolation (which DOES have
+    // a top-level .decode), concluded program.coder had the same shape,
+    // and flattened the call to `coder.decode("Bank", data)`. That probe
+    // was checking the wrong object: `new Program(idl, provider).coder`
+    // is a `BorshCoder` (with .accounts / .instruction / .events / .types
+    // — no top-level .decode), whereas a free-standing `BorshAccountsCoder`
+    // exposes .decode because IT IS the accounts coder. The flattened
+    // call produced "p.coder.decode is not a function" for every bank
+    // (issue #108 — 188/188 banks skipped at step=decode). The guard test
+    // in `solana-marginfi.test.ts` now instantiates a real Anchor
+    // Program so the shape check can't drift again.
+    coder: { accounts: { decode(name: string, data: Buffer): unknown } };
     programId: PublicKey;
     idl: unknown;
   };
@@ -420,11 +430,16 @@ async function hardenedFetchGroupData(
     const address = addresses[i]!;
     try {
       // IDL 0.1.7 names the account "Bank" (PascalCase — see accounts[].name
-      // in marginfi_0.1.7.json). Anchor's BorshAccountsCoder keys its
-      // `accountLayouts` map on that exact name, so the decode call must
-      // use "Bank", not the camelCase `program.account.bank` accessor
-      // form used elsewhere in the SDK.
-      const decoded = p.coder.decode("Bank", ai.data) as BankDecodedLike;
+      // in marginfi_0.1.7.json), but Anchor camelCases account-layout keys
+      // when constructing the `BorshAccountsCoder` (live-probed against
+      // `@coral-xyz/anchor@0.30.1`: `program.coder.accounts.accountLayouts`
+      // contains `"bank"`, not `"Bank"`). So the key here matches
+      // `program.account.bank` — the same shape the SDK's default path
+      // uses internally.
+      const decoded = p.coder.accounts.decode(
+        "bank",
+        ai.data,
+      ) as BankDecodedLike;
       // Skip integrator banks (KAMINO = 3, DRIFT = 4, SOLEND = 5). These
       // ride a different layout and aren't relevant to core lending.
       const tag = decoded.config?.assetTag;
