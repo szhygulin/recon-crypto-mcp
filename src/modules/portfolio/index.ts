@@ -21,6 +21,7 @@ import type {
   TokenAmount,
   TronPortfolioSlice,
   TronStakingSlice,
+  UnpricedAsset,
 } from "../../types/index.js";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
 
@@ -133,6 +134,9 @@ export async function getPortfolioSummary(
   // Aggregate coverage: a subsystem is considered errored across the group if
   // ANY wallet's fetch failed — because the group-level total will be short
   // that wallet's contribution. Notes get merged to the worst (errored) state.
+  const aggregatedUnpricedDetail = perWallet.flatMap(
+    (p) => p.coverage.unpricedAssetsDetail ?? [],
+  );
   const mergedCoverage: PortfolioCoverage = {
     aave: mergeCoverage(perWallet.map((p) => p.coverage.aave)),
     compound: mergeCoverage(perWallet.map((p) => p.coverage.compound)),
@@ -140,6 +144,9 @@ export async function getPortfolioSummary(
     uniswapV3: mergeCoverage(perWallet.map((p) => p.coverage.uniswapV3)),
     staking: mergeCoverage(perWallet.map((p) => p.coverage.staking)),
     unpricedAssets: perWallet.reduce((s, p) => s + p.coverage.unpricedAssets, 0),
+    ...(aggregatedUnpricedDetail.length > 0
+      ? { unpricedAssetsDetail: aggregatedUnpricedDetail }
+      : {}),
   };
 
   return {
@@ -185,6 +192,60 @@ export function formatCompoundErrorNote(
   return `${generic} Failures: ${lines.join("; ")}. Call get_compound_positions for the full per-market read.`;
 }
 
+/**
+ * Build the human-readable `coverage.morpho.note` when one or more per-chain
+ * event-log discoveries failed. Mirrors `formatCompoundErrorNote` structurally
+ * — same reasoning: the generic "event-log discovery failed on at least one
+ * chain" string left the agent with no way to tell the user WHICH chain's
+ * scan was broken (issue #92).
+ *
+ * Exported for unit testing; getPortfolioSummary is the real caller.
+ */
+export function formatMorphoErrorNote(
+  erroredChains?: { chain: SupportedChain; error: string }[],
+): string {
+  const generic =
+    "Morpho Blue event-log discovery failed on at least one chain — some positions may be missing from totals.";
+  if (!erroredChains || erroredChains.length === 0) return generic;
+  const MAX_ERR = 120;
+  const lines = erroredChains.map(({ chain, error }) => {
+    const trimmed =
+      error.length > MAX_ERR ? `${error.slice(0, MAX_ERR)}…` : error;
+    return `${chain}: ${trimmed}`;
+  });
+  return `${generic} Failures: ${lines.join("; ")}. Call get_morpho_positions with an explicit chain for a fast-path read.`;
+}
+
+/**
+ * Build the human-readable `coverage.staking.note` when Lido or EigenLayer
+ * failed. The previous generic "Staking (Lido/EigenLayer) fetch failed"
+ * string couldn't distinguish between a flaky Lido read, a flaky EigenLayer
+ * read, or both — and because the prior code used `Promise.all` internally,
+ * a single-source failure zeroed both. `getStakingPositions` now returns
+ * per-source detail so the note can name the failing source(s) while the
+ * healthy source's positions still flow through (issue #93).
+ *
+ * Exported for unit testing.
+ */
+export function formatStakingErrorNote(
+  erroredSources?: { source: "lido" | "eigenlayer"; error: string }[],
+): string {
+  const generic =
+    "Staking fetch failed — some positions may be missing from totals.";
+  if (!erroredSources || erroredSources.length === 0) {
+    // Fall back to the old wording if no structured detail is available —
+    // keeps callers that hit the empty-array branch honest about what broke.
+    return "Staking (Lido/EigenLayer) fetch failed — positions not included.";
+  }
+  const MAX_ERR = 120;
+  const lines = erroredSources.map(({ source, error }) => {
+    const trimmed =
+      error.length > MAX_ERR ? `${error.slice(0, MAX_ERR)}…` : error;
+    return `${source}: ${trimmed}`;
+  });
+  return `${generic} Failures: ${lines.join("; ")}. The other staking source(s) still loaded where applicable.`;
+}
+
 function mergeCoverage(entries: { covered: boolean; errored?: boolean; note?: string }[]) {
   const anyErrored = entries.some((e) => e.errored);
   const allCovered = entries.every((e) => e.covered);
@@ -227,6 +288,19 @@ async function buildWalletSummary(
   // failed on at least one market" message (issue #88).
   let compoundErroredMarkets:
     | { chain: SupportedChain; market: string; error: string }[]
+    | undefined;
+  // Per-chain Morpho Blue discovery failures — same pattern as compound. The
+  // Morpho fan-out already runs per-chain with a `.catch` that flips the
+  // errored flag; we additionally capture the chain + raw error so the note
+  // can name WHICH chain's RPC / event-log scan was failing (issue #92).
+  const morphoErroredChains: { chain: SupportedChain; error: string }[] = [];
+  // Per-source Lido/EigenLayer staking failures. Previously `getStakingPositions`
+  // used `Promise.all` — if EITHER Lido OR EigenLayer threw, the whole staking
+  // response rejected and the aggregator coverage flag couldn't tell them
+  // apart. `getStakingPositions` now returns `erroredSources` with one entry
+  // per failing source (issue #93).
+  let stakingErroredSources:
+    | { source: "lido" | "eigenlayer"; error: string }[]
     | undefined;
   const [
     nativeAmounts,
@@ -281,11 +355,18 @@ async function buildWalletSummary(
         }),
       // Morpho has no multi-chain list endpoint; fan out per-chain and swallow
       // per-chain failures individually so one bad RPC doesn't drop the whole
-      // Morpho bucket. If any chain throws, the overall coverage is errored.
+      // Morpho bucket. If any chain throws, the overall coverage is errored —
+      // and we capture the per-chain raw error so coverage.morpho.note can
+      // name the failing chain + reason (mirrors #91's compound pattern for
+      // issue #92).
       Promise.all(
         chains.map((c) =>
-          getMorphoPositions({ wallet, chain: c }).catch(() => {
+          getMorphoPositions({ wallet, chain: c }).catch((e) => {
             errors.morpho = true;
+            morphoErroredChains.push({
+              chain: c,
+              error: e instanceof Error ? e.message : String(e),
+            });
             return { wallet, positions: [] };
           })
         )
@@ -294,10 +375,30 @@ async function buildWalletSummary(
         errors.lp = true;
         return emptyPositions as never;
       }),
-      getStakingPositions({ wallet, chains }).catch(() => {
-        errors.staking = true;
-        return emptyPositions as never;
-      }),
+      getStakingPositions({ wallet, chains })
+        .then((r) => {
+          // Same shape as the compound handler: allSettled inside
+          // getStakingPositions means the top-level promise now succeeds
+          // even when one source errored. Flip the aggregator coverage
+          // flag and capture per-source detail for the note (issue #93).
+          if (r.errored) {
+            errors.staking = true;
+            if (r.erroredSources && r.erroredSources.length > 0) {
+              stakingErroredSources = r.erroredSources;
+            }
+          }
+          return r;
+        })
+        .catch((e) => {
+          errors.staking = true;
+          stakingErroredSources = [
+            {
+              source: "lido",
+              error: e instanceof Error ? e.message : String(e),
+            },
+          ];
+          return emptyPositions as never;
+        }),
       // TRON reads are only attempted when the caller passed a tronAddress.
       // `null` means "not attempted" (coverage.tron left as
       // covered:false,errored:false — same semantics as Morpho without
@@ -382,16 +483,44 @@ async function buildWalletSummary(
     perChain[c] = round(chainNative + chainErc20 + chainLending + chainLp + chainStaking, 2);
   });
 
-  const tronUnpriced = tronSlice
-    ? [...tronSlice.native, ...tronSlice.trc20].filter((t) => t.priceMissing).length
-    : 0;
-  const solanaUnpriced = solanaSlice
-    ? [...solanaSlice.native, ...solanaSlice.spl].filter((t) => t.priceMissing).length
-    : 0;
-  const unpricedAssets =
-    [...native, ...erc20].filter((t) => t.priceMissing).length +
-    tronUnpriced +
-    solanaUnpriced;
+  // Tag each unpriced EVM balance with its chain at construction — TokenAmount
+  // itself has no `chain` field (positional via the `chains` array), so we
+  // zip here. Native and ERC-20 are collected separately per chain, so we
+  // reuse the index alignment already established by nativeAmounts /
+  // erc20Amounts above.
+  const evmUnpricedDetail: UnpricedAsset[] = [];
+  chains.forEach((c, i) => {
+    const n = nativeAmounts[i];
+    if (n && n.amount !== "0" && n.priceMissing) {
+      evmUnpricedDetail.push({ chain: c, symbol: n.symbol, amount: n.formatted });
+    }
+    for (const t of erc20Amounts[i] ?? []) {
+      if (t.priceMissing) {
+        evmUnpricedDetail.push({ chain: c, symbol: t.symbol, amount: t.formatted });
+      }
+    }
+  });
+  const tronUnpricedDetail: UnpricedAsset[] = tronSlice
+    ? [...tronSlice.native, ...tronSlice.trc20]
+        .filter((t) => t.priceMissing)
+        .map((t) => ({ chain: "tron" as const, symbol: t.symbol, amount: t.formatted }))
+    : [];
+  const solanaUnpricedDetail: UnpricedAsset[] = solanaSlice
+    ? [...solanaSlice.native, ...solanaSlice.spl]
+        .filter((t) => t.priceMissing)
+        .map((t) => ({ chain: "solana" as const, symbol: t.symbol, amount: t.formatted }))
+    : [];
+  // Structured list of which specific tokens couldn't be priced (issue #94).
+  // Before this existed, `unpricedAssets: N` was just a counter — the agent
+  // couldn't tell the user "your 705 MATIC on polygon wasn't priced and
+  // isn't in the total". Now the agent has symbol + amount + chain for each
+  // unpriced asset and can surface a concrete warning.
+  const unpricedAssetsDetail: UnpricedAsset[] = [
+    ...evmUnpricedDetail,
+    ...tronUnpricedDetail,
+    ...solanaUnpricedDetail,
+  ];
+  const unpricedAssets = unpricedAssetsDetail.length;
   const coverage: PortfolioCoverage = {
     aave: { covered: !errors.aave, ...(errors.aave ? { errored: true, note: "Aave fetch failed — positions not included in totals." } : {}) },
     compound: {
@@ -403,9 +532,22 @@ async function buildWalletSummary(
           }
         : {}),
     },
-    morpho: { covered: !errors.morpho, ...(errors.morpho ? { errored: true, note: "Morpho Blue event-log discovery failed on at least one chain — some positions may be missing from totals." } : {}) },
+    morpho: {
+      covered: !errors.morpho,
+      ...(errors.morpho
+        ? { errored: true, note: formatMorphoErrorNote(morphoErroredChains) }
+        : {}),
+    },
     uniswapV3: { covered: !errors.lp, ...(errors.lp ? { errored: true, note: "Uniswap V3 LP fetch failed — positions not included." } : {}) },
-    staking: { covered: !errors.staking, ...(errors.staking ? { errored: true, note: "Staking (Lido/EigenLayer) fetch failed — positions not included." } : {}) },
+    staking: {
+      covered: !errors.staking,
+      ...(errors.staking
+        ? {
+            errored: true,
+            note: formatStakingErrorNote(stakingErroredSources),
+          }
+        : {}),
+    },
     ...(tronAddress
       ? {
           tron: errors.tron
@@ -424,6 +566,7 @@ async function buildWalletSummary(
         }
       : {}),
     unpricedAssets,
+    ...(unpricedAssetsDetail.length > 0 ? { unpricedAssetsDetail } : {}),
   };
 
   // Merge balance + staking into a single TRON slice for the breakdown so

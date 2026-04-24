@@ -11,16 +11,59 @@ import { SUPPORTED_CHAINS } from "../../types/index.js";
 export async function getStakingPositions(args: GetStakingPositionsArgs): Promise<{
   wallet: string;
   positions: StakingPosition[];
+  /**
+   * True if any source (Lido, EigenLayer) failed. Combined with
+   * `erroredSources` — a flaky Lido RPC no longer zeroes EigenLayer data
+   * (issue #93). Omitted when both sources succeeded so the happy-path
+   * response stays unchanged.
+   */
+  errored?: boolean;
+  /**
+   * Per-source failure detail for callers that need to surface which source
+   * was unavailable (portfolio coverage notes) without losing the other
+   * source's positions.
+   */
+  erroredSources?: { source: "lido" | "eigenlayer"; error: string }[];
 }> {
   const wallet = args.wallet as `0x${string}`;
   const chains: SupportedChain[] = (args.chains as SupportedChain[]) ?? [...SUPPORTED_CHAINS];
 
-  const [lido, eigen] = await Promise.all([
+  // allSettled so a flaky Lido RPC (say, balanceOf reverting under rate-limit)
+  // no longer short-circuits the EigenLayer read. Previously `Promise.all`
+  // rejected the whole function on either source failing — the aggregator's
+  // `.catch(() => { errors.staking = true; return emptyPositions })` then
+  // dropped BOTH sources, making `coverage.staking.errored:true` ambiguous.
+  // Returning per-source detail lets the aggregator produce a note that
+  // names the failing source(s) (issue #93).
+  const [lidoResult, eigenResult] = await Promise.allSettled([
     getLidoPositions(wallet, chains),
     chains.includes("ethereum") ? getEigenLayerPositions(wallet) : Promise.resolve([]),
   ]);
 
-  return { wallet, positions: [...lido, ...eigen] };
+  const positions: StakingPosition[] = [];
+  const erroredSources: { source: "lido" | "eigenlayer"; error: string }[] = [];
+  if (lidoResult.status === "fulfilled") {
+    positions.push(...lidoResult.value);
+  } else {
+    erroredSources.push({
+      source: "lido",
+      error: lidoResult.reason instanceof Error ? lidoResult.reason.message : String(lidoResult.reason),
+    });
+  }
+  if (eigenResult.status === "fulfilled") {
+    positions.push(...eigenResult.value);
+  } else {
+    erroredSources.push({
+      source: "eigenlayer",
+      error: eigenResult.reason instanceof Error ? eigenResult.reason.message : String(eigenResult.reason),
+    });
+  }
+
+  return {
+    wallet,
+    positions,
+    ...(erroredSources.length > 0 ? { errored: true, erroredSources } : {}),
+  };
 }
 
 const PERIOD_DAYS: Record<string, number> = { "7d": 7, "30d": 30, "90d": 90, "1y": 365 };

@@ -1,12 +1,18 @@
 /**
- * Issue #88 regression: `coverage.compound.note` used to be a generic
- * "fetch failed on at least one market" string, leaving the agent with no
- * way to tell the user which market/chain was broken or whether it was
- * worth retrying. The portfolio aggregator now plumbs the per-market
- * failure detail from `getCompoundPositions.erroredMarkets` into the note.
+ * Issues #88 (Compound V3), #92 (Morpho Blue), #93 (Lido / EigenLayer) —
+ * coverage notes used to be generic "X fetch failed" strings leaving the
+ * agent unable to tell the user which subsystem/source/chain was broken
+ * or whether the failure was worth retrying. Each coverage bucket now
+ * carries per-failure detail (chain + market + raw error; chain + raw
+ * error; source + raw error), formatted into the `note` field via
+ * dedicated helpers.
  */
 import { describe, it, expect } from "vitest";
-import { formatCompoundErrorNote } from "../src/modules/portfolio/index.js";
+import {
+  formatCompoundErrorNote,
+  formatMorphoErrorNote,
+  formatStakingErrorNote,
+} from "../src/modules/portfolio/index.js";
 
 describe("formatCompoundErrorNote (#88)", () => {
   it("falls back to the generic message when no per-market detail is available", () => {
@@ -66,5 +72,66 @@ describe("formatCompoundErrorNote (#88)", () => {
     expect(parts[0]).toContain("ethereum/cUSDCv3");
     expect(parts[1]).toContain("ethereum/cWETHv3");
     expect(parts[2]).toContain("polygon/cUSDCv3");
+  });
+});
+
+describe("formatMorphoErrorNote (#92)", () => {
+  it("falls back to the generic message when no per-chain detail is available", () => {
+    const note = formatMorphoErrorNote(undefined);
+    expect(note).toMatch(/event-log discovery failed on at least one chain/);
+    expect(note).not.toMatch(/Failures:/);
+  });
+
+  it("appends per-chain + raw error text when details are present", () => {
+    const note = formatMorphoErrorNote([
+      { chain: "ethereum", error: "archive node returned 503" },
+      { chain: "base", error: "rate limit exceeded" },
+    ]);
+    expect(note).toMatch(/ethereum: archive node returned 503/);
+    expect(note).toMatch(/base: rate limit exceeded/);
+    // Pointer to the narrower fast-path tool — same pattern as compound.
+    expect(note).toContain("get_morpho_positions");
+  });
+
+  it("truncates very long error strings so the note stays readable", () => {
+    const giant = "x".repeat(500);
+    const note = formatMorphoErrorNote([
+      { chain: "arbitrum", error: giant },
+    ]);
+    expect(note).not.toContain(giant);
+    expect(note).toMatch(/…/);
+    expect(note).toContain("arbitrum:");
+  });
+});
+
+describe("formatStakingErrorNote (#93)", () => {
+  it("falls back to the generic Lido+EigenLayer wording when no per-source detail is available", () => {
+    // Preserves the pre-fix string so callers hitting the empty-array
+    // branch (top-level promise reject with no erroredSources payload)
+    // still get a readable note. Split-by-source messaging only fires
+    // when we have structured detail.
+    const note = formatStakingErrorNote(undefined);
+    expect(note).toMatch(/Lido\/EigenLayer/);
+  });
+
+  it("names the specific failing source(s) when per-source detail is present", () => {
+    const note = formatStakingErrorNote([
+      { source: "lido", error: "stETH balanceOf reverted" },
+    ]);
+    expect(note).toMatch(/lido: stETH balanceOf reverted/);
+    // Must NOT claim EigenLayer failed when it didn't — the whole point of
+    // the allSettled refactor is that EigenLayer's positions still flow
+    // through when Lido is down.
+    expect(note).not.toMatch(/eigenlayer:/);
+    expect(note).toMatch(/other staking source/i);
+  });
+
+  it("handles the both-sources-errored case cleanly", () => {
+    const note = formatStakingErrorNote([
+      { source: "lido", error: "stETH balanceOf reverted" },
+      { source: "eigenlayer", error: "strategyList() out of gas" },
+    ]);
+    expect(note).toMatch(/lido:/);
+    expect(note).toMatch(/eigenlayer:/);
   });
 });

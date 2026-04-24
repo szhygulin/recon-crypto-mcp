@@ -19,11 +19,20 @@ const LLAMA_CHAIN: Record<SupportedChain, string> = {
 };
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-/** Coingecko ID for each chain's native asset. Ethereum + Arbitrum + Base + Optimism share ETH; Polygon uses MATIC. */
+/**
+ * Coingecko ID for each chain's native asset.
+ * Ethereum / Arbitrum / Base / Optimism share ETH.
+ * Polygon native was renamed MATIC → POL in Sept 2024; CoinGecko renamed the
+ * coin from `matic-network` (DefiLlama now returns `{"coins":{}}` for that
+ * key) to `polygon-ecosystem-token`. Issue #94 traced missing polygon-native
+ * USD valuations on portfolio totals to the stale key. Verified empirically
+ * against `coins.llama.fi/prices/current/...` — the new key returns POL at
+ * current price; the old key returns empty.
+ */
 const NATIVE_COINGECKO_ID: Record<SupportedChain, string> = {
   ethereum: "coingecko:ethereum",
   arbitrum: "coingecko:ethereum",
-  polygon: "coingecko:matic-network",
+  polygon: "coingecko:polygon-ecosystem-token",
   base: "coingecko:ethereum",
   optimism: "coingecko:ethereum",
 };
