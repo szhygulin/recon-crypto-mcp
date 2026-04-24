@@ -127,6 +127,28 @@ export interface PortfolioCoverage {
   solana?: CoverageStatus;
   /** Number of token balances whose USD valuation could not be resolved. */
   unpricedAssets: number;
+  /**
+   * Structured list of which specific tokens couldn't be priced — one entry
+   * per affected balance. Previously only `unpricedAssets: N` (a count) was
+   * surfaced, which left the agent unable to tell the user WHICH balance
+   * was dropped from USD totals. With this list the agent can produce a
+   * concrete warning like "705 MATIC on polygon couldn't be priced and isn't
+   * included in the total" instead of a bare integer. Absent when
+   * `unpricedAssets === 0` to keep happy-path responses lean (issue #94).
+   */
+  unpricedAssetsDetail?: UnpricedAsset[];
+}
+
+/**
+ * A single unpriced balance the portfolio couldn't value in USD. The chain
+ * is a string union spanning EVM + TRON + Solana so one array describes the
+ * cross-chain set without needing per-chain buckets.
+ */
+export interface UnpricedAsset {
+  chain: SupportedChain | "tron" | "solana";
+  symbol: string;
+  /** Human-readable balance (already-decimals-applied), e.g. "705.141". */
+  amount: string;
 }
 
 export interface LendingPosition {
