@@ -93,32 +93,36 @@ async function scanMorphoMarketIds(
 
   const ids = new Set<`0x${string}`>();
 
+  // The three event queries per chunk were previously run in `Promise.all`,
+  // which triples the instantaneous RPC pressure per block range and makes
+  // free-tier Infura the bottleneck — issue #88 trace showed HTTP 429 on
+  // mainnet event-log scans across multi-wallet portfolio fan-outs.
+  // Serializing the three queries cuts peak concurrency without adding a
+  // meaningful wall-clock cost per chunk (each chunk's three queries share
+  // the same block range, so the inner await is still a tight loop).
   for (let from = deploymentBlock; from <= latest; from += SCAN_CHUNK) {
     const to = from + SCAN_CHUNK - 1n > latest ? latest : from + SCAN_CHUNK - 1n;
-    const [supplyLogs, borrowLogs, collateralLogs] = await Promise.all([
-      client.getLogs({
-        address: morpho,
-        event: supplyEvent,
-        args: { onBehalf: wallet },
-        fromBlock: from,
-        toBlock: to,
-      }),
-      client.getLogs({
-        address: morpho,
-        event: borrowEvent,
-        args: { onBehalf: wallet },
-        fromBlock: from,
-        toBlock: to,
-      }),
-      client.getLogs({
-        address: morpho,
-        event: supplyCollateralEvent,
-        args: { onBehalf: wallet },
-        fromBlock: from,
-        toBlock: to,
-      }),
-    ]);
-
+    const supplyLogs = await client.getLogs({
+      address: morpho,
+      event: supplyEvent,
+      args: { onBehalf: wallet },
+      fromBlock: from,
+      toBlock: to,
+    });
+    const borrowLogs = await client.getLogs({
+      address: morpho,
+      event: borrowEvent,
+      args: { onBehalf: wallet },
+      fromBlock: from,
+      toBlock: to,
+    });
+    const collateralLogs = await client.getLogs({
+      address: morpho,
+      event: supplyCollateralEvent,
+      args: { onBehalf: wallet },
+      fromBlock: from,
+      toBlock: to,
+    });
     for (const log of [...supplyLogs, ...borrowLogs, ...collateralLogs]) {
       const id = (log.args as { id?: `0x${string}` }).id;
       if (id) ids.add(id);

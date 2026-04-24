@@ -32,12 +32,24 @@ export function getClient(chain: SupportedChain): PublicClient {
   // requests are slower but never ghost-fail. Users on premium endpoints can opt back in
   // via RPC_BATCH=1. Multicall3 still batches at the contract layer regardless.
   const batchEnabled = process.env.RPC_BATCH === "1";
+  // retryCount/retryDelay: viem's http transport retries on 429 (and other
+  // transient 4xx/5xx) by default using exponential backoff with
+  // `retryDelay * 2^attempt` per retry. The previous `3 / 500ms` setting
+  // gave a worst-case of ~3.5s (500, 1000, 2000) which wasn't enough to
+  // ride out sustained Infura rate-limit windows — issue #88 trace showed
+  // Morpho + Lido + cross-chain Compound all collateral-damaged during
+  // portfolio fan-outs. Bumping to `5 / 600ms` gives 600/1200/2400/4800/
+  // 9600ms (~18.6s worst-case) which covers most free-tier burst windows
+  // without blocking user-visible calls absurdly long. 429-aware retry is
+  // universal here (applies to every chain + tool), complementing the
+  // per-tool caching (e.g. Morpho discovery) that cuts the pressure at
+  // its source.
   const client = createPublicClient({
     chain: VIEM_CHAINS[chain],
     transport: http(url, {
       batch: batchEnabled,
-      retryCount: 3,
-      retryDelay: 500,
+      retryCount: 5,
+      retryDelay: 600,
     }),
   });
   clients.set(chain, client);
