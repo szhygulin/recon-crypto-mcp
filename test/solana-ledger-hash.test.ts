@@ -231,7 +231,12 @@ describe("renderSolanaAgentTaskBlock", () => {
     expect(block).toContain("CHECK 2 — PAIR-CONSISTENCY LEDGER HASH");
     // Hash is spliced into the recompute target AND the on-device line.
     expect(block).toContain(expectedHash);
-    expect(block).toContain(`**\`${expectedHash}\`**`);
+    // The on-device hash line renders the hash BARE (no `**` / backtick
+    // wrappers). The CHECKS PERFORMED region renders as preformatted text in
+    // Claude Code, so emphasis markers leak through as literal characters;
+    // the blank-line isolation around the indented hash carries the visual
+    // emphasis instead. Guard against a regression to the wrapper shape.
+    expect(block).not.toMatch(/\*\*`[1-9A-HJ-NP-Za-km-z]{43,44}`\*\*/);
     // Blind-sign prerequisite surfaced.
     expect(block).toContain("Allow blind signing");
     // Second-LLM escape hatch documented.

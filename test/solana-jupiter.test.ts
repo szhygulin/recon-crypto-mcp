@@ -363,7 +363,13 @@ describe("renderSolanaAgentTaskBlock — jupiter_swap handling", () => {
     // Blind-sign branch on on-device line.
     expect(block).toContain("BLIND-SIGN");
     expect(block).toContain("Jupiter routing");
-    expect(block).toContain(`**\`${expectedHash}\`**`);
+    // Hash spliced into the on-device line as a bare base58 value. The
+    // Markdown emphasis wrappers (`**\`…\`**`) were dropped because they
+    // leak through as literal characters in Claude Code's preformatted
+    // CHECKS PERFORMED rendering; blank-line isolation around the indented
+    // hash is what carries the visual emphasis. Guard the regression.
+    expect(block).toContain(expectedHash);
+    expect(block).not.toMatch(/\*\*`[1-9A-HJ-NP-Za-km-z]{43,44}`\*\*/);
     expect(block).toContain("Allow blind signing");
     // CHECK 2 (pair-consistency hash) runs for blind-sign.
     expect(block).toContain("PAIR-CONSISTENCY LEDGER HASH");
