@@ -1,0 +1,24 @@
+diff --git a/node_modules/bigint-buffer/dist/node.js b/node_modules/bigint-buffer/dist/node.js
+index 513168c..2467fcc 100644
+--- a/node_modules/bigint-buffer/dist/node.js
++++ b/node_modules/bigint-buffer/dist/node.js
+@@ -16,6 +16,9 @@ let converter;
+  * @returns A BigInt with the little-endian representation of buf.
+  */
+ function toBigIntLE(buf) {
++    if (buf == null || !Buffer.isBuffer(buf)) {
++        throw new TypeError('toBigIntLE: expected a Buffer');
++    }
+     if (converter === undefined) {
+         const reversed = Buffer.from(buf);
+         reversed.reverse();
+@@ -34,6 +37,9 @@ exports.toBigIntLE = toBigIntLE;
+  * @returns A BigInt with the big-endian representation of buf.
+  */
+ function toBigIntBE(buf) {
++    if (buf == null || !Buffer.isBuffer(buf)) {
++        throw new TypeError('toBigIntBE: expected a Buffer');
++    }
+     if (converter === undefined) {
+         const hex = buf.toString('hex');
+         if (hex.length === 0) {

@@ -621,6 +621,85 @@ export interface UnsignedTronTx {
 }
 
 /**
+ * Unsigned Solana transaction. Parallel to `UnsignedTronTx` — kept separate
+ * from `UnsignedTx` so `send_transaction`'s EVM-only security pipeline
+ * (eth_call re-simulation, EIP-1559 pin, spender allowlist) can't be
+ * silently shortcut by a Solana handle, and parallel to `UnsignedTronTx`
+ * because Solana's wire format (Ed25519 sig over a serialized tx message)
+ * is its own thing.
+ *
+ * Signing path: USB HID via `@ledgerhq/hw-app-solana` — Ledger Live's
+ * WalletConnect integration does NOT expose Solana accounts, so we mirror
+ * the TRON USB HID architecture (see `project_ledger_live_solana_wc.md`).
+ */
+export interface UnsignedSolanaTx {
+  chain: "solana";
+  /** Discriminator for the preview + future signer branching. */
+  action: "native_send" | "spl_send";
+  /** Base58 owner address (44-char ed25519 pubkey). */
+  from: string;
+  /**
+   * Base64-encoded serialized Solana tx MESSAGE (what the Ledger Solana app
+   * signs). Post-sign, broadcast rebuilds the full tx = message + signature.
+   * Message bytes bake the recent blockhash, fee payer, all instructions
+   * and accounts — tampering with any of these at send time will cause
+   * either the device address check or the on-chain signature verification
+   * to fail.
+   *
+   * Pinned by `preview_solana_send` with a fresh blockhash, immediately before
+   * signing. `prepare_solana_*` stores a draft (no blockhash); the pinned
+   * form only exists after preview runs. `send_transaction` requires it.
+   */
+  messageBase64: string;
+  /**
+   * Blockhash baked into the message, pinned at `preview_solana_send` time.
+   * Solana txs are valid for ~150 blocks (~60s) from this hash's slot, so
+   * the preview → send window is bounded — `preview_solana_send` emits a
+   * fresh hash right before broadcast so the full window is available.
+   */
+  recentBlockhash: string;
+  /**
+   * Last block height at which `recentBlockhash` remains valid. Captured
+   * from `getLatestBlockhash` at pin time; carried through broadcast and
+   * surfaced by `send_transaction` so the subsequent status-poller can
+   * tell "dropped" (current slot > this) from "not-yet-propagated" when
+   * `getSignatureStatuses` returns null.
+   */
+  lastValidBlockHeight?: number;
+  /** Human-readable description for the preview. */
+  description: string;
+  decoded: {
+    functionName: string;
+    args: Record<string, string>;
+  };
+  /**
+   * Rent cost in lamports when this tx includes a
+   * `createAssociatedTokenAccount` instruction (recipient doesn't hold the
+   * mint yet). Absent when the tx is a plain transfer. Surfaced so the
+   * preview can say "+0.00204 SOL rent to create recipient's USDC account".
+   */
+  rentLamports?: number;
+  /**
+   * Priority fee (micro-lamports per compute unit) baked into the message.
+   * Present only when `getRecentPrioritizationFees` indicated network
+   * congestion at prepare time and we injected ComputeBudget instructions.
+   * Absent means "no priority fee; base fee only".
+   */
+  priorityFeeMicroLamports?: number;
+  /** Compute-unit limit when ComputeBudget was added. */
+  computeUnitLimit?: number;
+  /** Estimated total fee in lamports (base + priority). For the preview. */
+  estimatedFeeLamports?: number;
+  /** Opaque handle — see solana-tx-store.ts. `send_transaction` consumes this. */
+  handle?: string;
+  /**
+   * Pre-sign verification payload, stamped by `issueSolanaHandle` on every
+   * prepared Solana tx. Mirrors the TRON / EVM verification shape.
+   */
+  verification?: TxVerification;
+}
+
+/**
  * Per-argument decode from the calldata — one entry per ABI input field.
  * `valueHuman` is populated only when we can apply decimals + symbol (known
  * ERC-20 tokens via `TOKEN_META`). For everything else, `value` is the raw

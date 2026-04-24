@@ -20,7 +20,8 @@
     "start": "node dist/index.js",
     "setup": "node dist/setup.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "postinstall": "patch-package"
   },
   "keywords": [
     "mcp",
@@ -116,10 +117,12 @@
   "author": "Viacheslav Zhygulin",
   "license": "MIT",
   "dependencies": {
+    "@ledgerhq/hw-app-solana": "^7.10.1",
     "@ledgerhq/hw-app-trx": "^6.34.1",
     "@ledgerhq/hw-transport-node-hid": "^6.32.1",
     "@lifi/sdk": "^3.16.3",
     "@modelcontextprotocol/sdk": "^1.0.4",
+    "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
     "@walletconnect/sign-client": "^2.17.0",
     "@walletconnect/types": "^2.17.0",
@@ -131,6 +134,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
+    "patch-package": "^8.0.1",
     "typescript": "^5.6.0",
     "vitest": "^4.1.4"
   },

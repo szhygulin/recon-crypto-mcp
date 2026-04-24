@@ -1,5 +1,12 @@
 import { CHAIN_IDS } from "../types/index.js";
-import type { SupportedChain, TxVerification, UnsignedTronTx, UnsignedTx } from "../types/index.js";
+import type {
+  SupportedChain,
+  TxVerification,
+  UnsignedSolanaTx,
+  UnsignedTronTx,
+  UnsignedTx,
+} from "../types/index.js";
+import { solanaLedgerMessageHash } from "./verification.js";
 
 /**
  * Render the VERIFY-BEFORE-SIGNING text block that every `prepare_*` tool
@@ -702,15 +709,41 @@ const POLL_CADENCE: Record<string, { intervalSec: number; maxPolls: number; budg
   polygon: { intervalSec: 3, maxPolls: 20, budgetLabel: "~1 minute" },
   base: { intervalSec: 3, maxPolls: 20, budgetLabel: "~1 minute" },
   tron: { intervalSec: 3, maxPolls: 20, budgetLabel: "~1 minute" },
+  // Solana: 400ms slots; poll aggressively for the first ~30s (~60 polls)
+  // within the ~60-90s blockhash-validity window. Past that, further
+  // polling is pointless — dropped txs get surfaced by the status tool's
+  // blockhash-expiry check once the baked blockhash is past.
+  solana: { intervalSec: 2, maxPolls: 45, budgetLabel: "~90 seconds" },
 };
 
 export function renderPostSendPollBlock(args: {
   chain: string;
   txHash: string;
   nextHandle?: string;
+  /**
+   * Solana only. When supplied, the poll block tells the agent to pass it
+   * into `get_transaction_status` so the status tool can distinguish
+   * `dropped` (current slot past this) from `pending` (tx still propagating).
+   * Without it, a dropped Solana tx reads as `pending` forever.
+   */
+  lastValidBlockHeight?: number;
 }): string {
-  const { chain, txHash, nextHandle } = args;
+  const { chain, txHash, nextHandle, lastValidBlockHeight } = args;
   const cadence = POLL_CADENCE[chain] ?? POLL_CADENCE.ethereum;
+  const statusCall =
+    chain === "solana" && lastValidBlockHeight !== undefined
+      ? `get_transaction_status({ chain: "solana", txHash: "${txHash}", lastValidBlockHeight: ${lastValidBlockHeight} })`
+      : `get_transaction_status({ chain: "${chain}", txHash: "${txHash}" })`;
+  const solanaDroppedBranch = chain === "solana" && lastValidBlockHeight !== undefined
+    ? [
+        `  5. SOLANA SPECIFIC — if status returns "dropped", the tx's blockhash`,
+        `     expired (current block height is past lastValidBlockHeight=${lastValidBlockHeight})`,
+        `     and the tx is permanently gone. Tell the user the broadcast did`,
+        `     not land and offer to re-run the prepare → preview → send flow`,
+        `     with a fresh blockhash. Do NOT keep polling — "dropped" is`,
+        `     terminal.`,
+      ]
+    : [];
   const lines = [
     "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
     `The tx was forwarded to Ledger and broadcast; a txHash is above. Do NOT`,
@@ -718,8 +751,8 @@ export function renderPostSendPollBlock(args: {
     `yourself and only speak again when you have a real outcome.`,
     ``,
     `Do this, in order:`,
-    `  1. Call get_transaction_status({ chain: "${chain}", txHash: "${txHash}" })`,
-    `     every ~${cadence.intervalSec} seconds until status is "success" or "failed", or until`,
+    `  1. Call ${statusCall}`,
+    `     every ~${cadence.intervalSec} seconds until status is "success" or "failed"${chain === "solana" ? ' or "dropped"' : ''}, or until`,
     `     you have polled for ${cadence.budgetLabel} (~${cadence.maxPolls} polls). If status stays`,
     `     "pending" / "unknown" past that budget, stop polling and tell the`,
     `     user the tx is still pending with the hash so they can watch it`,
@@ -737,6 +770,7 @@ export function renderPostSendPollBlock(args: {
         ` Do NOT send the nextHandle before confirmation; a pre-inclusion` +
         ` simulate reverts with "insufficient allowance".`
       : `  4. No follow-up tx is queued; end your turn after reporting.`,
+    ...solanaDroppedBranch,
     ``,
     `Between polls, stay silent — no "still waiting..." chatter. The user`,
     `only needs to hear from you when the status actually changes.`,
@@ -763,6 +797,437 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
     `  from=${tx.from}  txID=${tx.txID}  rawData=${truncateHex(tx.rawDataHex, true)}`,
     "  After signing, paste txID into https://tronscan.org to cross-check.",
   ].join("\n");
+}
+
+/**
+ * Shape of a prepare_solana_* result — the draft is in the tx-store; this
+ * is the user-visible metadata returned to the agent. Parallels UnsignedTx
+ * without `messageBase64` / `recentBlockhash` (those get pinned by
+ * `preview_solana_send` right before signing).
+ */
+export interface RenderableSolanaPrepareResult {
+  handle: string;
+  action: "native_send" | "spl_send";
+  from: string;
+  description: string;
+  decoded: { functionName: string; args: Record<string, string> };
+  rentLamports?: number;
+  estimatedFeeLamports?: number;
+}
+
+/**
+ * User-facing block emitted from `prepare_solana_*`. DELIBERATELY does not
+ * contain a Message Hash — the hash is only meaningful once a fresh
+ * blockhash is pinned, which happens in `preview_solana_send`. Showing a
+ * hash at prepare time would train users to match a stale value.
+ */
+export function renderSolanaPrepareSummaryBlock(
+  r: RenderableSolanaPrepareResult,
+): string {
+  const actionLabel =
+    r.action === "native_send" ? "native SOL transfer" : "SPL token transfer";
+  return [
+    `PREPARED (Solana — ${actionLabel}) — review, then confirm to continue`,
+    `  ${r.description}`,
+    `  From:    ${r.from}`,
+    `  Call:    ${r.decoded.functionName}`,
+    "  Args:",
+    ...Object.entries(r.decoded.args).map(([k, v]) => `    - ${k}: ${v}`),
+    ...(r.estimatedFeeLamports !== undefined
+      ? [`  Est. fee: ${r.estimatedFeeLamports} lamports`]
+      : []),
+    ...(r.rentLamports !== undefined
+      ? [`  Rent:    ${r.rentLamports} lamports (one-time, creates recipient ATA)`]
+      : []),
+    "",
+    "NEXT STEP — NOT YET SIGNABLE",
+    "  The Solana message is NOT serialized yet: we intentionally defer the",
+    "  blockhash fetch so the ~60s on-chain validity window isn't burned",
+    "  while the user reviews. When the user says 'send', call",
+    "  `preview_solana_send(handle)` — that tool pins a fresh blockhash,",
+    "  returns the Message Hash to match on-device, and emits the CHECKS",
+    "  PERFORMED agent-task block the agent runs unprompted.",
+  ].join("\n");
+}
+
+/**
+ * Per-call agent-task directive for `prepare_solana_*` results. Tells the
+ * agent to produce a short bullet summary and then — once the user says
+ * "send" — call `preview_solana_send(handle)` to pin the blockhash. All
+ * the integrity checks (CHECK 1 / CHECK 2 / second-LLM) fire from the
+ * `preview_solana_send` response, not here; at prepare time there are no
+ * final message bytes to decode or hash.
+ */
+export function renderSolanaPrepareAgentTaskBlock(
+  r: RenderableSolanaPrepareResult,
+): string {
+  const actionWord = r.action === "native_send" ? "native SOL send" : "SPL send";
+  const summaryShape =
+    r.action === "spl_send"
+      ? [
+          "  - Headline: \"Prepared SPL send — <amount> <symbol> to <short addr>\"",
+          "  - From: <from address>",
+          "  - To: <to address>",
+          "  - Mint: <mint address> (<symbol if known>)",
+          "  - Amount: <human amount + symbol>",
+          "  - Rent: <rent in SOL if ATA creation, else omit the bullet>",
+          "  - Fee: <est. fee in SOL>",
+        ]
+      : [
+          "  - Headline: \"Prepared native SOL send — <amount> SOL to <short addr>\"",
+          "  - From: <from address>",
+          "  - To: <to address>",
+          "  - Amount: <human SOL amount>",
+          "  - Fee: <est. fee in SOL>",
+        ];
+  return [
+    "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
+    `Produce a COMPACT bullet summary of the prepared ${actionWord}. Required shape:`,
+    ...summaryShape,
+    "",
+    "End with ONE line:",
+    '  "Reply \'send\' to continue — I\'ll pin a fresh blockhash, run the',
+    '   mandatory integrity checks, and surface the Ledger Message Hash for',
+    '   you to match on-device."',
+    "",
+    "Do NOT call `preview_solana_send` or `send_transaction` yet — wait for",
+    "the user's 'send'. When they reply, call `preview_solana_send(handle)`",
+    "with the handle below; that response carries the CHECKS template and",
+    "the Message Hash. Do NOT fabricate a hash here — none exists yet; the",
+    "blockhash gets fetched at preview_solana_send time.",
+    "",
+    `Handle: ${r.handle}`,
+  ].join("\n");
+}
+
+/**
+ * User-facing VERIFY BEFORE SIGNING block for Solana txs. Two shapes:
+ *
+ * - native_send (SystemProgram.Transfer): the Ledger Solana app clear-signs
+ *   these unconditionally, so we print the decoded action + amount +
+ *   recipient and tell the user to confirm the on-device screens. No
+ *   Message Hash — the user has nothing to match.
+ *
+ * - spl_send (Token.TransferChecked, possibly with createAssociatedTokenAccount
+ *   prepended): empirically the Ledger Solana app drops into blind-sign here
+ *   because the parser at libsol/spl_token_instruction.c requires a signed
+ *   "Trusted Name" TLV descriptor that only Ledger Live supplies. In
+ *   blind-sign mode the device displays base58(sha256(messageBytes)) under
+ *   the label "Message Hash". We compute the same value server-side and
+ *   surface it in bold+code so the user has it on-screen BEFORE the device
+ *   prompt fires — same UX the EVM blind-sign flow already uses.
+ */
+export function renderSolanaVerificationBlock(tx: UnsignedSolanaTx): string {
+  if (tx.action === "native_send") {
+    return renderSolanaNativeVerificationBlock(tx);
+  }
+  return renderSolanaSplVerificationBlock(tx);
+}
+
+function formatSolanaDecodedArgs(tx: UnsignedSolanaTx): string[] {
+  return Object.entries(tx.decoded.args).map(
+    ([k, v]) => `    - ${k}: ${v}`,
+  );
+}
+
+function renderSolanaNativeVerificationBlock(tx: UnsignedSolanaTx): string {
+  return [
+    "VERIFY BEFORE SIGNING (Solana — native SOL transfer)",
+    "The Ledger Solana app clear-signs SystemProgram.Transfer. The on-device",
+    "screens will show the amount and recipient — confirm they match the",
+    "decoded call below, else REJECT on the device.",
+    "",
+    `  Call:    ${tx.decoded.functionName}`,
+    "  Args:",
+    ...formatSolanaDecodedArgs(tx),
+    `  From:    ${tx.from}`,
+    `  Blockhash: ${tx.recentBlockhash}`,
+  ].join("\n");
+}
+
+function renderSolanaSplVerificationBlock(tx: UnsignedSolanaTx): string {
+  const ledgerHash = solanaLedgerMessageHash(tx.messageBase64);
+  return [
+    "VERIFY BEFORE SIGNING (Solana — SPL token transfer)",
+    "The Ledger Solana app does NOT auto clear-sign SPL transfers (the app",
+    "requires a signed Trusted-Name descriptor that only Ledger Live supplies).",
+    "Your device will BLIND-SIGN: it shows a 'Message Hash' and nothing else.",
+    "",
+    "  Required one-time setup: on your Ledger → Solana app → Settings →",
+    "  enable 'Allow blind signing'. If this isn't enabled the app will",
+    "  refuse to sign.",
+    "",
+    "LEDGER MESSAGE HASH — match this against your device screen:",
+    `  **\`${ledgerHash}\`**`,
+    "",
+    "This is base58(sha256(messageBytes)) — the exact string the Solana app",
+    "computes and displays under the 'Message Hash' label. If the device",
+    "shows a different value, REJECT — something between this preview and",
+    "the device is tampering with the tx.",
+    "",
+    `  Call:    ${tx.decoded.functionName}`,
+    "  Args:",
+    ...formatSolanaDecodedArgs(tx),
+    `  From:    ${tx.from}`,
+    `  Blockhash: ${tx.recentBlockhash}`,
+  ].join("\n");
+}
+
+/**
+ * Per-call agent-task directive for Solana prepare results. Mirrors the EVM
+ * `renderPreviewVerifyAgentTaskBlock` shape: two mandatory integrity checks
+ * (instruction-decode, and — for blind-sign SPL — pair-consistency on the
+ * Ledger Message Hash) plus an optional user-prompted second-LLM check.
+ *
+ * Solana has no `preview_send` step (the message bytes + blockhash are
+ * already pinned at prepare time), so all checks run in the prepare agent-
+ * task block rather than a later preview block. Native SOL sends drop the
+ * pair-consistency check — SystemProgram.Transfer clear-signs on-device so
+ * the user already sees decoded fields; no hash-match path fires.
+ */
+export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
+  const isSpl = tx.action === "spl_send";
+  const ledgerHash = isSpl ? solanaLedgerMessageHash(tx.messageBase64) : null;
+
+  const checksPayload = {
+    instructionDecode: {
+      autoRun: true,
+      threat: "MCP-side Solana message tampering",
+      keywords: ["Solana", "tampering"],
+    },
+    ...(isSpl
+      ? {
+          pairConsistencyLedgerHash: {
+            autoRun: true,
+            threat: "MCP signing different bytes than it displayed",
+            keywords: ["displayed"],
+          },
+        }
+      : {}),
+    secondLlm: {
+      autoRun: false,
+      threat: "coordinated agent compromise",
+      keywords: ["coordinated", "agent"],
+    },
+  };
+
+  const summaryShape = isSpl
+    ? [
+        "  - Headline: \"Prepared SPL send — <amount> <symbol> to <short addr>\"",
+        "  - From: <from address>",
+        "  - To: <to address>",
+        "  - Mint: <mint address> (<symbol if known>)",
+        "  - Amount: <human amount + symbol>",
+        "  - Rent: <rent in SOL if ATA creation, else omit the bullet>",
+        "  - Fee: <fee in SOL>",
+      ]
+    : [
+        "  - Headline: \"Prepared native SOL send — <amount> SOL to <short addr>\"",
+        "  - From: <from address>",
+        "  - To: <to address>",
+        "  - Amount: <human SOL amount>",
+        "  - Fee: <fee in SOL>",
+      ];
+
+  const lines = [
+    "[AGENT TASK — RUN THESE CHECKS NOW, DO NOT ASK THE USER]",
+    isSpl
+      ? "You MUST run BOTH of the following integrity checks UNPROMPTED and"
+      : "You MUST run the INSTRUCTION-DECODE integrity check UNPROMPTED and",
+    "report results in a prominent CHECKS PERFORMED block. The user already",
+    "consented to verification by calling `prepare_solana_*` — do NOT surface",
+    isSpl
+      ? "a yes/no menu for these two. They run every send, no exceptions."
+      : "a yes/no menu for this check. It runs every send, no exceptions.",
+    "",
+    "Step 1: Produce a COMPACT bullet summary of the prepared tx — do NOT",
+    "relay the VERIFY-BEFORE-SIGNING block verbatim. Required shape:",
+    ...summaryShape,
+    "",
+    "Step 2: Run the checks below. Step 3: emit the CHECKS PERFORMED block",
+    "(template further down) with your verdicts. Step 4: end with the single-",
+    "line prompt specified at the bottom.",
+    "",
+    "CHECK 1 — AGENT-SIDE INSTRUCTION DECODE",
+    "  Protects against: MCP-side Solana message tampering. If the server",
+    "  rewrote the message bytes between the compact summary and the bytes",
+    "  stored under the handle, your independent decode of `messageBase64`",
+    "  disagrees with your own summary.",
+    "",
+    "  Run this one-liner (splice the `messageBase64` value from the prepare",
+    "  result — it's the field of the same name on the JSON response). NOTE:",
+    "  Message.instructions[].data is a base58-encoded string (Solana wire",
+    "  format), NOT base64 — decode with bs58, not Buffer.from(...,'base64'),",
+    "  or the dataHex will be garbage:",
+    "",
+    "    node --input-type=module -e \"import {Message} from '@solana/web3.js';",
+    "    import bs58 from 'bs58';",
+    "    const m=Message.from(Buffer.from('<messageBase64>','base64'));",
+    "    console.log(JSON.stringify({instructions:m.instructions.map(i=>({",
+    "    programId:m.accountKeys[i.programIdIndex].toBase58(),",
+    "    accounts:i.accounts.map(a=>m.accountKeys[a].toBase58()),",
+    "    dataHex:Buffer.from(bs58.decode(i.data)).toString('hex')})),",
+    "    blockhash:m.recentBlockhash}, null, 2))\"",
+    "",
+    "  What you should see (compare against your bullet summary above):",
+    isSpl
+      ? [
+          "    - For SPL send: one instruction with programId",
+          "      TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA (SPL Token Program),",
+          "      accounts [source_ata, mint, dest_ata, owner], dataHex starting",
+          "      with `0c` (tag 12 = TransferChecked), followed by u64le(amount)",
+          "      and u8(decimals). If ATA creation is included, there is also an",
+          "      instruction with programId",
+          "      ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL (Associated Token",
+          "      Account Program) — that's the recipient-ATA-creation bullet in",
+          "      your summary.",
+          "    - Priority fee: two ComputeBudget111111111111111111111111111111",
+          "      instructions may appear (setComputeUnitLimit / setComputeUnitPrice)",
+          "      — only present when the network was congested at prepare time.",
+        ].join("\n")
+      : [
+          "    - One instruction with programId 11111111111111111111111111111111",
+          "      (System Program), accounts [from, to], dataHex starting with",
+          "      `02000000` (u32le tag 2 = Transfer), followed by u64le(lamports).",
+          "    - Priority fee: two ComputeBudget111111111111111111111111111111",
+          "      instructions may appear (setComputeUnitLimit / setComputeUnitPrice)",
+          "      — only present when the network was congested at prepare time.",
+        ].join("\n"),
+    "",
+    "  If the decoded programId / accounts / amount disagree with your",
+    "  bullet summary, mark ✗ MISMATCH. If the decode throws or you can't",
+    "  parse it, mark ⚠ DECODE UNAVAILABLE and tell the user the SECOND-LLM",
+    "  check (option 2) is the remaining gap-closer. Report ✓ MATCH only",
+    "  when the decoded instructions line up with your summary.",
+    "",
+    ...(isSpl
+      ? [
+          "CHECK 2 — PAIR-CONSISTENCY LEDGER HASH",
+          "  Protects against: the server reporting messageBase64 M with",
+          "  ledgerHash=hash(Y) where Y≠M, then forwarding Y to the Ledger. The",
+          "  on-device match alone does NOT catch that (device sees hash(Y),",
+          "  chat sees hash(Y), they agree); only a local recompute of hash(M)",
+          "  from the stated messageBase64 catches the discrepancy.",
+          "",
+          "  Run this one-liner (splice the `messageBase64` from the prepare",
+          "  result):",
+          "",
+          "    node --input-type=module -e \"import bs58 from 'bs58';",
+          "    import {createHash} from 'crypto';",
+          "    console.log(bs58.encode(createHash('sha256').update(",
+          "    Buffer.from('<messageBase64>','base64')).digest()))\"",
+          "",
+          `  Compare the output to ${ledgerHash}. Report ✓ MATCH or ✗ MISMATCH.`,
+          "  If MATCH, the bytes the server plans to sign match the bytes it",
+          "  showed you AND the hash you'll match on-device is the genuine",
+          "  hash of those bytes.",
+          "",
+        ]
+      : []),
+    "CHECKS PAYLOAD (the threat taxonomy + required keywords the user-facing",
+    "block below MUST cover — paraphrase naturally but every listed keyword",
+    "must appear verbatim somewhere in the matching line):",
+    "",
+    "```json",
+    JSON.stringify(checksPayload, null, 2),
+    "```",
+    "",
+    "After the checks run, emit EXACTLY this block shape to the user — CAPS",
+    "headers, ✓/✗/⚠/⏸ symbols, the keywords above embedded in each threat",
+    "clause.",
+    "",
+    "NOTATION — READ THIS BEFORE COPYING THE BLOCK:",
+    "  Placeholders you REPLACE in your output:",
+    "    {✓|✗|⚠}            pick one symbol based on your verdict",
+    "    <one-line verdict> your own prose describing the result",
+    "  Literal characters you KEEP EXACTLY (Markdown rendering directives):",
+    "    `…`                base58 hash in single backticks → inline code",
+    "    **`…`**            bold + inline code (highest-contrast emphasis)",
+    "",
+    "    ═══════ CHECKS PERFORMED ═══════",
+    "    {✓|✗|⚠} INSTRUCTION DECODE — <one-line verdict>.",
+    "        (protects against MCP-side Solana tampering)",
+    ...(isSpl
+      ? [
+          "    {✓|✗} PAIR-CONSISTENCY LEDGER HASH — <one-line verdict>.",
+          "        (protects against MCP signing different bytes than it displayed)",
+        ]
+      : []),
+    "    □ SECOND-LLM CHECK — optional, available on request.",
+    "        (protects against a coordinated agent compromise)",
+    "    ────────────────────────────────",
+    "    NEXT ON-DEVICE — final check happens on your Ledger screen:",
+    ...(isSpl
+      ? [
+          "      • BLIND-SIGN (this tx — Solana app shows 'Message Hash'):",
+          `          check the value on-device is exactly **\`${ledgerHash}\`**.`,
+          "          Any difference → REJECT.",
+          "          Prerequisite: Allow blind signing must be ON in Solana app Settings.",
+        ]
+      : [
+          "      • CLEAR-SIGN (this tx: native SOL send — the Solana app shows",
+          "        amount + recipient on-device). Hash matching does NOT apply.",
+          "        Confirm the on-device values equal your compact summary",
+          "        above. Any difference → REJECT.",
+        ]),
+    "    ════════════════════════════════",
+    "",
+    ...(isSpl
+      ? [
+          "Render the Message Hash with BOTH bold AND single-backtick inline",
+          "code — i.e. `**\\`<hash>\\`**` — exactly as shown in the template",
+          "above. Backticks alone render too subtly in some clients; bold+code",
+          "reads with clear contrast everywhere. Do NOT strip either marker.",
+          "Whenever you reference the hash elsewhere (headline, post-broadcast",
+          "summary, etc.) use the same wrapper — inconsistent emphasis slows",
+          "the user's visual match.",
+          "",
+        ]
+      : [
+          "No hash is rendered for native SOL sends; the Solana app clear-signs",
+          "SystemProgram.Transfer and shows amount + recipient on-device, so",
+          "there is nothing for the user to match against. Do NOT fabricate",
+          "a hash for the on-device line.",
+          "",
+        ]),
+    "After the CHECKS PERFORMED block, append EXACTLY one line, no menu:",
+    "",
+    "    Want an independent second-LLM check? Reply (2). Otherwise reply 'send'.",
+    "",
+    "If ANY mandatory check fails (✗), LEAD your reply with a prominent",
+    '"✗ <CHECK NAME> FAILED — DO NOT SIGN." line on its own, BEFORE the',
+    "CHECKS PERFORMED block. The pass/fail is the news.",
+    "",
+    "SECOND-LLM CHECK — if the user replies (2):",
+    "  Call `get_verification_artifact({ handle: <handle> })` and relay ONLY",
+    "  the artifact's `pasteableBlock` field VERBATIM to the user — a single",
+    "  self-contained string with explicit START/END copy markers, instructions,",
+    "  and the embedded JSON payload. Do NOT also dump the full artifact JSON,",
+    "  do NOT wrap the block in your own commentary between the markers, do",
+    "  NOT reformat or translate any line. The user copies from the START",
+    "  marker to the END marker into a second, ideally different-provider LLM",
+    "  session — that session has no shared context with this one, so it",
+    "  decodes the bytes from scratch. Do NOT pre-decode the bytes yourself",
+    "  in the same reply. Before/after the pasteableBlock, remind the user to",
+    "  compare the second agent's plain-English description against what they",
+    isSpl
+      ? "  asked for and match the Message Hash inside the paste block against"
+      : "  asked for and confirm the amount/recipient match what the Solana app",
+    isSpl
+      ? "  the Ledger screen before approving."
+      : "  clear-signs on-device before approving.",
+    "",
+    "  This is the only check that survives a fully-coordinated agent-AND-MCP",
+    "  compromise.",
+    "",
+    "SEND-CALL CONTRACT — when the user replies \"send\" (after the mandatory",
+    "check(s) passed), call `send_transaction` with these args:",
+    "  - handle: <the handle from the prepare_solana_* result>",
+    "  - confirmed: true",
+    "Solana has no preview_send step (message bytes + blockhash are pinned",
+    "at prepare time), so only the two args above are needed.",
+  ];
+  return lines.join("\n");
 }
 
 export type { SupportedChain };

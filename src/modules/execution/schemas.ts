@@ -24,6 +24,54 @@ export const pairLedgerTronInput = z.object({
     ),
 });
 
+export const pairLedgerSolanaInput = z.object({
+  accountIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe(
+      "Ledger Solana account slot (hardened BIP-44 account index at path `44'/501'/<n>'`). " +
+        "0 = first Solana account in Ledger Live, 1 = second, etc. Omit to pair the default " +
+        "account (index 0). Call multiple times with different indices to expose multiple " +
+        "Solana accounts in `get_ledger_status.solana`."
+    ),
+});
+
+const solanaAddressSchema = z
+  .string()
+  .regex(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/)
+  .describe("Base58 Solana mainnet address (ed25519 pubkey, 43 or 44 chars).");
+
+export const prepareSolanaNativeSendInput = z.object({
+  wallet: solanaAddressSchema,
+  to: solanaAddressSchema,
+  amount: z
+    .string()
+    .describe(
+      'Human-readable SOL amount (up to 9 decimals). Example: "0.5" for 0.5 SOL. ' +
+        'Pass "max" to send the full balance minus tx fee and a small safety buffer.'
+    ),
+});
+
+export const prepareSolanaSplSendInput = z.object({
+  wallet: solanaAddressSchema,
+  mint: solanaAddressSchema.describe(
+    "Base58 SPL mint address. Use the canonical mint for known tokens (e.g. USDC = EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v)."
+  ),
+  to: solanaAddressSchema,
+  amount: z
+    .string()
+    .describe(
+      "Human-readable token amount. Decimals are resolved from the mint (canonical table " +
+        "for USDC/USDT/JUP/BONK/JTO/mSOL/jitoSOL; otherwise on-chain `getTokenSupply`). " +
+        'If the recipient does not yet have an associated token account for this mint, ' +
+        'the tx automatically includes a `createAssociatedTokenAccount` instruction and the ' +
+        'sender pays ~0.00204 SOL rent — disclosed in the preview.'
+    ),
+});
+
 export const getLedgerStatusInput = z.object({});
 
 const baseAaveAction = z.object({
@@ -177,15 +225,46 @@ export const previewSendInput = z.object({
     ),
 });
 
+export const previewSolanaSendInput = z.object({
+  handle: z
+    .string()
+    .min(1)
+    .describe(
+      "Opaque handle returned by prepare_solana_native_send / prepare_solana_spl_send. " +
+        "preview_solana_send fetches a fresh Solana blockhash, serializes the message " +
+        "bytes, computes the base58(sha256(...)) Message Hash the Ledger Solana app will " +
+        "display on blind-sign, and pins the handle so send_transaction can consume it. " +
+        "MUST be called between prepare_solana_* and send_transaction — the pair is " +
+        "separated because a Solana blockhash is only valid ~60s and prepare→user-approve " +
+        "routinely blows that window. Re-callable on the same handle to re-pin with a " +
+        "newer blockhash if the user pauses."
+    ),
+});
+
+export type PreviewSolanaSendArgs = z.infer<typeof previewSolanaSendInput>;
+
 export const getTransactionStatusInput = z.object({
   chain: z
-    .enum([...SUPPORTED_CHAINS, "tron"] as unknown as [string, ...string[]])
-    .describe("EVM chain or 'tron'."),
+    .enum([...SUPPORTED_CHAINS, "tron", "solana"] as unknown as [string, ...string[]])
+    .describe("EVM chain, 'tron', or 'solana'."),
   txHash: z
     .string()
-    .regex(/^(0x)?[a-fA-F0-9]{64}$/)
+    .regex(/^(0x)?[a-fA-F0-9]{64}$|^[1-9A-HJ-NP-Za-km-z]{86,88}$/)
     .describe(
-      "32-byte tx hash as hex. EVM txs are conventionally 0x-prefixed; TRON tx IDs are bare hex — both are accepted."
+      "Transaction identifier. EVM: 32-byte hex (0x-prefixed or bare). TRON: 32-byte bare hex. " +
+        "Solana: 64-byte signature as base58 (86–88 chars). All three forms are accepted."
+    ),
+  lastValidBlockHeight: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe(
+      "Solana only. Block-height ceiling for the tx's baked blockhash — returned by " +
+        "send_transaction for Solana txs. When supplied and `getSignatureStatuses` " +
+        "returns null (tx not visible), the poller compares against the current block " +
+        "height and reports `dropped` instead of forever `pending` if the window has " +
+        "passed. Omit for EVM / TRON; ignored on those chains."
     ),
 });
 
@@ -218,6 +297,9 @@ export const getVerificationArtifactInput = z.object({
 });
 
 export type PairLedgerTronArgs = z.infer<typeof pairLedgerTronInput>;
+export type PairLedgerSolanaArgs = z.infer<typeof pairLedgerSolanaInput>;
+export type PrepareSolanaNativeSendArgs = z.infer<typeof prepareSolanaNativeSendInput>;
+export type PrepareSolanaSplSendArgs = z.infer<typeof prepareSolanaSplSendInput>;
 export type PrepareAaveSupplyArgs = z.infer<typeof prepareAaveSupplyInput>;
 export type PrepareAaveWithdrawArgs = z.infer<typeof prepareAaveWithdrawInput>;
 export type PrepareAaveBorrowArgs = z.infer<typeof prepareAaveBorrowInput>;
