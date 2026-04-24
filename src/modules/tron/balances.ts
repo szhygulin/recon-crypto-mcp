@@ -9,6 +9,7 @@ import {
 } from "../../config/tron.js";
 import { resolveTronApiKey } from "../../config/user-config.js";
 import { readUserConfig } from "../../config/user-config.js";
+import { formatUnits } from "../../data/format.js";
 import type { TronBalance, TronPortfolioSlice } from "../../types/index.js";
 
 /**
@@ -32,23 +33,6 @@ interface TrongridAccountsResponse {
 
 interface LlamaResponse {
   coins: Record<string, { price: number }>;
-}
-
-/**
- * Format a raw integer amount ("1234567") at the given decimals into a
- * human-readable string ("1.234567"). Minimal re-implementation of
- * src/data/format.ts#formatUnits to avoid pulling that file into the TRON
- * path (it imports viem's formatUnits which is EVM-specific anyway).
- */
-function formatUnits(amount: bigint, decimals: number): string {
-  if (decimals === 0) return amount.toString();
-  const negative = amount < 0n;
-  const abs = negative ? -amount : amount;
-  const s = abs.toString().padStart(decimals + 1, "0");
-  const whole = s.slice(0, s.length - decimals);
-  const frac = s.slice(s.length - decimals).replace(/0+$/, "");
-  const out = frac.length > 0 ? `${whole}.${frac}` : whole;
-  return negative ? `-${out}` : out;
 }
 
 async function trongridGet<T>(path: string, apiKey: string | undefined): Promise<T> {

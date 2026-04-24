@@ -5,6 +5,7 @@ import {
   EtherscanApiKeyMissingError,
 } from "../../data/apis/etherscan-v2.js";
 import { sanitizeContractName } from "../../data/apis/etherscan.js";
+import { formatUnitsFromDecimalString as formatUnitsDecimal } from "../../data/format.js";
 import type { SupportedChain } from "../../types/index.js";
 import type {
   ExternalHistoryItem,
@@ -47,15 +48,6 @@ interface InternalTxItem {
   value: string;
   isError: string;
   traceId?: string;
-}
-
-function formatUnitsDecimal(raw: string, decimals: number): string {
-  if (!/^\d+$/.test(raw)) return "0";
-  if (decimals === 0) return raw;
-  const padded = raw.padStart(decimals + 1, "0");
-  const whole = padded.slice(0, padded.length - decimals);
-  const frac = padded.slice(padded.length - decimals).replace(/0+$/, "");
-  return frac.length > 0 ? `${whole}.${frac}` : whole;
 }
 
 function toExternal(t: TxListItem): ExternalHistoryItem {

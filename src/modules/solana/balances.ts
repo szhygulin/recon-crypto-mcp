@@ -10,6 +10,7 @@ import {
 } from "../../config/solana.js";
 import { getSolanaConnection } from "./rpc.js";
 import { assertSolanaAddress } from "./address.js";
+import { formatUnits } from "../../data/format.js";
 import type { SolanaBalance, SolanaPortfolioSlice } from "../../types/index.js";
 
 const SPL_TOKEN_PROGRAM_ID = new PublicKey(
@@ -21,22 +22,6 @@ const TOKEN_2022_PROGRAM_ID = new PublicKey(
 
 interface LlamaResponse {
   coins: Record<string, { price: number }>;
-}
-
-/**
- * Format a raw integer amount at `decimals` into a human-readable string.
- * Minimal reimpl so this module doesn't pull viem's `formatUnits` (which is
- * EVM-flavored and imports other machinery we don't need on the Solana path).
- */
-function formatUnits(amount: bigint, decimals: number): string {
-  if (decimals === 0) return amount.toString();
-  const negative = amount < 0n;
-  const abs = negative ? -amount : amount;
-  const s = abs.toString().padStart(decimals + 1, "0");
-  const whole = s.slice(0, s.length - decimals);
-  const frac = s.slice(s.length - decimals).replace(/0+$/, "");
-  const out = frac.length > 0 ? `${whole}.${frac}` : whole;
-  return negative ? `-${out}` : out;
 }
 
 /** Reverse map: mint → canonical symbol (for the canonical list in SOLANA_TOKENS). */

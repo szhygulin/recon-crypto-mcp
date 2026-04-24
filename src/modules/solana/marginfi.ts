@@ -1041,6 +1041,7 @@ async function resolveActionContext(
         `couldn't decode one of the production group's banks or oracle prices. ` +
         `Raw error: ${raw}. Retry in a minute; if it persists, MarginFi may have ` +
         `shipped an on-chain upgrade the SDK version doesn't support yet.`,
+      { cause: e },
     );
   }
   const bank = findBankForMint(client, mint);
@@ -1056,6 +1057,7 @@ async function resolveActionContext(
         `The account exists on chain (verified earlier in this call) but the ` +
         `SDK can't parse it. If you just ran prepare_marginfi_init, wait one ` +
         `confirmation and retry.`,
+      { cause: e },
     );
   }
   if (!wrapper) {

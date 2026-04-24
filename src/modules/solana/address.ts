@@ -28,6 +28,7 @@ export function assertSolanaAddress(s: string): PublicKey {
       `"${s}" passed the shape check but isn't a 32-byte base58 pubkey: ${
         e instanceof Error ? e.message : String(e)
       }`,
+      { cause: e },
     );
   }
 }

@@ -610,5 +610,3 @@ export async function getCompoundPositions(
     ...(erroredMarkets.length > 0 ? { erroredMarkets } : {}),
   };
 }
-
-export { formatUnits };

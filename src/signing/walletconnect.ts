@@ -3,6 +3,7 @@ import type { SessionTypes } from "@walletconnect/types";
 import { getSdkError } from "@walletconnect/utils";
 import { join } from "node:path";
 import { CHAIN_IDS, CHAIN_ID_TO_NAME, type SupportedChain, type UnsignedTx } from "../types/index.js";
+import { EVM_ADDRESS } from "../shared/address-patterns.js";
 import {
   readUserConfig,
   patchUserConfig,
@@ -176,16 +177,21 @@ async function verifySessionAlive(
 }
 
 /**
+ * Session-liveness ping timeout. 5s matches what `getSignClient` uses at
+ * restore time, so both paths classify a slow peer the same way. Module-
+ * level so it lives with `WC_SEND_REQUEST_TIMEOUT_MS` (the other timeout
+ * knob in this file) and can be tuned without digging into a function body.
+ */
+const PING_TIMEOUT_MS = 5_000;
+
+/**
  * Exported variant of the probe for use by `requestSendTransaction` and
- * test code. Same contract as the internal `verifySessionAlive`. 5s timeout
- * matches what `getSignClient` uses at restore time, so both paths classify
- * a slow peer the same way.
+ * test code. Same contract as the internal `verifySessionAlive`.
  */
 export async function probeSessionLiveness(
   c: InstanceType<typeof SignClient>,
   topic: string
 ): Promise<"alive" | "dead" | "unknown"> {
-  const PING_TIMEOUT_MS = 5_000;
   let timedOut = false;
   try {
     await Promise.race([
@@ -267,7 +273,7 @@ export async function getConnectedAccountsDetailed(): Promise<
     if (parts.length !== 3) continue;
     const chainId = Number(parts[1]);
     const addr = parts[2];
-    if (!Number.isFinite(chainId) || !/^0x[a-fA-F0-9]{40}$/.test(addr)) continue;
+    if (!Number.isFinite(chainId) || !EVM_ADDRESS.test(addr)) continue;
     const address = addr as `0x${string}`;
     const existing = byAddress.get(address);
     if (existing) existing.add(chainId);

@@ -41,7 +41,8 @@ export function readUserConfig(): UserConfig | null {
     return JSON.parse(raw) as UserConfig;
   } catch (err) {
     throw new Error(
-      `~/.vaultpilot-mcp/config.json is malformed: ${(err as Error).message}. Delete it or re-run \`vaultpilot-mcp-setup\`.`
+      `~/.vaultpilot-mcp/config.json is malformed: ${(err as Error).message}. Delete it or re-run \`vaultpilot-mcp-setup\`.`,
+      { cause: err },
     );
   }
 }

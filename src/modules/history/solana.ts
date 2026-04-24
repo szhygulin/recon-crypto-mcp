@@ -6,6 +6,7 @@ import type {
 } from "@solana/web3.js";
 import { cache } from "../../data/cache.js";
 import { CACHE_TTL } from "../../config/cache.js";
+import { formatUnits as formatUnitsDecimal } from "../../data/format.js";
 import { SOL_DECIMALS, SOL_SYMBOL, SOLANA_TOKENS, SOLANA_TOKEN_DECIMALS } from "../../config/solana.js";
 import { getSolanaConnection } from "../solana/rpc.js";
 import { assertSolanaAddress } from "../solana/address.js";
@@ -478,17 +479,6 @@ function computeBalanceDeltas(
   }
 
   return out;
-}
-
-function formatUnitsDecimal(raw: bigint, decimals: number): string {
-  if (decimals === 0) return raw.toString();
-  const negative = raw < 0n;
-  const abs = negative ? -raw : raw;
-  const s = abs.toString().padStart(decimals + 1, "0");
-  const whole = s.slice(0, s.length - decimals);
-  const frac = s.slice(s.length - decimals).replace(/0+$/, "");
-  const out = frac.length > 0 ? `${whole}.${frac}` : whole;
-  return negative ? `-${out}` : out;
 }
 
 function formatSignedUnits(raw: bigint, decimals: number): string {

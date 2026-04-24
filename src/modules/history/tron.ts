@@ -7,6 +7,7 @@ import {
   TRON_TOKENS,
   isTronAddress,
 } from "../../config/tron.js";
+import { formatUnitsFromDecimalString as formatUnitsDecimal } from "../../data/format.js";
 import type {
   ExternalHistoryItem,
   TokenTransferHistoryItem,
@@ -78,15 +79,6 @@ async function trongridGet<T>(path: string, apiKey: string | undefined): Promise
     throw new Error(`TronGrid ${path} response exceeds ${MAX_RESPONSE_BYTES} bytes`);
   }
   return JSON.parse(text) as T;
-}
-
-function formatUnitsDecimal(raw: string, decimals: number): string {
-  if (!/^\d+$/.test(raw)) return "0";
-  if (decimals === 0) return raw;
-  const padded = raw.padStart(decimals + 1, "0");
-  const whole = padded.slice(0, padded.length - decimals);
-  const frac = padded.slice(padded.length - decimals).replace(/0+$/, "");
-  return frac.length > 0 ? `${whole}.${frac}` : whole;
 }
 
 function sanitizeDisplayString(raw: string | undefined, maxLen: number): string {
