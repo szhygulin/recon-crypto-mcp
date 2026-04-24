@@ -69,6 +69,7 @@ import {
   prepareMarginfiBorrow,
   prepareMarginfiRepay,
   getMarginfiPositions,
+  getSolanaSetupStatus,
   prepareAaveSupply,
   prepareAaveWithdraw,
   prepareAaveBorrow,
@@ -103,6 +104,7 @@ import {
   prepareMarginfiBorrowInput,
   prepareMarginfiRepayInput,
   getMarginfiPositionsInput,
+  getSolanaSetupStatusInput,
   getLedgerStatusInput,
   prepareAaveSupplyInput,
   prepareAaveWithdrawInput,
@@ -1262,6 +1264,11 @@ async function main() {
         "Ledger-compatible. PDA seeds are [\"marginfi_account\", group, wallet, accountIndex, 0], " +
         "with `accountIndex` defaulting to 0. After broadcast, `prepare_marginfi_supply / " +
         "withdraw / borrow / repay` for this wallet will use this MarginfiAccount automatically. " +
+        "COST: ~0.01698 SOL rent-exempt minimum (for the 2312-byte PDA) + ~0.000005 SOL tx fee. " +
+        "The rent is PAID FROM THE USER WALLET DIRECTLY (not via an ephemeral keypair) and is " +
+        "reclaimable when the MarginfiAccount is closed. Surface this cost to the user before " +
+        "they approve on Ledger — the blind-sign screen only shows a Message Hash, so the user " +
+        "has no on-device check of the balance delta. " +
         "DURABLE NONCE REQUIRED: this tx carries ix[0] = nonceAdvance (same pattern as every " +
         "other Solana send in this server), so the wallet must have run `prepare_solana_nonce_init` " +
         "first; otherwise this tool errors with a clear pointer. BLIND-SIGN on Ledger (MarginFi's " +
@@ -1330,6 +1337,23 @@ async function main() {
       inputSchema: prepareMarginfiRepayInput.shape,
     },
     handler(prepareMarginfiRepay)
+  );
+
+  server.registerTool(
+    "get_solana_setup_status",
+    {
+      description:
+        "READ-ONLY — probe which one-time setup pieces are already in place for a Solana " +
+        "wallet: the durable-nonce account (exists / address / current nonce value / authority) " +
+        "and the set of MarginfiAccount PDAs (index + address). Call this BEFORE planning a " +
+        "multi-step Solana flow (nonce init → MarginFi init → supply) so agents can skip " +
+        "redundant prepare_* calls instead of re-proposing them and letting the user correct " +
+        "you. Mirrors the get_ledger_status pattern of cheap chain-read setup introspection. " +
+        "One getAccountInfo per probed PDA; no SDK load, no oracle fetch. Returns empty " +
+        "arrays / exists:false when nothing's set up — never throws for an empty wallet.",
+      inputSchema: getSolanaSetupStatusInput.shape,
+    },
+    handler(getSolanaSetupStatus)
   );
 
   server.registerTool(

@@ -176,6 +176,11 @@ function installFakeWrapperFor(kind: "healthy" | "noCollateral"): void {
 
 beforeEach(async () => {
   connectionStub.getAccountInfo.mockReset();
+  connectionStub.getMinimumBalanceForRentExemption.mockReset();
+  // Rent-exempt minimum for the 2312-byte MarginfiAccount PDA (live mainnet
+  // value 2026-04-24). Tests rely on the exact value to assert the surfaced
+  // rent cost (issue #103).
+  connectionStub.getMinimumBalanceForRentExemption.mockResolvedValue(16_982_400);
   resolveAltMock.mockReset();
   resolveAltMock.mockResolvedValue([]);
   wrapperFetchMock.mockReset();
@@ -250,6 +255,12 @@ describe("buildMarginfiInit", () => {
     expect(res.chain).toBe("solana");
     expect(res.handle).toMatch(/^[0-9a-f-]+$/);
     expect(res.nonceAccount).toBeTruthy();
+    // Issue #103 — rent MUST be surfaced so the agent can tell the user
+    // their wallet is funding ~0.017 SOL (not "only a fee" as the prior
+    // wording claimed).
+    expect(res.rentLamports).toBe(16_982_400);
+    expect(res.description).toContain("rent-exempt minimum");
+    expect(res.decoded.args.rentLamports).toBe("16982400");
     const draft = getSolanaDraft(res.handle);
     expect(draft.kind).toBe("v0");
     if (draft.kind !== "v0") throw new Error("unreachable");
@@ -388,5 +399,25 @@ describe("buildMarginfiSupply / Withdraw / Borrow / Repay", () => {
     await expect(
       buildMarginfiSupply({ wallet: WALLET, symbol: "USDC", amount: "1" }),
     ).rejects.toThrow(/No MarginfiAccount exists|prepare_marginfi_init/i);
+  });
+});
+
+/**
+ * Issue #102 — getMarginfiPositions must short-circuit BEFORE loading the
+ * SDK client when no MarginfiAccount exists. Prior behaviour threw an
+ * opaque `Cannot read properties of null (reading 'property')` because
+ * MarginfiClient.fetch was called unconditionally.
+ */
+describe("getMarginfiPositions short-circuit (issues #102, #101)", () => {
+  it("returns [] without invoking the MarginFi SDK when no PDA exists", async () => {
+    connectionStub.getAccountInfo.mockResolvedValue(null); // no PDA at any slot
+    const { getMarginfiPositions } = await import(
+      "../src/modules/positions/marginfi.js"
+    );
+    const results = await getMarginfiPositions(
+      connectionStub as never,
+      WALLET,
+    );
+    expect(results).toEqual([]);
   });
 });

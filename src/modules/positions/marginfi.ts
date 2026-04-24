@@ -86,49 +86,119 @@ export async function getMarginfiPositions(
 ): Promise<MarginfiPosition[]> {
   const authority = assertSolanaAddress(wallet);
 
-  // The client fetch is idempotent & cached at the `solana/marginfi.ts`
-  // layer; calling its getter here rides the same cache.
-  const { MarginfiClient, getConfig, MarginfiAccountWrapper } = await import(
-    "@mrgnlabs/marginfi-client-v2"
-  );
-  const stubWallet = {
-    publicKey: authority,
-    signTransaction: async <T,>(_tx: T): Promise<T> => {
-      throw new Error("read-only path must not sign");
-    },
-    signAllTransactions: async <T,>(_txs: T[]): Promise<T[]> => {
-      throw new Error("read-only path must not sign");
-    },
-  };
-  const client = await MarginfiClient.fetch(getConfig("production"), stubWallet, conn, {
-    readOnly: true,
-  });
-
-  // Probe the first 4 account slots. The PDA is deterministic, so we can
-  // batch-fetch without scanning getProgramAccounts.
-  const results: MarginfiPosition[] = [];
+  // Short-circuit BEFORE loading the heavy MarginfiClient. The PDA is
+  // deterministic; a single getAccountInfo is cheap, and the common case
+  // (wallet has no MarginfiAccount at all) should not pay the SDK-load
+  // cost — nor expose users to the SDK's deep internals failing on an
+  // empty wallet (issue #102: `MarginfiClient.fetch` + related hydration
+  // paths have produced opaque `Cannot read properties of null (reading
+  // 'property')` errors when the MarginfiAccount was freshly initialized
+  // or missing). Probe the first 4 slots to find what's there.
   const MAX_SLOTS = 4;
+  const existingSlots: { idx: number; pda: PublicKey }[] = [];
   for (let idx = 0; idx < MAX_SLOTS; idx++) {
     const pda = deriveMarginfiAccountPda(authority, idx);
     const info = await conn.getAccountInfo(pda, "confirmed");
     if (!info) {
-      // Once we hit a gap, subsequent slots are almost certainly also
-      // empty (users don't skip slots). Early-break keeps the common case
-      // (one account at slot 0) fast — 1 RPC lookup, not 4.
-      if (idx === 0) return []; // common: user has no MarginfiAccount at all
+      // Gap in the slot sequence means no further accounts. Users don't
+      // skip slots in practice (UIs allocate 0, 1, 2 sequentially).
       break;
     }
+    existingSlots.push({ idx, pda });
+  }
+  if (existingSlots.length === 0) {
+    // Strict empty-array contract — this path replaces the prior code
+    // where a wallet without a MarginfiAccount triggered the SDK's null-
+    // property error before we ever reached the slot check (issue #101).
+    return [];
+  }
+
+  // At least one PDA exists — now load the SDK client. Wrap in a defensive
+  // try/catch so an SDK-internal failure (oracle decode, IDL mismatch,
+  // staked-bank layout drift, etc.) surfaces as an actionable error
+  // naming the failing step rather than a raw `null.property` trace.
+  let client: unknown;
+  try {
+    const { MarginfiClient, getConfig } = await import(
+      "@mrgnlabs/marginfi-client-v2"
+    );
+    const stubWallet = {
+      publicKey: authority,
+      signTransaction: async <T,>(_tx: T): Promise<T> => {
+        throw new Error("read-only path must not sign");
+      },
+      signAllTransactions: async <T,>(_txs: T[]): Promise<T[]> => {
+        throw new Error("read-only path must not sign");
+      },
+    };
+    client = await MarginfiClient.fetch(
+      getConfig("production"),
+      stubWallet,
+      conn,
+      { readOnly: true },
+    );
+  } catch (e) {
+    const raw = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `Failed to load MarginfiClient for wallet ${wallet} — this usually means the ` +
+        `bundled SDK (v6.4.1, IDL 0.1.7) couldn't decode one of the banks or oracle ` +
+        `prices fetched from the production group. Raw error: ${raw}. ` +
+        `As a workaround, the PDA ${existingSlots[0]?.pda.toBase58()} exists on chain ` +
+        `at accountIndex=${existingSlots[0]?.idx} — you can inspect it directly via ` +
+        `Solana Explorer.`,
+    );
+  }
+
+  // Hydrate each existing slot's wrapper. One failing slot shouldn't kill
+  // the whole enumeration — we continue and report what we can.
+  const { MarginfiAccountWrapper } = await import(
+    "@mrgnlabs/marginfi-client-v2"
+  );
+  const results: MarginfiPosition[] = [];
+  for (const { pda } of existingSlots) {
     let wrapper: MinimalWrapper;
     try {
       wrapper = (await MarginfiAccountWrapper.fetch(
         pda,
-        client,
+        client as never,
       )) as unknown as MinimalWrapper;
     } catch {
-      // Hydration failure on one slot shouldn't kill the whole enumeration.
+      // Hydration failure on one slot — skip it silently. The caller
+      // sees this as an empty array or fewer entries than slots; not
+      // a blocker.
       continue;
     }
-    results.push(buildPositionFromWrapper(client as unknown as MinimalClient, wrapper, wallet));
+    try {
+      results.push(
+        buildPositionFromWrapper(
+          client as unknown as MinimalClient,
+          wrapper,
+          wallet,
+        ),
+      );
+    } catch (e) {
+      // Health-compute / balance-decode failures on a freshly-inited
+      // account with no balances can trip the SDK's internal math
+      // (issue #102). Surface a placeholder position with health=Infinity
+      // so callers see the account exists rather than get a raw throw.
+      const raw = e instanceof Error ? e.message : String(e);
+      results.push({
+        protocol: "marginfi",
+        chain: "solana",
+        wallet,
+        marginfiAccount: pda.toBase58(),
+        supplied: [],
+        borrowed: [],
+        totalSuppliedUsd: 0,
+        totalBorrowedUsd: 0,
+        netValueUsd: 0,
+        healthFactor: Number.POSITIVE_INFINITY,
+        warnings: [
+          `MarginFi position compute failed (likely a fresh account with no balances, or an SDK decode issue). ` +
+            `The account itself exists on chain. Raw error: ${raw}`,
+        ],
+      });
+    }
   }
   return results;
 }
@@ -188,11 +258,25 @@ function buildPositionFromWrapper(
   // Maintenance margin type is the one users map to "can I be liquidated right now?".
   // MarginRequirementType.Maintenance === 1 in the SDK's enum; we use the numeric
   // literal to avoid importing the enum just for the one call.
-  const health = wrapper.computeHealthComponents(1);
-  const assetsUsd = health.assets.toNumber();
-  const liabsUsd = health.liabilities.toNumber();
-  const healthFactor =
-    liabsUsd <= 0 ? Number.POSITIVE_INFINITY : assetsUsd / liabsUsd;
+  //
+  // Guarded: a fresh account with no active balances has a healthCache the
+  // SDK hasn't written to yet, and `marginfiAccount.healthCache.*Maint` can
+  // be null → `null.toNumber()` throws (issue #102). Fall back to Infinity
+  // (conceptually: no debt, can't be liquidated) so the reader returns a
+  // usable entry instead of failing the whole call.
+  let healthFactor = Number.POSITIVE_INFINITY;
+  try {
+    const health = wrapper.computeHealthComponents(1);
+    const assetsUsd = health.assets.toNumber();
+    const liabsUsd = health.liabilities.toNumber();
+    healthFactor =
+      liabsUsd <= 0 ? Number.POSITIVE_INFINITY : assetsUsd / liabsUsd;
+  } catch {
+    healthFactor = Number.POSITIVE_INFINITY;
+    warnings.push(
+      "Health factor unavailable — SDK couldn't read healthCache (likely a freshly-initialized account with no balances).",
+    );
+  }
 
   return {
     protocol: "marginfi",

@@ -345,6 +345,89 @@ export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
   return { positions: await reader(conn, args.wallet) };
 }
 
+/**
+ * Read-only setup probe for a Solana wallet. Returns which one-time-setup
+ * prerequisites are already in place (durable-nonce account + MarginFi
+ * PDAs) so agents planning a supply/borrow/etc. don't re-propose a
+ * redundant prepare_solana_nonce_init or prepare_marginfi_init step.
+ *
+ * Mirrors `get_ledger_status` in spirit: a cheap inspection tool that
+ * turns "ask the user what's set up" into "read the chain". Issue #101.
+ */
+export async function getSolanaSetupStatus(args: {
+  wallet: string;
+}): Promise<{
+  wallet: string;
+  nonce: {
+    exists: boolean;
+    address: string;
+    lamports?: number;
+    currentNonce?: string;
+    authority?: string;
+  };
+  marginfi: {
+    accounts: Array<{ index: number; address: string }>;
+  };
+}> {
+  const { assertSolanaAddress } = await import("../solana/address.js");
+  const { deriveNonceAccountAddress, getNonceAccountValue } = await import(
+    "../solana/nonce.js"
+  );
+  const { deriveMarginfiAccountPda } = await import("../solana/marginfi.js");
+
+  const authority = assertSolanaAddress(args.wallet);
+  const conn = getSolanaConnection();
+
+  // Nonce lookup — one RPC + one decode.
+  const noncePubkey = await deriveNonceAccountAddress(authority);
+  const nonceInfo = await conn.getAccountInfo(noncePubkey, "confirmed");
+  let nonceState: { nonce: string; authority: string } | undefined;
+  let nonceLamports: number | undefined;
+  if (nonceInfo) {
+    nonceLamports = nonceInfo.lamports;
+    try {
+      const v = await getNonceAccountValue(conn, noncePubkey);
+      if (v) {
+        nonceState = { nonce: v.nonce, authority: v.authority.toBase58() };
+      }
+    } catch {
+      // Account exists but isn't a System-owned nonce — surface as
+      // exists:true without the nonce value. Caller should inspect the
+      // lamports + our own nonce tool's refusal to explain.
+    }
+  }
+
+  // MarginFi PDA probe — same 4-slot pattern as getMarginfiPositions, but
+  // stops at the existence check. No SDK load, no oracle fetch — cheap.
+  const marginfiAccounts: Array<{ index: number; address: string }> = [];
+  const MAX_SLOTS = 4;
+  for (let idx = 0; idx < MAX_SLOTS; idx++) {
+    const pda = deriveMarginfiAccountPda(authority, idx);
+    const info = await conn.getAccountInfo(pda, "confirmed");
+    if (!info) {
+      if (marginfiAccounts.length === 0 && idx === 0) break; // common: none
+      break; // gap in the slot sequence
+    }
+    marginfiAccounts.push({ index: idx, address: pda.toBase58() });
+  }
+
+  return {
+    wallet: args.wallet,
+    nonce: {
+      exists: nonceInfo !== null,
+      address: noncePubkey.toBase58(),
+      ...(nonceLamports !== undefined ? { lamports: nonceLamports } : {}),
+      ...(nonceState
+        ? {
+            currentNonce: nonceState.nonce,
+            authority: nonceState.authority,
+          }
+        : {}),
+    },
+    marginfi: { accounts: marginfiAccounts },
+  };
+}
+
 export async function prepareSolanaSwap(
   args: PrepareSolanaSwapArgs,
 ): Promise<PreparedSolanaTx> {

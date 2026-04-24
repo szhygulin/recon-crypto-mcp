@@ -257,6 +257,15 @@ export const prepareMarginfiRepayInput = z.object({
     ),
 });
 
+export const getSolanaSetupStatusInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet to probe. Returns the state of the durable-nonce account " +
+      "(exists / address / lamports / currentNonce / authority) and the list of " +
+      "existing MarginfiAccount PDAs (accountIndex + address) for the wallet. " +
+      "Read-only, no RPC fan-out — one getAccountInfo per probed PDA."
+  ),
+});
+
 export const getMarginfiPositionsInput = z.object({
   wallet: solanaAddressSchema.describe(
     "Solana wallet to enumerate MarginFi positions for. Probes the first 4 MarginfiAccount " +
@@ -517,3 +526,4 @@ export type PrepareMarginfiWithdrawArgs = z.infer<typeof prepareMarginfiWithdraw
 export type PrepareMarginfiBorrowArgs = z.infer<typeof prepareMarginfiBorrowInput>;
 export type PrepareMarginfiRepayArgs = z.infer<typeof prepareMarginfiRepayInput>;
 export type GetMarginfiPositionsArgs = z.infer<typeof getMarginfiPositionsInput>;
+export type GetSolanaSetupStatusArgs = z.infer<typeof getSolanaSetupStatusInput>;

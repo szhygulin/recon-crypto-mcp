@@ -324,6 +324,13 @@ export interface PreparedMarginfiTx {
   decoded: { functionName: string; args: Record<string, string> };
   nonceAccount: string;
   marginfiAccount: string;
+  /**
+   * Rent-exempt minimum in lamports. Populated on `marginfi_init` — the
+   * PDA's 2312-byte account needs ~0.01698 SOL sent from the user's wallet
+   * (reclaimable on close). Surfaced so the agent's bullet summary shows
+   * the real cost to the user BEFORE they blind-sign (issue #103).
+   */
+  rentLamports?: number;
 }
 
 export interface MarginfiInitParams {
@@ -351,8 +358,18 @@ export async function buildMarginfiInit(
 
   const marginfiAccount = deriveMarginfiAccountPda(fromPubkey, accountIndex);
 
+  // Rent-exempt minimum for the 2312-byte MarginfiAccount PDA. The user's
+  // wallet funds this directly — no ephemeral keypair involved, but the
+  // SOL still leaves the wallet (reclaimable when the account is closed).
+  // Surfaced on the prepared tx so the agent's bullet summary can show
+  // real cost to the user before they blind-sign (issue #103).
+  const MARGINFI_ACCOUNT_SIZE_BYTES = 2312;
+  const rentLamports = await conn.getMinimumBalanceForRentExemption(
+    MARGINFI_ACCOUNT_SIZE_BYTES,
+  );
+
   // Refuse re-init — the on-chain ix reverts, but we get a clearer error by
-  // short-circuiting here. 0.00XX SOL would otherwise burn on the failed send.
+  // short-circuiting here. ~0.017 SOL would otherwise burn on the failed send.
   const existing = await conn.getAccountInfo(marginfiAccount, "confirmed");
   if (existing) {
     throw new Error(
@@ -403,7 +420,10 @@ export async function buildMarginfiInit(
       from: p.wallet,
       description:
         `Initialize MarginfiAccount ${marginfiAccountStr} for ${p.wallet} ` +
-        `(accountIndex=${accountIndex}, third_party_id=0; one-time setup — this is a PDA, no rent-exempt seed is moved)`,
+        `(accountIndex=${accountIndex}, third_party_id=0). One-time setup — rent-exempt ` +
+        `minimum ~${(rentLamports / 1e9).toFixed(6)} SOL is moved from your wallet to ` +
+        `fund the PDA (2312-byte account), reclaimable when the account is closed. ` +
+        `No separate keypair required.`,
       decoded: {
         functionName: "marginfi.account_initialize_pda",
         args: {
@@ -414,8 +434,11 @@ export async function buildMarginfiInit(
           accountIndex: String(accountIndex),
           thirdPartyId: "0",
           nonceAccount: nonceAccountStr,
+          rentLamports: String(rentLamports),
+          rentSol: (rentLamports / 1e9).toFixed(9).replace(/\.?0+$/, ""),
         },
       },
+      rentLamports,
       nonce: {
         account: nonceAccountStr,
         authority: fromPubkey.toBase58(),
@@ -433,6 +456,7 @@ export async function buildMarginfiInit(
     decoded: draft.meta.decoded,
     nonceAccount: nonceAccountStr,
     marginfiAccount: marginfiAccountStr,
+    rentLamports,
   };
 }
 
@@ -518,10 +542,39 @@ async function resolveActionContext(
   }
   const symbol = resolveMintSymbol(mint);
 
-  const client = await getMarginfiClient(conn, fromPubkey);
+  // The SDK-heavy paths below have produced opaque `null.property` errors
+  // in live testing when the MarginfiAccount is freshly-initialized or
+  // when one of the production group's banks has a layout the bundled IDL
+  // doesn't understand (issue #102). Wrap each heavy call so the user
+  // gets an actionable message naming the step + PDA + wallet instead of
+  // a raw runtime trace.
+  let client: unknown;
+  try {
+    client = await getMarginfiClient(conn, fromPubkey);
+  } catch (e) {
+    const raw = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `MarginfiClient load failed for wallet ${p.wallet} — the bundled SDK (v6.4.1) ` +
+        `couldn't decode one of the production group's banks or oracle prices. ` +
+        `Raw error: ${raw}. Retry in a minute; if it persists, MarginFi may have ` +
+        `shipped an on-chain upgrade the SDK version doesn't support yet.`,
+    );
+  }
   const bank = findBankForMint(client, mint);
 
-  const wrapper = await fetchMarginfiAccountWrapper(client, marginfiAccount);
+  let wrapper: MinimalWrapper | null;
+  try {
+    wrapper = await fetchMarginfiAccountWrapper(client, marginfiAccount);
+  } catch (e) {
+    const raw = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `MarginfiAccount hydration failed for ${marginfiAccount.toBase58()} ` +
+        `(wallet ${p.wallet}, accountIndex=${accountIndex}). Raw error: ${raw}. ` +
+        `The account exists on chain (verified earlier in this call) but the ` +
+        `SDK can't parse it. If you just ran prepare_marginfi_init, wait one ` +
+        `confirmation and retry.`,
+    );
+  }
   if (!wrapper) {
     throw new Error(
       `MarginfiAccount at ${marginfiAccount.toBase58()} exists on chain but the SDK could ` +
@@ -532,10 +585,21 @@ async function resolveActionContext(
   }
 
   // Action-specific pre-flight beyond the bank pause check that
-  // findBankForMint already enforced.
+  // findBankForMint already enforced. `computeFreeCollateral` internally
+  // reads `marginfiAccount.healthCache.*` which can be null on a freshly-
+  // initialized account; wrap it so the preflight fails SOFT (we skip
+  // the guard instead of blowing up), letting the on-chain program
+  // enforce the real check. For a wallet with no active balances, borrow
+  // will revert on-chain anyway — cost is one tx fee, same as any other
+  // pre-flight we skip.
   if (kind === "borrow" || kind === "withdraw") {
-    const free = wrapper.computeFreeCollateral();
-    if (free.lte(0)) {
+    let free: BigNumber | null = null;
+    try {
+      free = wrapper.computeFreeCollateral();
+    } catch {
+      free = null;
+    }
+    if (free && free.lte(0)) {
       throw new Error(
         `MarginfiAccount has zero free collateral — ${kind === "borrow" ? "cannot take on new debt" : "withdrawing would push health factor below the required ratio"}. ` +
           `Supply more collateral or repay existing debt first.`,

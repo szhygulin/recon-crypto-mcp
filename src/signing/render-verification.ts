@@ -954,6 +954,19 @@ export function renderSolanaPrepareSummaryBlock(
 export function renderSolanaPrepareAgentTaskBlock(
   r: RenderableSolanaPrepareResult,
 ): string {
+  const isMarginfi = r.action.startsWith("marginfi_");
+  const marginfiActionWord =
+    r.action === "marginfi_init"
+      ? "MarginFi account init"
+      : r.action === "marginfi_supply"
+        ? "MarginFi supply"
+        : r.action === "marginfi_withdraw"
+          ? "MarginFi withdraw"
+          : r.action === "marginfi_borrow"
+            ? "MarginFi borrow"
+            : r.action === "marginfi_repay"
+              ? "MarginFi repay"
+              : null;
   const actionWord =
     r.action === "native_send"
       ? "native SOL send"
@@ -961,7 +974,11 @@ export function renderSolanaPrepareAgentTaskBlock(
         ? "SPL send"
         : r.action === "nonce_init"
           ? "durable-nonce init"
-          : "durable-nonce close";
+          : r.action === "nonce_close"
+            ? "durable-nonce close"
+            : r.action === "jupiter_swap"
+              ? "Jupiter swap"
+              : marginfiActionWord ?? "Solana tx";
   const nonceBullet =
     r.nonceAccount && r.action !== "nonce_init"
       ? ["  - Nonce: <short nonce-account addr>"]
@@ -996,16 +1013,60 @@ export function renderSolanaPrepareAgentTaskBlock(
               "  - Fee: <est. fee in SOL>",
               "  - Note: one-time setup; reclaimable via prepare_solana_nonce_close",
             ]
-          : [
-              // nonce_close
-              "  - Headline: \"Prepared durable-nonce close — returning <balance> SOL to main wallet\"",
-              "  - Wallet: <from address>",
-              "  - Nonce account: <will be destroyed after this tx>",
-              "  - Destination: <from address (returns to the same wallet)>",
-              "  - Withdraw amount: <balance in SOL>",
-              ...nonceBullet,
-              "  - Fee: <est. fee in SOL>",
-            ];
+          : r.action === "nonce_close"
+            ? [
+                "  - Headline: \"Prepared durable-nonce close — returning <balance> SOL to main wallet\"",
+                "  - Wallet: <from address>",
+                "  - Nonce account: <will be destroyed after this tx>",
+                "  - Destination: <from address (returns to the same wallet)>",
+                "  - Withdraw amount: <balance in SOL>",
+                ...nonceBullet,
+                "  - Fee: <est. fee in SOL>",
+              ]
+            : r.action === "jupiter_swap"
+              ? [
+                  "  - Headline: \"Prepared Solana swap — <inputAmount> <inputSymbol> → <outputAmount> <outputSymbol> via Jupiter\"",
+                  "  - From: <from address>",
+                  "  - Input mint: <inputMint from decoded.args> (<inputSymbol if known>)",
+                  "  - Output mint: <outputMint from decoded.args> (<outputSymbol if known>)",
+                  "  - Expected output: <outputAmount> <outputSymbol> (min <minOutput> @ <slippageBps> bps)",
+                  "  - Route: <route labels joined with →, from decoded.args.route>",
+                  "  - Price impact: <priceImpactPct>%",
+                  ...nonceBullet,
+                  "  - Fee: <est. fee in SOL (priority + base)>",
+                ]
+              : r.action === "marginfi_init"
+                ? [
+                    "  - Headline: \"Prepared MarginFi account init — <short PDA>\"",
+                    "  - Wallet: <from address>",
+                    "  - MarginfiAccount PDA: <marginfiAccount from decoded.args>",
+                    "  - Account index: <accountIndex from decoded.args, default 0>",
+                    ...nonceBullet,
+                    "  - Rent: ~0.017 SOL (rent-exempt minimum for the MarginfiAccount PDA; reclaimable when the account is closed)",
+                    "  - Fee: <est. fee in SOL>",
+                  ]
+                : isMarginfi
+                  ? [
+                      // marginfi_supply / withdraw / borrow / repay — same
+                      // shape; the action word differentiates the headline.
+                      `  - Headline: \"Prepared ${marginfiActionWord} — <amount> <symbol>\"`,
+                      "  - Wallet: <from address>",
+                      "  - MarginfiAccount: <marginfiAccount from decoded.args>",
+                      "  - Bank: <bank from decoded.args> (<symbol>)",
+                      "  - Amount: <human amount + symbol>",
+                      ...nonceBullet,
+                      "  - Fee: <est. fee in SOL>",
+                    ]
+                  : [
+                      // Fallback for any newly-added Solana action that
+                      // hasn't been wired up here yet — surface a generic
+                      // shape rather than reusing the nonce_close template
+                      // (which was #97's silent-mismatch bug).
+                      `  - Headline: \"Prepared ${actionWord}\"`,
+                      "  - From: <from address>",
+                      ...nonceBullet,
+                      "  - Fee: <est. fee in SOL>",
+                    ];
   const closingLine =
     r.action === "nonce_init"
       ? '  "Reply \'send\' to continue — I\'ll pin a fresh blockhash (this init tx is the one exception that uses legacy-blockhash mode), run the mandatory integrity checks, and surface the Ledger Message Hash for you to match on-device."'
