@@ -1,5 +1,7 @@
 import { parseAbiItem } from "viem";
 import { getClient } from "../../data/rpc.js";
+import { cache } from "../../data/cache.js";
+import { CACHE_TTL } from "../../config/cache.js";
 import { CONTRACTS } from "../../config/contracts.js";
 import type { SupportedChain } from "../../types/index.js";
 
@@ -57,10 +59,30 @@ function morphoAddress(chain: SupportedChain): `0x${string}` | null {
  * to filter out closed positions.
  *
  * Returns `[]` for chains with no Morpho Blue deployment.
+ *
+ * Results are cached for CACHE_TTL.MORPHO_DISCOVERY per `(chain, wallet)`.
+ * The event-log scan on mainnet walks ~millions of blocks in 10k-block
+ * chunks via `eth_getLogs` — issue #88 traced recurring Infura 429s to
+ * repeated discovery calls during a single session's portfolio fan-out,
+ * which then collaterally rate-limited other mainnet reads (Lido,
+ * cross-chain Compound). Caching discovery is the dominant mitigation.
+ * A just-opened Morpho position will appear on the next cache miss; the
+ * `marketIds` explicit override in getMorphoPositions stays the
+ * always-fresh fast path.
  */
 export async function discoverMorphoMarketIds(
   wallet: `0x${string}`,
   chain: SupportedChain
+): Promise<`0x${string}`[]> {
+  const cacheKey = `morpho:discovery:${chain}:${wallet.toLowerCase()}`;
+  return cache.remember(cacheKey, CACHE_TTL.MORPHO_DISCOVERY, () =>
+    scanMorphoMarketIds(wallet, chain),
+  );
+}
+
+async function scanMorphoMarketIds(
+  wallet: `0x${string}`,
+  chain: SupportedChain,
 ): Promise<`0x${string}`[]> {
   const morpho = morphoAddress(chain);
   const deploymentBlock = MORPHO_DEPLOYMENT_BLOCK[chain];

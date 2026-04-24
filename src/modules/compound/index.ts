@@ -126,6 +126,23 @@ export async function readCometPausedActions(
   return { pausedActions: paused, unknown: perSlotFailure };
 }
 
+/**
+ * Extract a short human-readable message from a viem multicall failure
+ * entry. viem's failure shape is `{ status: "failure", error: Error, result:
+ * unknown }` where `error.shortMessage` / `error.message` carry the
+ * underlying cause (e.g. "HTTP request failed. Status: 429", "execution
+ * reverted", "Failed to decode output data"). Truncate to keep the thrown
+ * message readable at the aggregator level.
+ */
+const MULTICALL_ERR_MAX = 120;
+function multicallErrorMessage(entry: { status: "failure"; error?: unknown }): string {
+  const err = entry.error as { shortMessage?: string; message?: string } | undefined;
+  const raw = err?.shortMessage ?? err?.message ?? "unknown";
+  return raw.length > MULTICALL_ERR_MAX
+    ? `${raw.slice(0, MULTICALL_ERR_MAX)}…`
+    : raw;
+}
+
 function listMarkets(chain: SupportedChain): { name: string; address: `0x${string}` }[] {
   const comp = (CONTRACTS as Record<string, Record<string, Record<string, string>>>)[chain]
     ?.compound;
@@ -161,13 +178,29 @@ async function readMarketPosition(
     ],
     allowFailure: true,
   });
-  const failed: string[] = [];
-  if (results[0].status !== "success") failed.push("baseToken");
-  if (results[2].status !== "success") failed.push("balanceOf");
-  if (results[3].status !== "success") failed.push("borrowBalanceOf");
+  const failed: { name: string; error: string }[] = [];
+  // Include the per-call error message from viem's multicall result — issue
+  // #88 flagged the previous "read failed on a curated-registry market"
+  // string as unactionable because it didn't distinguish "contract reverted"
+  // from "RPC rate-limited" from "wrong ABI shape". viem populates `error`
+  // on `{ status: "failure" }` entries with the underlying cause (HTTP
+  // status, revert reason, or decode error). Propagating that makes the
+  // residual L2 failures diagnosable without another round-trip.
+  if (results[0].status !== "success") {
+    failed.push({ name: "baseToken", error: multicallErrorMessage(results[0]) });
+  }
+  if (results[2].status !== "success") {
+    failed.push({ name: "balanceOf", error: multicallErrorMessage(results[2]) });
+  }
+  if (results[3].status !== "success") {
+    failed.push({ name: "borrowBalanceOf", error: multicallErrorMessage(results[3]) });
+  }
   if (failed.length > 0) {
+    const detail = failed
+      .map((f) => `${f.name}(${f.error})`)
+      .join(", ");
     throw new Error(
-      `Compound V3 ${chain}:${market.name} — ${failed.join(", ")} read failed on a curated-registry market`,
+      `Compound V3 ${chain}:${market.name} — ${detail} read failed on a curated-registry market`,
     );
   }
   const baseToken = results[0].result;
