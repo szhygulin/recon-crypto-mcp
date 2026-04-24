@@ -69,6 +69,7 @@ import {
   prepareMarginfiBorrow,
   prepareMarginfiRepay,
   getMarginfiPositions,
+  getSolanaStakingPositions,
   getMarginfiDiagnostics,
   getSolanaSetupStatus,
   prepareAaveSupply,
@@ -105,6 +106,7 @@ import {
   prepareMarginfiBorrowInput,
   prepareMarginfiRepayInput,
   getMarginfiPositionsInput,
+  getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
   getSolanaSetupStatusInput,
   getLedgerStatusInput,
@@ -1426,6 +1428,24 @@ async function main() {
       inputSchema: getMarginfiPositionsInput.shape,
     },
     handler(getMarginfiPositions)
+  );
+
+  server.registerTool(
+    "get_solana_staking_positions",
+    {
+      description:
+        "READ-ONLY — enumerate a Solana wallet's liquid-staking (Marinade mSOL, Jito jitoSOL) " +
+        "and native stake-account positions. Returns three sections: (1) Marinade — mSOL " +
+        "balance + SOL-equivalent via the on-chain mSolPrice field; (2) Jito — jitoSOL balance " +
+        "+ SOL-equivalent via the stake pool's totalLamports/poolTokenSupply ratio; (3) native " +
+        "stakes — all SPL stake-program accounts where this wallet has withdrawer authority, " +
+        "each annotated with activation status (activating / active / deactivating / inactive) " +
+        "and validator vote account. Parallel to EVM's `get_staking_positions`. Single tool call " +
+        "returning the full view; individual sections are separately readable via the underlying " +
+        "module functions for portfolio integration.",
+      inputSchema: getSolanaStakingPositionsInput.shape,
+    },
+    handler(getSolanaStakingPositions)
   );
 
   server.registerTool(
