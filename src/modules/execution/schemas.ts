@@ -274,6 +274,15 @@ export const getMarginfiPositionsInput = z.object({
   ),
 });
 
+export const getSolanaStakingPositionsInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet to enumerate staking positions for. Returns three sections: " +
+      "Marinade (mSOL LST balance + SOL-equivalent via on-chain exchange rate), Jito " +
+      "(jitoSOL LST balance + SOL-equivalent), and native stake accounts (SPL stake-program " +
+      "accounts this wallet has withdrawer authority on, with activation status). Read-only."
+  ),
+});
+
 export const getMarginfiDiagnosticsInput = z.object({});
 
 export const getLedgerStatusInput = z.object({});
@@ -547,4 +556,5 @@ export type PrepareMarginfiWithdrawArgs = z.infer<typeof prepareMarginfiWithdraw
 export type PrepareMarginfiBorrowArgs = z.infer<typeof prepareMarginfiBorrowInput>;
 export type PrepareMarginfiRepayArgs = z.infer<typeof prepareMarginfiRepayInput>;
 export type GetMarginfiPositionsArgs = z.infer<typeof getMarginfiPositionsInput>;
+export type GetSolanaStakingPositionsArgs = z.infer<typeof getSolanaStakingPositionsInput>;
 export type GetSolanaSetupStatusArgs = z.infer<typeof getSolanaSetupStatusInput>;

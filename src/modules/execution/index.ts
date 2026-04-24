@@ -98,6 +98,7 @@ import type {
   PrepareMarginfiBorrowArgs,
   PrepareMarginfiRepayArgs,
   GetMarginfiPositionsArgs,
+  GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
   SendTransactionArgs,
   GetTransactionStatusArgs,
@@ -343,6 +344,16 @@ export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
   );
   const conn = getSolanaConnection();
   return { positions: await reader(conn, args.wallet) };
+}
+
+export async function getSolanaStakingPositions(
+  args: GetSolanaStakingPositionsArgs,
+) {
+  const { getSolanaStakingPositions: reader } = await import(
+    "../positions/solana-staking.js"
+  );
+  const conn = getSolanaConnection();
+  return reader(conn, args.wallet);
 }
 
 /**
