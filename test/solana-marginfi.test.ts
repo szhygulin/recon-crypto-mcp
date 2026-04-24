@@ -174,6 +174,11 @@ function installFakeWrapperFor(kind: "healthy" | "noCollateral"): void {
       // through to the draft meta as marginfiAccount.
       "11111111111111111111111111111111",
     ),
+    // activeBalances drives the touched-banks stamp used by the #116
+    // diagnosis path. Empty array is the common fresh-account case;
+    // tests that need to assert on touched banks inject a non-empty
+    // list via a bespoke wrapper mock.
+    activeBalances: [],
     makeDepositIx: vi
       .fn()
       .mockResolvedValue({ instructions: [dummyIx("deposit")], keys: [] }),
@@ -383,6 +388,7 @@ describe("buildMarginfiSupply / Withdraw / Borrow / Repay", () => {
     // reports a real balance. The pre-flight should trust Legacy.
     wrapperFetchMock.mockResolvedValue({
       address: new PublicKey("11111111111111111111111111111111"),
+      activeBalances: [],
       makeDepositIx: vi
         .fn()
         .mockResolvedValue({ instructions: [dummyIx("deposit")], keys: [] }),
@@ -836,5 +842,294 @@ describe("hardenedFetchGroupData diagnostic recording (issue #107)", () => {
     expect(rec.mint).toBe(USDC_MINT);
     expect(rec.step).toBe("decode");
     expect(rec.reason).toMatch(/probe-induced decode failure/);
+  });
+});
+
+/**
+ * Issue #116 — when MarginFi's risk engine rejects a borrow/withdraw
+ * with `RiskEngineInitRejected` (Anchor error 6009), the raw message
+ * ("bad health or stale oracles") is ambiguous. `diagnoseMarginfiSimRejection`
+ * probes each touched bank's oracle age against its configured oracleMaxAge
+ * and reports which one is the actual culprit.
+ */
+describe("diagnoseMarginfiSimRejection (issue #116)", () => {
+  const SOL_BANK = "CCKtUs6Cgwo4aaQUmBPmyoApH2gUDErxNZCAntD6LYGh";
+  const USDC_BANK = "2s37akK2eyBbp8DZgCm7RtsaEz8eJP3Nxd4urLHQv7yB";
+
+  beforeEach(async () => {
+    const mfn = await import("../src/modules/solana/marginfi.js");
+    mfn.__clearMarginfiClientCache();
+  });
+
+  function installPricedClient(
+    priced: Array<{
+      bank: string;
+      symbol: string;
+      oracleMaxAge: number;
+      oracleSetup: string;
+      oracleAgeSeconds: number;
+    }>,
+  ): void {
+    const banks = new Map<string, unknown>();
+    const oraclePrices = new Map<string, unknown>();
+    const nowSec = Math.round(Date.now() / 1000);
+    for (const p of priced) {
+      banks.set(p.bank, {
+        address: new PublicKey(p.bank),
+        mint: new PublicKey(USDC_MINT),
+        tokenSymbol: p.symbol,
+        config: {
+          oracleMaxAge: p.oracleMaxAge,
+          oracleSetup: p.oracleSetup,
+        },
+        isPaused: false,
+      });
+      const ts = nowSec - p.oracleAgeSeconds;
+      oraclePrices.set(p.bank, { timestamp: { toNumber: () => ts } });
+    }
+    // Poke the fake client into the module cache so
+    // getHardenedMarginfiClient returns it — the diagnosis helper
+    // fetches lazily via that path.
+    (async () => {
+      const mfn = await import("../src/modules/solana/marginfi.js");
+      mfn.__setMarginfiClientCacheEntry({
+        getBankByMint: () => null,
+        banks,
+        oraclePrices,
+      });
+    })();
+    // installPricedClient is async-under-the-hood but awaited in tests
+    // via a separate statement; this pattern matches installFakeClient.
+  }
+
+  it("names a stale SwitchboardPull SOL oracle as the rejection cause", async () => {
+    const mfn = await import("../src/modules/solana/marginfi.js");
+    mfn.__setMarginfiClientCacheEntry({
+      getBankByMint: () => null,
+      banks: new Map([
+        [
+          SOL_BANK,
+          {
+            address: new PublicKey(SOL_BANK),
+            mint: new PublicKey(USDC_MINT),
+            tokenSymbol: "SOL",
+            config: {
+              oracleMaxAge: 70,
+              oracleSetup: "SwitchboardPull",
+            },
+            isPaused: false,
+          },
+        ],
+        [
+          USDC_BANK,
+          {
+            address: new PublicKey(USDC_BANK),
+            mint: new PublicKey(USDC_MINT),
+            tokenSymbol: "USDC",
+            config: {
+              oracleMaxAge: 300,
+              oracleSetup: "PythPushOracle",
+            },
+            isPaused: false,
+          },
+        ],
+      ]),
+      oraclePrices: new Map([
+        // SOL oracle 1696 seconds old — well past the 70-second window.
+        [
+          SOL_BANK,
+          {
+            timestamp: {
+              toNumber: () => Math.round(Date.now() / 1000) - 1696,
+            },
+          },
+        ],
+        // USDC oracle fresh (10 seconds old, within 300 max).
+        [
+          USDC_BANK,
+          {
+            timestamp: {
+              toNumber: () => Math.round(Date.now() / 1000) - 10,
+            },
+          },
+        ],
+      ]),
+    });
+    const diagnosis = await mfn.diagnoseMarginfiSimRejection(
+      [SOL_BANK, USDC_BANK],
+      { code: 6009, name: "RiskEngineInitRejected", message: "bad health or stale oracles" },
+    );
+    expect(diagnosis).not.toBeNull();
+    expect(diagnosis!).toMatch(/STALE ORACLE/);
+    expect(diagnosis!).toMatch(/SOL \(SwitchboardPull\)/);
+    expect(diagnosis!).toMatch(/1696s old, maxAge 70s/);
+    // USDC is fresh — should NOT appear as stale.
+    expect(diagnosis!).not.toMatch(/USDC \(PythPushOracle\) — oracle \d+s old, maxAge 300s/);
+  });
+
+  it("rules out staleness when all touched oracles are fresh — flags bad-health", async () => {
+    const mfn = await import("../src/modules/solana/marginfi.js");
+    mfn.__setMarginfiClientCacheEntry({
+      getBankByMint: () => null,
+      banks: new Map([
+        [
+          SOL_BANK,
+          {
+            address: new PublicKey(SOL_BANK),
+            mint: new PublicKey(USDC_MINT),
+            tokenSymbol: "SOL",
+            config: { oracleMaxAge: 70, oracleSetup: "SwitchboardV2" },
+            isPaused: false,
+          },
+        ],
+      ]),
+      oraclePrices: new Map([
+        [
+          SOL_BANK,
+          {
+            timestamp: {
+              toNumber: () => Math.round(Date.now() / 1000) - 5,
+            },
+          },
+        ],
+      ]),
+    });
+    const diagnosis = await mfn.diagnoseMarginfiSimRejection(
+      [SOL_BANK],
+      { code: 6009, name: "RiskEngineInitRejected", message: "x" },
+    );
+    expect(diagnosis).not.toBeNull();
+    expect(diagnosis!).toMatch(/stale oracle is RULED OUT/);
+    expect(diagnosis!).toMatch(/BAD HEALTH/);
+  });
+
+  it("returns null for unrelated Anchor codes EVEN when a priced client + stale oracle are present", async () => {
+    // Install a priced client with a stale SOL oracle — if the helper
+    // ever stopped gating on the Anchor code, it would produce a
+    // misleading diagnosis for unrelated failures like
+    // OperationBorrowOnly (which already has a self-explanatory name
+    // and nothing to do with oracle freshness).
+    const mfn = await import("../src/modules/solana/marginfi.js");
+    mfn.__setMarginfiClientCacheEntry({
+      getBankByMint: () => null,
+      banks: new Map([
+        [
+          SOL_BANK,
+          {
+            address: new PublicKey(SOL_BANK),
+            mint: new PublicKey(USDC_MINT),
+            tokenSymbol: "SOL",
+            config: { oracleMaxAge: 70, oracleSetup: "SwitchboardPull" },
+            isPaused: false,
+          },
+        ],
+      ]),
+      oraclePrices: new Map([
+        [
+          SOL_BANK,
+          {
+            timestamp: {
+              toNumber: () => Math.round(Date.now() / 1000) - 9999,
+            },
+          },
+        ],
+      ]),
+    });
+    const diagnosis = await mfn.diagnoseMarginfiSimRejection(
+      [SOL_BANK],
+      { code: 6021, name: "OperationBorrowOnly", message: "x" },
+    );
+    expect(diagnosis).toBeNull();
+  });
+
+  it("returns null when no banks were stamped (empty touched set)", async () => {
+    const mfn = await import("../src/modules/solana/marginfi.js");
+    const diagnosis = await mfn.diagnoseMarginfiSimRejection(
+      [],
+      { code: 6009, name: "RiskEngineInitRejected", message: "x" },
+    );
+    expect(diagnosis).toBeNull();
+  });
+});
+
+/**
+ * Issue #116 — `wrapWithNonce` must stamp `marginfiTouchedBanks` on the
+ * draft meta so `preview_solana_send` knows which banks to probe for
+ * oracle freshness on simulation rejection.
+ */
+describe("marginfiTouchedBanks stamping on draft meta (issue #116)", () => {
+  async function setupHappyPath(): Promise<void> {
+    const { getNonceAccountValue } = await import(
+      "../src/modules/solana/nonce.js"
+    );
+    (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nonce: "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9",
+      authority: WALLET_KEYPAIR.publicKey,
+    });
+    connectionStub.getAccountInfo.mockResolvedValue({
+      data: Buffer.alloc(0),
+      owner: new PublicKey("11111111111111111111111111111111"),
+      lamports: 1,
+      executable: false,
+    });
+    await installFakeClient((mint) =>
+      mint.toBase58() === USDC_MINT ? buildFakeBank(USDC_MINT) : null,
+    );
+  }
+
+  it("includes both the target bank and every active-balance bank, deduped", async () => {
+    await setupHappyPath();
+    const OTHER_BANK = new PublicKey(
+      "CCKtUs6Cgwo4aaQUmBPmyoApH2gUDErxNZCAntD6LYGh",
+    );
+    // Wrapper reports two active balances — one matches the target USDC
+    // bank (should dedupe), the other is a different (SOL) bank.
+    wrapperFetchMock.mockResolvedValue({
+      address: new PublicKey("11111111111111111111111111111111"),
+      activeBalances: [
+        { active: true, bankPk: BANK_USDC },
+        { active: true, bankPk: OTHER_BANK },
+        { active: false, bankPk: new PublicKey("11111111111111111111111111111112") },
+      ],
+      makeDepositIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("deposit")], keys: [] }),
+      makeWithdrawIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("withdraw")], keys: [] }),
+      makeBorrowIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("borrow")], keys: [] }),
+      makeRepayIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("repay")], keys: [] }),
+      computeHealthComponents: () => ({
+        assets: new BigNumber(0),
+        liabilities: new BigNumber(0),
+      }),
+      computeHealthComponentsLegacy: () => ({
+        assets: new BigNumber(1000),
+        liabilities: new BigNumber(0),
+      }),
+      computeFreeCollateral: () => new BigNumber(1000),
+    });
+    const { buildMarginfiBorrow } = await import(
+      "../src/modules/solana/marginfi.js"
+    );
+    const { getSolanaDraft } = await import(
+      "../src/signing/solana-tx-store.js"
+    );
+    const res = await buildMarginfiBorrow({
+      wallet: WALLET,
+      symbol: "USDC",
+      amount: "1",
+    });
+    const draft = getSolanaDraft(res.handle);
+    expect(draft.meta.marginfiTouchedBanks).toBeDefined();
+    // Target USDC bank + non-target SOL active bank; duplicate USDC +
+    // inactive entry excluded.
+    expect(draft.meta.marginfiTouchedBanks!.sort()).toEqual(
+      [BANK_USDC.toBase58(), OTHER_BANK.toBase58()].sort(),
+    );
   });
 });

@@ -687,8 +687,13 @@ interface MinimalClient {
   wallet: StubWallet;
   group: unknown;
 }
+interface MinimalBalance {
+  bankPk: PublicKey;
+  active: boolean;
+}
 interface MinimalWrapper {
   address: PublicKey;
+  activeBalances: MinimalBalance[];
   makeDepositIx(
     amount: number | string | BigNumber,
     bankAddress: PublicKey,
@@ -1144,6 +1149,16 @@ async function wrapWithNonce(
   const nonceAccountStr = ctx.noncePubkey.toBase58();
   const marginfiAccountStr = ctx.marginfiAccount.toBase58();
 
+  // Stamp the set of banks MarginFi's risk engine will cross-check — the
+  // target bank + every bank backing an active balance on this MarginfiAccount
+  // (including the one we just added via the target-bank path, deduped).
+  // Used by preview_solana_send to diagnose RiskEngineInitRejected by
+  // probing each bank's oracle age (issue #116).
+  const touchedBanks = new Set<string>([ctx.bank.address.toBase58()]);
+  for (const balance of ctx.wrapper.activeBalances) {
+    if (balance.active) touchedBanks.add(balance.bankPk.toBase58());
+  }
+
   const draft: SolanaTxDraft = {
     kind: "v0",
     payerKey: ctx.fromPubkey,
@@ -1173,6 +1188,7 @@ async function wrapWithNonce(
         authority: ctx.fromPubkey.toBase58(),
         value: ctx.nonceValue,
       },
+      marginfiTouchedBanks: [...touchedBanks],
     },
   };
 
@@ -1242,6 +1258,123 @@ export async function buildMarginfiRepay(
     p.repayAll ?? false,
   );
   return wrapWithNonce(ctx, "repay", "marginfi_repay", instructions, p);
+}
+
+/**
+ * Diagnose a MarginFi simulation rejection (issue #116). Currently handles
+ * Anchor error 6009 (RiskEngineInitRejected) — the most common + most
+ * ambiguous failure mode — by probing each touched bank's oracle age
+ * against its configured `oracleMaxAge` and telling the agent whether the
+ * rejection is "stale oracle" (transient, typically SwitchboardPull) or
+ * "bad health" (actually undercollateralized).
+ *
+ * The MarginFi UI sidesteps this by auto-prepending Switchboard/Pyth
+ * oracle update ixs to every risk-engine tx; this server doesn't do
+ * that yet (future follow-up — see #116 ask C), so the best we can do
+ * today is name the root cause clearly.
+ *
+ * Returns `null` when the diagnosis doesn't apply (different Anchor code,
+ * no banks stamped, client couldn't load). Callers should fall back to
+ * the generic simulation-rejection message in that case.
+ *
+ * Best-effort: errors thrown inside this function must NOT bubble —
+ * callers use the diagnosis purely to enrich an already-thrown preview
+ * error. The shape `string | null` makes that explicit.
+ */
+export async function diagnoseMarginfiSimRejection(
+  touchedBanks: string[],
+  anchorError: { code: number; name: string; message: string },
+): Promise<string | null> {
+  if (anchorError.code !== 6009) return null; // Only RiskEngineInitRejected for now
+  if (!touchedBanks || touchedBanks.length === 0) return null;
+
+  let client: MinimalClient;
+  try {
+    const conn = getSolanaConnection();
+    // Reuse the cached hardened client — authority doesn't matter for
+    // read-only bank + oracle state, so we pass the SystemProgram id as
+    // a throwaway pubkey. If the cache is cold, this will trigger a
+    // fetch but that's the same cost the prepare path paid earlier.
+    client = (await getHardenedMarginfiClient(
+      conn,
+      new PublicKey("11111111111111111111111111111111"),
+    )) as MinimalClient;
+  } catch {
+    return null;
+  }
+
+  interface PriceInfoLike {
+    timestamp?: { toNumber(): number };
+  }
+  interface BankWithOracleConfig extends MinimalBank {
+    config: MinimalBank["config"] & {
+      oracleMaxAge: number;
+      oracleSetup: string;
+    };
+  }
+  const clientWithPrices = client as MinimalClient & {
+    oraclePrices: Map<string, PriceInfoLike>;
+  };
+
+  const nowSeconds = Math.round(Date.now() / 1000);
+  const stale: Array<{
+    symbol: string;
+    bank: string;
+    ageSeconds: number;
+    maxAgeSeconds: number;
+    oracleSetup: string;
+  }> = [];
+  const checked: string[] = [];
+
+  for (const bankAddr of touchedBanks) {
+    const rawBank = client.banks.get(bankAddr) as BankWithOracleConfig | undefined;
+    const priceInfo = clientWithPrices.oraclePrices.get(bankAddr);
+    if (!rawBank || !priceInfo) continue;
+    const oracleTs = priceInfo.timestamp?.toNumber?.();
+    if (oracleTs === undefined) continue;
+    const age = nowSeconds - oracleTs;
+    const maxAge = rawBank.config.oracleMaxAge;
+    const symbol =
+      rawBank.tokenSymbol ?? resolveMintSymbol(rawBank.mint.toBase58());
+    checked.push(`${symbol} (${age}s old / ${maxAge}s max)`);
+    if (age > maxAge) {
+      stale.push({
+        symbol,
+        bank: bankAddr,
+        ageSeconds: age,
+        maxAgeSeconds: maxAge,
+        oracleSetup: String(rawBank.config.oracleSetup),
+      });
+    }
+  }
+
+  if (checked.length === 0) return null;
+
+  if (stale.length === 0) {
+    return (
+      `Diagnosis: stale oracle is RULED OUT — all ${checked.length} touched bank(s) ` +
+      `have oracle prices within their maxAge window. Likely cause: BAD HEALTH ` +
+      `(MarginFi's init-time asset weights are stricter than maintenance; re-check ` +
+      `weighted collateral vs. requested borrow). Checked: ${checked.join(", ")}.`
+    );
+  }
+
+  const staleLines = stale
+    .map(
+      (s) =>
+        `  - ${s.symbol} (${s.oracleSetup}) — oracle ${s.ageSeconds}s old, maxAge ${s.maxAgeSeconds}s`,
+    )
+    .join("\n");
+  return (
+    `Diagnosis: STALE ORACLE(S) — ${stale.length} of ${checked.length} touched banks ` +
+    `have oracle prices past their maxAge. The risk engine rejects the tx until these ` +
+    `are refreshed:\n${staleLines}\n` +
+    `Workaround: (a) retry in a few seconds if the oracle is push-style (PythPushOracle ` +
+    `updates continuously off-chain); (b) for SwitchboardPull-backed banks (common for ` +
+    `SOL), the MarginFi UI prepends a Switchboard crank ix — this server does not yet ` +
+    `auto-prepend (see issue #116 ask C). Use the MarginFi UI to refresh, or pick a ` +
+    `different collateral bank backed by a push-style oracle.`
+  );
 }
 
 export const __internals = {

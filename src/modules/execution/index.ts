@@ -588,9 +588,33 @@ export async function previewSolanaSend(args: {
         const logTail = sim.logs && sim.logs.length
           ? `\nLast program logs:\n  ${sim.logs.slice(-8).join("\n  ")}`
           : "";
+        // Issue #116 — enrich with a targeted root-cause diagnosis for
+        // ambiguous MarginFi errors (currently just 6009 RiskEngineInitRejected,
+        // which collapses "stale oracle" and "bad health" into one message).
+        // Best-effort: diagnosis failure must NOT mask the real sim error.
+        let diagnosis = "";
+        if (
+          pinned.action.startsWith("marginfi_") &&
+          sim.anchorError &&
+          draft.meta.marginfiTouchedBanks
+        ) {
+          try {
+            const { diagnoseMarginfiSimRejection } = await import(
+              "../solana/marginfi.js"
+            );
+            const result = await diagnoseMarginfiSimRejection(
+              draft.meta.marginfiTouchedBanks,
+              sim.anchorError,
+            );
+            if (result) diagnosis = `\n${result}`;
+          } catch {
+            // Swallow — diagnosis is additive, not gating.
+          }
+        }
         throw new Error(
           header +
             logTail +
+            diagnosis +
             `\nRefusing to surface the Ledger hash — the tx would revert on broadcast. ` +
             `Resolve the underlying issue (e.g. withdraw conflicting collateral, wait for oracle freshness, ` +
             `pick a different bank) and call prepare_* again.`,
