@@ -1634,7 +1634,10 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
                 ? `MarginFi ${marginfiActionLabel}`
                 : "SPL TransferChecked"
           } is not in the Solana app's clear-sign registry, so the device shows only 'Message Hash'):`,
-          `          check the value on-device is exactly **\`${ledgerHash}\`**.`,
+          "          The Message Hash on-device MUST equal:",
+          "",
+          `              **\`${ledgerHash}\`**`,
+          "",
           "          Any difference → REJECT.",
           "          Prerequisite: Allow blind signing must be ON in Solana app Settings.",
         ]
@@ -1664,13 +1667,19 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     "",
     ...(isBlindSign
       ? [
-          "Render the Message Hash with BOTH bold AND single-backtick inline",
-          "code — i.e. `**\\`<hash>\\`**` — exactly as shown in the template",
-          "above. Backticks alone render too subtly in some clients; bold+code",
-          "reads with clear contrast everywhere. Do NOT strip either marker.",
+          "Render the Message Hash on a LINE BY ITSELF — blank line above, the",
+          "hash indented with both bold AND single-backtick inline-code wrappers",
+          "(`**\\`<hash>\\`**`), blank line below — exactly as shown in the",
+          "template above. Keeping it inline at the end of a prose sentence",
+          "(even bold+code) has blended into surrounding text in live Claude",
+          "Code renderings where the CHECKS PERFORMED block gets treated as a",
+          "preformatted region and the Markdown emphasis markers leak through",
+          "as literal characters; the isolated indented line plus blank",
+          "separators forces a visual break that survives that rendering.",
+          "Do NOT strip the wrappers and do NOT collapse the blank lines.",
           "Whenever you reference the hash elsewhere (headline, post-broadcast",
-          "summary, etc.) use the same wrapper — inconsistent emphasis slows",
-          "the user's visual match.",
+          "summary, etc.) use the same `**\\`<hash>\\`**` wrapper — inconsistent",
+          "emphasis slows the user's visual match.",
           "",
         ]
       : [
