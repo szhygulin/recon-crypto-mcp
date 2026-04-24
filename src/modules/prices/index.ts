@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { getTokenPrice } from "../../data/prices.js";
 import { SUPPORTED_CHAINS, type SupportedChain } from "../../types/index.js";
+import { EVM_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 const tokenSchema = z.union([
   z.literal("native"),
-  z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+  z.string().regex(EVM_ADDRESS),
 ]);
 
 export const getTokenPriceInput = z.object({

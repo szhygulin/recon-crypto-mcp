@@ -1,8 +1,9 @@
 import { z } from "zod";
+import { TRON_ADDRESS } from "../../shared/address-patterns.js";
 
 const tronAddress = z
   .string()
-  .regex(/^T[1-9A-HJ-NP-Za-km-z]{33}$/, "expected base58 TRON mainnet address (prefix T, 34 chars)");
+  .regex(TRON_ADDRESS, "expected base58 TRON mainnet address (prefix T, 34 chars)");
 
 const amountString = z
   .string()

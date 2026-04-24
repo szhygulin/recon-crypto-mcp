@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
 import { approvalCapSchema } from "../shared/approval.js";
+import { EVM_ADDRESS, SOLANA_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
-const walletSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
-const addressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
+const walletSchema = z.string().regex(EVM_ADDRESS);
+const addressSchema = z.string().regex(EVM_ADDRESS);
 const dataSchema = z.string().regex(/^0x[a-fA-F0-9]*$/);
 
 export const pairLedgerLiveInput = z.object({});
@@ -41,7 +42,7 @@ export const pairLedgerSolanaInput = z.object({
 
 const solanaAddressSchema = z
   .string()
-  .regex(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/)
+  .regex(SOLANA_ADDRESS)
   .describe("Base58 Solana mainnet address (ed25519 pubkey, 43 or 44 chars).");
 
 export const prepareSolanaNativeSendInput = z.object({

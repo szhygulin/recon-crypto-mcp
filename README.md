@@ -48,7 +48,7 @@ Restart Claude Code after installing. When the skill is missing, the MCP emits a
 
 ## Supported chains
 
-**EVM**: Ethereum, Arbitrum, Polygon, Base. Lido and EigenLayer are Ethereum-only. Morpho Blue is currently Ethereum-only (Base deployment tracked as a follow-up).
+**EVM**: Ethereum, Arbitrum, Polygon, Base. Lido reads work on both Ethereum and Arbitrum; Lido writes (`prepare_lido_stake` / `_unstake`) are Ethereum-only. EigenLayer is Ethereum-only. Morpho Blue is currently Ethereum-only (Base deployment tracked as a follow-up).
 
 **TRON**: full reads + writes via USB HID (`@ledgerhq/hw-app-trx`). Balance coverage: TRX + canonical TRC-20 stablecoins (USDT, USDC, USDD, TUSD). Staking: Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze + voting-reward claims. No lending/LP (Aave/Compound/Morpho/Uniswap aren't deployed on TRON). Pair once per session via `pair_ledger_tron`.
 
@@ -70,18 +70,22 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 
 - `get_portfolio_summary` — cross-chain USD totals; optional `tronAddress` / `solanaAddress` fold those chains into the same totals (`breakdown.tron` / `breakdown.solana`)
 - `get_lending_positions`, `get_compound_positions`, `get_morpho_positions`, `get_marginfi_positions` — per-protocol lending positions + health factors
+- `get_compound_market_info` — wallet-less market snapshot for a single Comet (base-token metadata, supply/borrow/utilization/APR, pause flags, full collateral list with caps + LTV factors)
+- `get_market_incident_status` — "is anything on fire" scan across all Compound or Aave markets on a chain; flags paused / frozen / utilization ≥ 95% conditions and surfaces a top-level `incident` bit
 - `get_marginfi_diagnostics` — surfaces banks the bundled SDK had to skip, with root cause
 - `get_lp_positions` — Uniswap V3 LP + IL estimate
 - `get_staking_positions`, `get_staking_rewards`, `estimate_staking_yield` — Lido + EigenLayer
 - `get_health_alerts`, `simulate_position_change` — liquidation-risk tooling
 - `simulate_transaction` — EVM `eth_call` preview; the Solana equivalent runs automatically inside `preview_solana_send`
-- `get_token_balance`, `get_token_price` — balances + DefiLlama prices (EVM, TRON, Solana)
+- `get_token_balance`, `get_token_price`, `get_token_metadata` — balances + DefiLlama prices (EVM, TRON, Solana); `get_token_metadata` fetches ERC-20 symbol/name/decimals and detects EIP-1967 proxy implementations
+- `get_transaction_history` — merged recent-tx reader across external / ERC-20 / internal (and Solana `program_interaction`) with 4byte-decoded methods and historical USD values (Etherscan for EVM, TronGrid for TRON, Solana RPC for Solana)
 - `get_tron_staking`, `list_tron_witnesses` — TRON staking state + SR list
 - `get_solana_setup_status` — cheap probe of a wallet's Solana setup PDAs (nonce + MarginFi account existence)
 - `resolve_ens_name`, `reverse_resolve_ens` — ENS forward/reverse
 - `get_swap_quote` (LiFi, EVM), `get_solana_swap_quote` (Jupiter v6)
 - `check_contract_security`, `check_permission_risks`, `get_protocol_risk_score` — risk tooling
 - `get_transaction_status` — poll inclusion by hash
+- `get_tx_verification` — re-emit the VERIFY-BEFORE-SIGNING block + prepared-tx JSON for a handle when the original prepare_* output has dropped out of context (15-minute TTL); never scrape tool-result files from disk
 - `get_verification_artifact` — sparse JSON artifact (calldata / Solana message bytes + hashes) for second-LLM cross-verification; see [SECURITY.md](./SECURITY.md#second-agent-verification-optional-for-the-coordinated-agent-case)
 
 **Execution (Ledger-signed):**
@@ -90,6 +94,7 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 - `prepare_aave_*`, `prepare_compound_*`, `prepare_morpho_*` — EVM lending actions
 - `prepare_lido_stake` / `_unstake`, `prepare_eigenlayer_deposit` — staking
 - `prepare_swap` (LiFi), `prepare_native_send`, `prepare_token_send` — EVM sends + swap
+- `prepare_uniswap_swap` — direct Uniswap V3 swap, same-chain only; auto-picks best fee tier across 100/500/3000/10000 bps. Use only when the user explicitly asks for Uniswap; otherwise prefer `prepare_swap` (LiFi) which compares venues
 - `prepare_tron_*` — native TRX + TRC-20 transfers, WithdrawBalance claim, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze, VoteWitness
 - `prepare_solana_nonce_init` / `_close` — one-time setup/teardown of the durable-nonce PDA
 - `prepare_solana_native_send`, `prepare_solana_spl_send`, `prepare_solana_swap` — SOL, SPL (auto-includes `createAssociatedTokenAccount` when needed), Jupiter swap

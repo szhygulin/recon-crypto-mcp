@@ -140,6 +140,7 @@ export async function getMarginfiPositions(
         `As a workaround, the PDA ${existingSlots[0]?.pda.toBase58()} exists on chain ` +
         `at accountIndex=${existingSlots[0]?.idx} — you can inspect it directly via ` +
         `Solana Explorer.`,
+      { cause: e },
     );
   }
 

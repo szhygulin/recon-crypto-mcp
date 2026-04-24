@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ALL_CHAINS, SUPPORTED_CHAINS } from "../../types/index.js";
+import { EVM_ADDRESS, TRON_ADDRESS, SOLANA_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(ALL_CHAINS as unknown as [string, ...string[]]);
 /**
@@ -8,25 +9,25 @@ const chainEnum = z.enum(ALL_CHAINS as unknown as [string, ...string[]]);
  * the raw ZodObject here (can't use .refine at the schema root).
  */
 const walletSchema = z.union([
-  z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-  z.string().regex(/^T[1-9A-HJ-NP-Za-km-z]{33}$/),
+  z.string().regex(EVM_ADDRESS),
+  z.string().regex(TRON_ADDRESS),
   // Solana base58 pubkey (ed25519 32 bytes → 43 or 44 chars). The strict
   // PublicKey-round-trip check happens in src/modules/solana/address.ts at
   // handler entry; this regex is fast-reject for obvious garbage.
-  z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/),
+  z.string().regex(SOLANA_ADDRESS),
 ]);
 const tokenSchema = z.union([
   z.literal("native"),
-  z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-  z.string().regex(/^T[1-9A-HJ-NP-Za-km-z]{33}$/),
+  z.string().regex(EVM_ADDRESS),
+  z.string().regex(TRON_ADDRESS),
   // SPL mint address — same base58 shape as wallets.
-  z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/),
+  z.string().regex(SOLANA_ADDRESS),
 ]);
 
 const evmChainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 
 export const getTokenMetadataInput = z.object({
-  address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+  address: z.string().regex(EVM_ADDRESS),
   chain: evmChainEnum.default("ethereum"),
 });
 

@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
+import { EVM_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 const walletSchema = z
   .string()
-  .regex(/^0x[a-fA-F0-9]{40}$/, "must be a 0x-prefixed EVM address")
+  .regex(EVM_ADDRESS, "must be a 0x-prefixed EVM address")
   .describe("0x-prefixed EVM wallet address (40 hex chars) to inspect.");
 
 export const getStakingPositionsInput = z.object({

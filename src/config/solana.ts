@@ -11,6 +11,8 @@
  */
 
 /** Native SOL is always 9 decimals (1 SOL = 1_000_000_000 lamports). */
+import { SOLANA_ADDRESS } from "../shared/address-patterns.js";
+
 export const SOL_DECIMALS = 9;
 export const SOL_SYMBOL = "SOL";
 
@@ -65,7 +67,7 @@ export const WSOL_MINT = "So11111111111111111111111111111111111111112";
  * `@solana/web3.js` `PublicKey`.
  */
 export function isSolanaAddress(s: string): boolean {
-  return typeof s === "string" && /^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(s);
+  return typeof s === "string" && SOLANA_ADDRESS.test(s);
 }
 
 /**

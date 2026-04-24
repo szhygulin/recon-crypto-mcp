@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ALL_CHAINS } from "../../types/index.js";
 import type { AnyChain } from "../../types/index.js";
+import { EVM_ADDRESS, TRON_ADDRESS, SOLANA_ADDRESS } from "../../shared/address-patterns.js";
 
 /**
  * Accept both EVM 0x addresses and TRON mainnet base58. Mirrors the
@@ -9,10 +10,10 @@ import type { AnyChain } from "../../types/index.js";
  * private (prefixed, not re-exported) and mirroring the shape is cheap.
  */
 const walletSchema = z.union([
-  z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-  z.string().regex(/^T[1-9A-HJ-NP-Za-km-z]{33}$/),
+  z.string().regex(EVM_ADDRESS),
+  z.string().regex(TRON_ADDRESS),
   // Solana base58 pubkey, 43–44 chars.
-  z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/),
+  z.string().regex(SOLANA_ADDRESS),
 ]);
 
 const chainEnum = z.enum(ALL_CHAINS as unknown as [string, ...string[]]);

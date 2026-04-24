@@ -1,21 +1,22 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
+import { EVM_ADDRESS, TRON_ADDRESS, SOLANA_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 
 const walletSchema = z
   .string()
-  .regex(/^0x[a-fA-F0-9]{40}$/)
+  .regex(EVM_ADDRESS)
   .describe("0x-prefixed EVM wallet address (40 hex chars).");
 
 const tronAddressSchema = z
   .string()
-  .regex(/^T[1-9A-HJ-NP-Za-km-z]{33}$/)
+  .regex(TRON_ADDRESS)
   .describe("Base58 TRON mainnet address (prefix T, 34 chars).");
 
 const solanaAddressSchema = z
   .string()
-  .regex(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/)
+  .regex(SOLANA_ADDRESS)
   .describe("Base58 Solana mainnet address (ed25519 pubkey, 43 or 44 chars).");
 
 /**

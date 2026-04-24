@@ -4,6 +4,7 @@ import { fetchEvmHistory } from "./evm.js";
 import { fetchTronHistory } from "./tron.js";
 import { fetchSolanaHistory } from "./solana.js";
 import { resolveSelectors } from "./decode.js";
+import { TRON_ADDRESS } from "../../shared/address-patterns.js";
 import {
   lookupHistoricalPrices,
   nativeCoinKey,
@@ -50,7 +51,7 @@ export async function getTransactionHistory(
   // base58 (prefix T) / Solana base58 (43-44 chars, any prefix); the runtime
   // check lives here, same pattern as get_token_balance.
   const isEvmWallet = wallet.startsWith("0x");
-  const isTronWallet = /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(wallet);
+  const isTronWallet = TRON_ADDRESS.test(wallet);
   const isSolanaWallet = !isEvmWallet && !isTronWallet; // leftover from regex
   const isTronChain = chain === "tron";
   const isSolanaChain = chain === "solana";

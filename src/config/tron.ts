@@ -9,6 +9,8 @@
  */
 
 /** TronGrid REST endpoint. Anonymous requests are rate-limited to ~15 req/min. */
+import { TRON_ADDRESS } from "../shared/address-patterns.js";
+
 export const TRONGRID_BASE_URL = "https://api.trongrid.io";
 
 /**
@@ -41,5 +43,5 @@ export const TRX_SYMBOL = "TRX";
  * stronger guarantee (TronGrid itself rejects malformed addresses).
  */
 export function isTronAddress(s: string): boolean {
-  return typeof s === "string" && /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(s);
+  return typeof s === "string" && TRON_ADDRESS.test(s);
 }

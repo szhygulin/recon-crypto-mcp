@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
+import { EVM_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
-const walletSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
+const walletSchema = z.string().regex(EVM_ADDRESS);
 const tokenSchema = z.union([
   z.literal("native"),
-  z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+  z.string().regex(EVM_ADDRESS),
 ]);
 
 const baseSwapSchema = z.object({

@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
 import { approvalCapSchema } from "../shared/approval.js";
+import { EVM_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 const walletSchema = z
   .string()
-  .regex(/^0x[a-fA-F0-9]{40}$/)
+  .regex(EVM_ADDRESS)
   .describe("0x-prefixed EVM wallet address (40 hex chars) that will execute this action.");
 const marketIdSchema = z
   .string()

@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
+import { EVM_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
-const addressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
+const addressSchema = z.string().regex(EVM_ADDRESS);
 
 export const checkContractSecurityInput = z.object({
   address: addressSchema,
