@@ -1,0 +1,702 @@
+import {
+  AddressLookupTableAccount,
+  PublicKey,
+  TransactionInstruction,
+  type Connection,
+} from "@solana/web3.js";
+import BigNumber from "bignumber.js";
+import { assertSolanaAddress } from "./address.js";
+import { getSolanaConnection } from "./rpc.js";
+import { resolveAddressLookupTables } from "./alt.js";
+import {
+  buildAdvanceNonceIx,
+  deriveNonceAccountAddress,
+  getNonceAccountValue,
+} from "./nonce.js";
+import { throwNonceRequired } from "./actions.js";
+import {
+  issueSolanaDraftHandle,
+  type SolanaTxDraft,
+} from "../../signing/solana-tx-store.js";
+import { SOLANA_TOKEN_DECIMALS, SOLANA_TOKENS } from "../../config/solana.js";
+
+/**
+ * MarginFi lending — supply / withdraw / borrow / repay + one-time PDA
+ * MarginfiAccount init.
+ *
+ * Integration notes (scope-probed 2026-04-24 against SDK v6.4.1 — see
+ * project_marginfi_sdk_scope.md):
+ *
+ * - Every action is durable-nonce-protected: ix[0] = SystemProgram.nonceAdvance,
+ *   consistent with every other Solana send in this server. The wallet must
+ *   have run prepare_solana_nonce_init before any prepare_marginfi_* call.
+ *
+ * - Init uses the PDA variant `marginfi_account_initialize_pda`. Plan's note
+ *   3 claimed the SDK didn't wrap this; the scope-probe showed it does — via
+ *   `instructions.makeInitMarginfiAccountPdaIx` — so we use the SDK wrapper
+ *   instead of dropping to @coral-xyz/anchor codegen. Only `authority` and
+ *   `fee_payer` sign; the MarginfiAccount PDA is writable but not a signer
+ *   (Ledger-compatible).
+ *
+ * - Supply / Withdraw / Borrow / Repay go through
+ *   `MarginfiAccountWrapper.make{Deposit,Repay,Withdraw,Borrow}Ix`. These
+ *   return `InstructionsWrapper { instructions, keys: [] }`. `keys: []` is
+ *   the Ledger-compatibility signal — no ephemeral Keypair signers in the
+ *   lending happy path (scope-probed).
+ *
+ * - Transactions are always v0 VersionedMessages with the MarginFi group's
+ *   Address Lookup Tables. MarginFi's group-wide ALTs (shipped in the SDK's
+ *   ADDRESS_LOOKUP_TABLE_FOR_GROUP constant — 2 tables for the production
+ *   group) compress account lists; without them a borrow/withdraw can blow
+ *   past the 35-account legacy limit on banks with oracle cranks.
+ */
+
+const MAINNET_PROGRAM_ID = new PublicKey(
+  "MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA",
+);
+
+const MAINNET_GROUP = new PublicKey(
+  "4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8",
+);
+
+/** ASCII bytes for `"marginfi_account"` — PDA seed 0 (16 bytes). */
+const MARGINFI_ACCOUNT_SEED = Buffer.from("marginfi_account", "utf-8");
+
+/**
+ * Canonical MarginFi symbol → mint resolver. Piggybacks on the existing
+ * SOLANA_TOKENS config so we don't duplicate the mint table. Extends with
+ * "SOL" → wSOL mint (MarginFi's SOL bank uses wSOL under the hood — the SDK
+ * auto-wraps/unwraps native SOL when `wrapAndUnwrapSol: true` is set, which
+ * is our default).
+ */
+const WSOL_MINT = "So11111111111111111111111111111111111111112";
+
+function resolveSymbolToMint(symbol: string): string {
+  if (symbol === "SOL") return WSOL_MINT;
+  const upper = symbol.toUpperCase();
+  const sol = SOLANA_TOKENS[upper as keyof typeof SOLANA_TOKENS];
+  if (!sol) {
+    throw new Error(
+      `Unknown token symbol "${symbol}". Supported: SOL, ${Object.keys(SOLANA_TOKENS).join(", ")}. ` +
+        `Pass a canonical mint address in the \`mint\` field instead if you need a non-canonical token.`,
+    );
+  }
+  return sol;
+}
+
+function resolveMintSymbol(mint: string): string {
+  if (mint === WSOL_MINT) return "SOL";
+  for (const [sym, addr] of Object.entries(SOLANA_TOKENS) as [
+    keyof typeof SOLANA_TOKENS,
+    string,
+  ][]) {
+    if (addr === mint) return sym;
+  }
+  return "UNKNOWN";
+}
+
+function resolveMintDecimals(mint: string): number | null {
+  if (mint === WSOL_MINT) return 9;
+  for (const [sym, addr] of Object.entries(SOLANA_TOKENS) as [
+    keyof typeof SOLANA_TOKENS,
+    string,
+  ][]) {
+    if (addr === mint) return SOLANA_TOKEN_DECIMALS[sym];
+  }
+  return null;
+}
+
+/**
+ * Derive a wallet's deterministic MarginfiAccount PDA. Seeds per IDL 0.1.7:
+ * ["marginfi_account", group, authority, account_index (u16 LE), third_party_id (u16 LE)].
+ *
+ * `accountIndex` lets one wallet own multiple MarginfiAccounts (most users
+ * stay on 0). `thirdPartyId` is reserved for protocol integrators; we pass 0.
+ */
+export function deriveMarginfiAccountPda(
+  authority: PublicKey,
+  accountIndex = 0,
+  thirdPartyId = 0,
+  group: PublicKey = MAINNET_GROUP,
+  programId: PublicKey = MAINNET_PROGRAM_ID,
+): PublicKey {
+  const indexBuf = Buffer.alloc(2);
+  indexBuf.writeUInt16LE(accountIndex);
+  const tpidBuf = Buffer.alloc(2);
+  tpidBuf.writeUInt16LE(thirdPartyId);
+  const [pda] = PublicKey.findProgramAddressSync(
+    [MARGINFI_ACCOUNT_SEED, group.toBuffer(), authority.toBuffer(), indexBuf, tpidBuf],
+    programId,
+  );
+  return pda;
+}
+
+/**
+ * Minimum SDK-facing `Wallet` shape (from @mrgnlabs/mrgn-common `types.d.ts`).
+ * The SDK never *calls* `signTransaction` / `signAllTransactions` during ix
+ * construction — only during the high-level `deposit()` flow, which we never
+ * use. But the type shape is required to construct `MarginfiClient.fetch()`.
+ * We stub the signers to throw on accidental call (defense in depth: if the
+ * SDK ever starts invoking them in the ix path, tests will surface it with
+ * a clear error rather than silently producing a tx with a zero signature).
+ */
+interface StubWallet {
+  publicKey: PublicKey;
+  signTransaction: <T>(tx: T) => Promise<T>;
+  signAllTransactions: <T>(txs: T[]) => Promise<T[]>;
+  signMessage?: (message: Uint8Array) => Promise<Uint8Array>;
+}
+
+function makeStubWallet(authority: PublicKey): StubWallet {
+  const fail = (): never => {
+    throw new Error(
+      "MarginFi SDK attempted to sign through the stub wallet — this is a bug. " +
+        "Ix construction should never invoke signTransaction / signAllTransactions. " +
+        "Signing happens later via Ledger USB HID in send_transaction.",
+    );
+  };
+  return {
+    publicKey: authority,
+    signTransaction: fail,
+    signAllTransactions: fail,
+  };
+}
+
+/**
+ * Per-process cache for the (heavy) `MarginfiClient.fetch()` call. Keyed on
+ * `group.toBase58()` — the client doesn't depend on the particular wallet
+ * asking, only on group state (banks, oracle prices, bank metadatas). A
+ * wallet-keyed cache would just multiply identical fetches.
+ *
+ * TTL of 60s balances two concerns: (1) MarginFi bank state (oracle prices,
+ * reserve configs) shifts within minutes under normal conditions; (2) a
+ * prepare_marginfi_* call cluster (init + supply + withdraw in one session)
+ * shouldn't re-fetch 3 times.
+ */
+const CLIENT_CACHE_TTL_MS = 60_000;
+interface CachedClient {
+  // Typed as unknown so we don't export the heavy SDK types through our
+  // module surface — callers interact via the module's public functions.
+  client: unknown;
+  expiresAt: number;
+}
+const clientCache = new Map<string, CachedClient>();
+
+async function getMarginfiClient(
+  conn: Connection,
+  authority: PublicKey,
+): Promise<unknown> {
+  const key = MAINNET_GROUP.toBase58();
+  const existing = clientCache.get(key);
+  if (existing && existing.expiresAt > Date.now()) return existing.client;
+
+  const { MarginfiClient, getConfig } = await import(
+    "@mrgnlabs/marginfi-client-v2"
+  );
+  const config = getConfig("production");
+  const wallet = makeStubWallet(authority);
+  const client = await MarginfiClient.fetch(config, wallet, conn, {
+    readOnly: true,
+  });
+  clientCache.set(key, {
+    client,
+    expiresAt: Date.now() + CLIENT_CACHE_TTL_MS,
+  });
+  return client;
+}
+
+/** Test-only hook so unit tests don't pay the cost of a live fetch. */
+export function __setMarginfiClientCacheEntry(client: unknown): void {
+  clientCache.set(MAINNET_GROUP.toBase58(), {
+    client,
+    expiresAt: Date.now() + CLIENT_CACHE_TTL_MS,
+  });
+}
+
+/** Test-only clear hook for vitest's beforeEach. */
+export function __clearMarginfiClientCache(): void {
+  clientCache.clear();
+}
+
+/**
+ * Minimal shape of the SDK objects we touch — deliberately narrow so the
+ * concrete SDK types don't leak across the boundary. Any widening here
+ * requires a matching widening of the SDK call in a builder function (the
+ * TypeScript compiler will surface the mismatch).
+ */
+interface MinimalBank {
+  address: PublicKey;
+  mint: PublicKey;
+  config: { assetWeightInit: BigNumber; liabilityWeightInit: BigNumber };
+  tokenSymbol?: string;
+  isPaused?: boolean;
+}
+interface MinimalClient {
+  getBankByMint(mint: PublicKey): MinimalBank | null;
+  banks: Map<string, MinimalBank>;
+  program: unknown;
+  wallet: StubWallet;
+  group: unknown;
+}
+interface MinimalWrapper {
+  address: PublicKey;
+  makeDepositIx(
+    amount: number | string | BigNumber,
+    bankAddress: PublicKey,
+    opts?: Record<string, unknown>,
+  ): Promise<{ instructions: TransactionInstruction[]; keys: unknown[] }>;
+  makeRepayIx(
+    amount: number | string | BigNumber,
+    bankAddress: PublicKey,
+    repayAll?: boolean,
+    opts?: Record<string, unknown>,
+  ): Promise<{ instructions: TransactionInstruction[]; keys: unknown[] }>;
+  makeWithdrawIx(
+    amount: number | string | BigNumber,
+    bankAddress: PublicKey,
+    withdrawAll?: boolean,
+    opts?: Record<string, unknown>,
+  ): Promise<{ instructions: TransactionInstruction[]; keys: unknown[] }>;
+  makeBorrowIx(
+    amount: number | string | BigNumber,
+    bankAddress: PublicKey,
+    opts?: Record<string, unknown>,
+  ): Promise<{ instructions: TransactionInstruction[]; keys: unknown[] }>;
+  computeHealthComponents(req: unknown): {
+    assets: BigNumber;
+    liabilities: BigNumber;
+  };
+  computeFreeCollateral(): BigNumber;
+}
+
+async function fetchMarginfiAccountWrapper(
+  client: unknown,
+  pda: PublicKey,
+): Promise<MinimalWrapper | null> {
+  const { MarginfiAccountWrapper } = await import(
+    "@mrgnlabs/marginfi-client-v2"
+  );
+  try {
+    const wrapper = await MarginfiAccountWrapper.fetch(pda, client as never);
+    return wrapper as unknown as MinimalWrapper;
+  } catch (e) {
+    // The SDK throws on missing account; fold into a null so the caller can
+    // distinguish "account exists but fetch errored" from "user hasn't init'd".
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/account.*does not exist|not found|Account does not exist/i.test(msg)) {
+      return null;
+    }
+    throw e;
+  }
+}
+
+function findBankForMint(client: unknown, mint: string): MinimalBank {
+  const c = client as MinimalClient;
+  const bank = c.getBankByMint(new PublicKey(mint));
+  if (!bank) {
+    throw new Error(
+      `No MarginFi bank found for mint ${mint} (${resolveMintSymbol(mint)}). ` +
+        `MarginFi lists a subset of SPL tokens; not every mainnet SPL is supported. ` +
+        `Check https://app.marginfi.com for the current bank list.`,
+    );
+  }
+  if (bank.isPaused) {
+    throw new Error(
+      `MarginFi bank for ${resolveMintSymbol(mint)} is paused by governance. ` +
+        `Supply / withdraw / borrow / repay are all blocked until an unpause proposal passes. ` +
+        `Refusing to prepare the tx.`,
+    );
+  }
+  return bank;
+}
+
+export interface PreparedMarginfiTx {
+  handle: string;
+  action:
+    | "marginfi_init"
+    | "marginfi_supply"
+    | "marginfi_withdraw"
+    | "marginfi_borrow"
+    | "marginfi_repay";
+  chain: "solana";
+  from: string;
+  description: string;
+  decoded: { functionName: string; args: Record<string, string> };
+  nonceAccount: string;
+  marginfiAccount: string;
+}
+
+export interface MarginfiInitParams {
+  wallet: string;
+  /** Account slot (0 = first, 1 = second, ...) — lets one wallet own multiple MarginfiAccounts. */
+  accountIndex?: number;
+}
+
+/**
+ * Build the one-time `marginfi_account_initialize_pda` tx. Deterministic PDA,
+ * only the user signs as authority + fee_payer. Runs under durable-nonce
+ * protection so the user has unbounded Ledger review time.
+ */
+export async function buildMarginfiInit(
+  p: MarginfiInitParams,
+): Promise<PreparedMarginfiTx> {
+  const fromPubkey = assertSolanaAddress(p.wallet);
+  const accountIndex = p.accountIndex ?? 0;
+  const conn = getSolanaConnection();
+
+  // Durable-nonce preflight.
+  const noncePubkey = await deriveNonceAccountAddress(fromPubkey);
+  const nonceState = await getNonceAccountValue(conn, noncePubkey);
+  if (!nonceState) throwNonceRequired(p.wallet);
+
+  const marginfiAccount = deriveMarginfiAccountPda(fromPubkey, accountIndex);
+
+  // Refuse re-init — the on-chain ix reverts, but we get a clearer error by
+  // short-circuiting here. 0.00XX SOL would otherwise burn on the failed send.
+  const existing = await conn.getAccountInfo(marginfiAccount, "confirmed");
+  if (existing) {
+    throw new Error(
+      `MarginfiAccount already exists at PDA ${marginfiAccount.toBase58()} ` +
+        `for wallet ${p.wallet} (account_index=${accountIndex}). ` +
+        `If you want a second MarginfiAccount, call prepare_marginfi_init with a different ` +
+        `accountIndex (1, 2, ...). If you want to keep using this one, call ` +
+        `prepare_marginfi_supply / withdraw / borrow / repay directly.`,
+    );
+  }
+
+  const { instructions: mfnInstructions } = await import(
+    "@mrgnlabs/marginfi-client-v2"
+  );
+  const initIx = await mfnInstructions.makeInitMarginfiAccountPdaIx(
+    // The SDK's helper takes a `Program<Marginfi>` for `mfProgram`. We don't
+    // need a full client for the init path — just a Program bound to the
+    // program ID + a dummy provider. Construct it minimally.
+    (await buildMarginfiProgram(conn, fromPubkey)) as never,
+    {
+      marginfiGroup: MAINNET_GROUP,
+      marginfiAccount,
+      authority: fromPubkey,
+      feePayer: fromPubkey,
+    },
+    { accountIndex, thirdPartyId: 0 },
+  );
+
+  const instructions: TransactionInstruction[] = [
+    buildAdvanceNonceIx(noncePubkey, fromPubkey),
+    initIx,
+  ];
+
+  // Use v0 even for init — the ALT set is empty here (no complex account
+  // list yet), but v0 keeps the draft store branching uniform across all
+  // MarginFi actions.
+  const alts: AddressLookupTableAccount[] = [];
+
+  const nonceAccountStr = noncePubkey.toBase58();
+  const marginfiAccountStr = marginfiAccount.toBase58();
+  const draft: SolanaTxDraft = {
+    kind: "v0",
+    payerKey: fromPubkey,
+    instructions,
+    addressLookupTableAccounts: alts,
+    meta: {
+      action: "marginfi_init",
+      from: p.wallet,
+      description:
+        `Initialize MarginfiAccount ${marginfiAccountStr} for ${p.wallet} ` +
+        `(accountIndex=${accountIndex}, third_party_id=0; one-time setup — this is a PDA, no rent-exempt seed is moved)`,
+      decoded: {
+        functionName: "marginfi.account_initialize_pda",
+        args: {
+          wallet: p.wallet,
+          marginfiAccount: marginfiAccountStr,
+          authority: p.wallet,
+          marginfiGroup: MAINNET_GROUP.toBase58(),
+          accountIndex: String(accountIndex),
+          thirdPartyId: "0",
+          nonceAccount: nonceAccountStr,
+        },
+      },
+      nonce: {
+        account: nonceAccountStr,
+        authority: fromPubkey.toBase58(),
+        value: nonceState.nonce,
+      },
+    },
+  };
+  const { handle } = issueSolanaDraftHandle(draft);
+  return {
+    handle,
+    action: "marginfi_init",
+    chain: "solana",
+    from: p.wallet,
+    description: draft.meta.description,
+    decoded: draft.meta.decoded,
+    nonceAccount: nonceAccountStr,
+    marginfiAccount: marginfiAccountStr,
+  };
+}
+
+/**
+ * Construct an Anchor `Program<Marginfi>` instance pointed at mainnet MarginFi
+ * with a stub provider. Only the init path needs this directly — supply/
+ * withdraw/borrow/repay go through the higher-level MarginfiAccountWrapper
+ * which already has a `_program` internal.
+ *
+ * Deliberately inlined here rather than shared with `getMarginfiClient`'s
+ * internal Program to keep the init path's dependency surface minimal
+ * (anchor, idl, program — nothing else).
+ */
+async function buildMarginfiProgram(
+  conn: Connection,
+  authority: PublicKey,
+): Promise<unknown> {
+  const { AnchorProvider, Program } = await import("@coral-xyz/anchor");
+  const { MARGINFI_IDL } = await import("@mrgnlabs/marginfi-client-v2");
+  const wallet = makeStubWallet(authority);
+  const provider = new AnchorProvider(conn, wallet as never, {
+    commitment: "confirmed",
+  });
+  // `MARGINFI_IDL` is typed as v0.1.7 IDL; spreading overrides .address to
+  // the deployed program id. Same pattern the SDK's `MarginfiClient.fetch`
+  // uses internally.
+  const idl = { ...MARGINFI_IDL, address: MAINNET_PROGRAM_ID.toBase58() };
+  return new Program(idl, provider);
+}
+
+export interface MarginfiActionParams {
+  wallet: string;
+  /** Canonical symbol ("USDC", "SOL", "USDT", ...) — resolved via SOLANA_TOKENS. */
+  symbol?: string;
+  /** OR pass an explicit mint address to override the symbol lookup. */
+  mint?: string;
+  /** Human-readable amount (e.g., "1.5" for 1.5 USDC). Decimals resolved from the bank. */
+  amount: string;
+  accountIndex?: number;
+}
+
+type ActionKind = "supply" | "withdraw" | "borrow" | "repay";
+
+interface ResolvedActionContext {
+  fromPubkey: PublicKey;
+  noncePubkey: PublicKey;
+  nonceValue: string;
+  marginfiAccount: PublicKey;
+  wrapper: MinimalWrapper;
+  bank: MinimalBank;
+  mint: string;
+  symbol: string;
+  amountUi: BigNumber;
+}
+
+async function resolveActionContext(
+  p: MarginfiActionParams,
+  kind: ActionKind,
+): Promise<ResolvedActionContext> {
+  const fromPubkey = assertSolanaAddress(p.wallet);
+  const conn = getSolanaConnection();
+
+  const noncePubkey = await deriveNonceAccountAddress(fromPubkey);
+  const nonceState = await getNonceAccountValue(conn, noncePubkey);
+  if (!nonceState) throwNonceRequired(p.wallet);
+
+  const accountIndex = p.accountIndex ?? 0;
+  const marginfiAccount = deriveMarginfiAccountPda(fromPubkey, accountIndex);
+  const info = await conn.getAccountInfo(marginfiAccount, "confirmed");
+  if (!info) {
+    throw new Error(
+      `No MarginfiAccount exists for ${p.wallet} (accountIndex=${accountIndex}). ` +
+        `Run prepare_marginfi_init first — it's a one-time setup (no rent-exempt seed moved; ` +
+        `only ~0.000005 SOL tx fee) that creates your MarginFi lending state account.`,
+    );
+  }
+
+  const mint = p.mint ?? resolveSymbolToMint(p.symbol ?? "");
+  if (!mint) {
+    throw new Error(
+      `Specify either \`symbol\` (USDC / SOL / USDT / ...) or \`mint\` (base58 SPL mint). Neither supplied.`,
+    );
+  }
+  const symbol = resolveMintSymbol(mint);
+
+  const client = await getMarginfiClient(conn, fromPubkey);
+  const bank = findBankForMint(client, mint);
+
+  const wrapper = await fetchMarginfiAccountWrapper(client, marginfiAccount);
+  if (!wrapper) {
+    throw new Error(
+      `MarginfiAccount at ${marginfiAccount.toBase58()} exists on chain but the SDK could ` +
+        `not hydrate it as a MarginfiAccountWrapper — this is unexpected. Retry; if it ` +
+        `persists, the account data may be in a new schema this SDK version (v6.4.1) ` +
+        `doesn't understand.`,
+    );
+  }
+
+  // Action-specific pre-flight beyond the bank pause check that
+  // findBankForMint already enforced.
+  if (kind === "borrow" || kind === "withdraw") {
+    const free = wrapper.computeFreeCollateral();
+    if (free.lte(0)) {
+      throw new Error(
+        `MarginfiAccount has zero free collateral — ${kind === "borrow" ? "cannot take on new debt" : "withdrawing would push health factor below the required ratio"}. ` +
+          `Supply more collateral or repay existing debt first.`,
+      );
+    }
+  }
+
+  const amountUi = new BigNumber(p.amount);
+  if (!amountUi.isFinite() || amountUi.lte(0)) {
+    throw new Error(
+      `Invalid amount "${p.amount}" — expected a positive decimal (e.g. "1.5").`,
+    );
+  }
+
+  return {
+    fromPubkey,
+    noncePubkey,
+    nonceValue: nonceState.nonce,
+    marginfiAccount,
+    wrapper,
+    bank,
+    mint,
+    symbol,
+    amountUi,
+  };
+}
+
+async function wrapWithNonce(
+  ctx: ResolvedActionContext,
+  actionLabel: string,
+  actionAction:
+    | "marginfi_supply"
+    | "marginfi_withdraw"
+    | "marginfi_borrow"
+    | "marginfi_repay",
+  bankIxs: TransactionInstruction[],
+  p: MarginfiActionParams,
+): Promise<PreparedMarginfiTx> {
+  const conn = getSolanaConnection();
+
+  // MarginFi publishes group-wide ALTs (2 tables for the production group).
+  // Pull them into the v0 draft so borrow/withdraw flows with oracle cranks
+  // fit inside the 1232-byte packet ceiling.
+  const altPubkeys = await getMarginfiGroupAltAddresses();
+  const alts = await resolveAddressLookupTables(conn, altPubkeys);
+
+  const instructions: TransactionInstruction[] = [
+    buildAdvanceNonceIx(ctx.noncePubkey, ctx.fromPubkey),
+    ...bankIxs,
+  ];
+
+  const accountIndex = p.accountIndex ?? 0;
+  const nonceAccountStr = ctx.noncePubkey.toBase58();
+  const marginfiAccountStr = ctx.marginfiAccount.toBase58();
+
+  const draft: SolanaTxDraft = {
+    kind: "v0",
+    payerKey: ctx.fromPubkey,
+    instructions,
+    addressLookupTableAccounts: alts,
+    meta: {
+      action: actionAction,
+      from: p.wallet,
+      description:
+        `MarginFi ${actionLabel}: ${ctx.amountUi.toFixed()} ${ctx.symbol} ` +
+        `(account ${marginfiAccountStr.slice(0, 8)}…, bank ${ctx.bank.address.toBase58().slice(0, 8)}…)`,
+      decoded: {
+        functionName: `marginfi.${actionAction.replace("marginfi_", "lending_account_")}`,
+        args: {
+          wallet: p.wallet,
+          marginfiAccount: marginfiAccountStr,
+          accountIndex: String(accountIndex),
+          bank: ctx.bank.address.toBase58(),
+          mint: ctx.mint,
+          symbol: ctx.symbol,
+          amount: ctx.amountUi.toFixed() + " " + ctx.symbol,
+          nonceAccount: nonceAccountStr,
+        },
+      },
+      nonce: {
+        account: nonceAccountStr,
+        authority: ctx.fromPubkey.toBase58(),
+        value: ctx.nonceValue,
+      },
+    },
+  };
+
+  const { handle } = issueSolanaDraftHandle(draft);
+  return {
+    handle,
+    action: actionAction,
+    chain: "solana",
+    from: p.wallet,
+    description: draft.meta.description,
+    decoded: draft.meta.decoded,
+    nonceAccount: nonceAccountStr,
+    marginfiAccount: marginfiAccountStr,
+  };
+}
+
+async function getMarginfiGroupAltAddresses(): Promise<PublicKey[]> {
+  const { ADDRESS_LOOKUP_TABLE_FOR_GROUP } = await import(
+    "@mrgnlabs/marginfi-client-v2"
+  );
+  return (
+    ADDRESS_LOOKUP_TABLE_FOR_GROUP[MAINNET_GROUP.toBase58()] ?? []
+  ) as PublicKey[];
+}
+
+export async function buildMarginfiSupply(
+  p: MarginfiActionParams,
+): Promise<PreparedMarginfiTx> {
+  const ctx = await resolveActionContext(p, "supply");
+  const { instructions } = await ctx.wrapper.makeDepositIx(
+    ctx.amountUi,
+    ctx.bank.address,
+  );
+  return wrapWithNonce(ctx, "supply", "marginfi_supply", instructions, p);
+}
+
+export async function buildMarginfiWithdraw(
+  p: MarginfiActionParams & { withdrawAll?: boolean },
+): Promise<PreparedMarginfiTx> {
+  const ctx = await resolveActionContext(p, "withdraw");
+  const { instructions } = await ctx.wrapper.makeWithdrawIx(
+    ctx.amountUi,
+    ctx.bank.address,
+    p.withdrawAll ?? false,
+  );
+  return wrapWithNonce(ctx, "withdraw", "marginfi_withdraw", instructions, p);
+}
+
+export async function buildMarginfiBorrow(
+  p: MarginfiActionParams,
+): Promise<PreparedMarginfiTx> {
+  const ctx = await resolveActionContext(p, "borrow");
+  const { instructions } = await ctx.wrapper.makeBorrowIx(
+    ctx.amountUi,
+    ctx.bank.address,
+  );
+  return wrapWithNonce(ctx, "borrow", "marginfi_borrow", instructions, p);
+}
+
+export async function buildMarginfiRepay(
+  p: MarginfiActionParams & { repayAll?: boolean },
+): Promise<PreparedMarginfiTx> {
+  const ctx = await resolveActionContext(p, "repay");
+  const { instructions } = await ctx.wrapper.makeRepayIx(
+    ctx.amountUi,
+    ctx.bank.address,
+    p.repayAll ?? false,
+  );
+  return wrapWithNonce(ctx, "repay", "marginfi_repay", instructions, p);
+}
+
+export const __internals = {
+  resolveSymbolToMint,
+  resolveMintSymbol,
+  resolveMintDecimals,
+  MAINNET_PROGRAM_ID,
+  MAINNET_GROUP,
+  fetchMarginfiAccountWrapper,
+  findBankForMint,
+};

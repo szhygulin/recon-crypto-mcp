@@ -92,6 +92,12 @@ import type {
   PrepareSolanaNonceCloseArgs,
   GetSolanaSwapQuoteArgs,
   PrepareSolanaSwapArgs,
+  PrepareMarginfiInitArgs,
+  PrepareMarginfiSupplyArgs,
+  PrepareMarginfiWithdrawArgs,
+  PrepareMarginfiBorrowArgs,
+  PrepareMarginfiRepayArgs,
+  GetMarginfiPositionsArgs,
   PreviewSendArgs,
   SendTransactionArgs,
   GetTransactionStatusArgs,
@@ -260,6 +266,83 @@ export async function getSolanaSwapQuote(args: GetSolanaSwapQuoteArgs) {
     slippageBps: args.slippageBps,
     swapMode: args.swapMode,
   });
+}
+
+export async function prepareMarginfiInit(
+  args: PrepareMarginfiInitArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarginfiInit } = await import("../solana/marginfi.js");
+  const prepared = await buildMarginfiInit({
+    wallet: args.wallet,
+    ...(args.accountIndex !== undefined ? { accountIndex: args.accountIndex } : {}),
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareMarginfiSupply(
+  args: PrepareMarginfiSupplyArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarginfiSupply } = await import("../solana/marginfi.js");
+  const prepared = await buildMarginfiSupply({
+    wallet: args.wallet,
+    ...(args.symbol !== undefined ? { symbol: args.symbol } : {}),
+    ...(args.mint !== undefined ? { mint: args.mint } : {}),
+    amount: args.amount,
+    ...(args.accountIndex !== undefined ? { accountIndex: args.accountIndex } : {}),
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareMarginfiWithdraw(
+  args: PrepareMarginfiWithdrawArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarginfiWithdraw } = await import("../solana/marginfi.js");
+  const prepared = await buildMarginfiWithdraw({
+    wallet: args.wallet,
+    ...(args.symbol !== undefined ? { symbol: args.symbol } : {}),
+    ...(args.mint !== undefined ? { mint: args.mint } : {}),
+    amount: args.amount,
+    ...(args.accountIndex !== undefined ? { accountIndex: args.accountIndex } : {}),
+    ...(args.withdrawAll !== undefined ? { withdrawAll: args.withdrawAll } : {}),
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareMarginfiBorrow(
+  args: PrepareMarginfiBorrowArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarginfiBorrow } = await import("../solana/marginfi.js");
+  const prepared = await buildMarginfiBorrow({
+    wallet: args.wallet,
+    ...(args.symbol !== undefined ? { symbol: args.symbol } : {}),
+    ...(args.mint !== undefined ? { mint: args.mint } : {}),
+    amount: args.amount,
+    ...(args.accountIndex !== undefined ? { accountIndex: args.accountIndex } : {}),
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareMarginfiRepay(
+  args: PrepareMarginfiRepayArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarginfiRepay } = await import("../solana/marginfi.js");
+  const prepared = await buildMarginfiRepay({
+    wallet: args.wallet,
+    ...(args.symbol !== undefined ? { symbol: args.symbol } : {}),
+    ...(args.mint !== undefined ? { mint: args.mint } : {}),
+    amount: args.amount,
+    ...(args.accountIndex !== undefined ? { accountIndex: args.accountIndex } : {}),
+    ...(args.repayAll !== undefined ? { repayAll: args.repayAll } : {}),
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
+  const { getMarginfiPositions: reader } = await import(
+    "../positions/marginfi.js"
+  );
+  const conn = getSolanaConnection();
+  return { positions: await reader(conn, args.wallet) };
 }
 
 export async function prepareSolanaSwap(
@@ -1289,7 +1372,17 @@ export interface SolanaVerificationArtifact {
   artifactVersion: "v1";
   handle: string;
   chain: "solana";
-  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close" | "jupiter_swap";
+  action:
+    | "native_send"
+    | "spl_send"
+    | "nonce_init"
+    | "nonce_close"
+    | "jupiter_swap"
+    | "marginfi_init"
+    | "marginfi_supply"
+    | "marginfi_withdraw"
+    | "marginfi_borrow"
+    | "marginfi_repay";
   from: string;
   messageBase64: string;
   recentBlockhash: string;
@@ -1390,8 +1483,23 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
     if (!tx.verification) {
       throw new Error(`Internal: Solana tx for handle '${args.handle}' missing verification metadata.`);
     }
-    const ledgerMessageHash =
-      tx.action === "spl_send" ? solanaLedgerMessageHash(tx.messageBase64) : undefined;
+    // Blind-sign actions need the server-computed Ledger Message Hash in the
+    // artifact payload so the second LLM can tell the user which value to
+    // match against the on-device screen. Clear-sign actions (native_send,
+    // nonce_init, nonce_close) omit it — the device shows decoded fields
+    // and there is no hash to match.
+    const blindSignActions = new Set([
+      "spl_send",
+      "jupiter_swap",
+      "marginfi_init",
+      "marginfi_supply",
+      "marginfi_withdraw",
+      "marginfi_borrow",
+      "marginfi_repay",
+    ]);
+    const ledgerMessageHash = blindSignActions.has(tx.action)
+      ? solanaLedgerMessageHash(tx.messageBase64)
+      : undefined;
     // `description` and `decoded` are the human/structured summary the FIRST
     // agent showed the user. The second LLM uses them as a comparison target
     // (step 3 of SECOND_AGENT_INSTRUCTIONS) AFTER it independently decodes
