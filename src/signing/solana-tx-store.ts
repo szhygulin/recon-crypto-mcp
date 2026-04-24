@@ -77,6 +77,18 @@ export interface SolanaDraftMeta {
     authority: string;
     value: string;
   };
+  /**
+   * Bank addresses (base58) the MarginFi risk engine will cross-check on
+   * this tx — the target action bank PLUS every bank with an active balance
+   * on the user's MarginfiAccount. Stamped at prepare time so
+   * `preview_solana_send` can diagnose `RiskEngineInitRejected` (Anchor
+   * error 6009) without re-deriving the account's balance set (issue #116).
+   *
+   * Absent on non-MarginFi actions. A present-but-empty array means the
+   * builder saw zero active balances + target (shouldn't happen; treated
+   * as "diagnosis N/A").
+   */
+  marginfiTouchedBanks?: string[];
 }
 
 /**
