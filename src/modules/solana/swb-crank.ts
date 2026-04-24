@@ -5,23 +5,66 @@ import {
   type Connection,
 } from "@solana/web3.js";
 
-/**
- * Solana Secp256k1 signature-verify pre-compile program ID.
- *
- * The Switchboard Pull crank emits this as its first instruction (the
- * signature-verify pre-compile that attests the oracle attestation is
- * authentic). Its data field encodes up to N (signature_offset,
- * signature_instruction_index, eth_address_offset, eth_address_instruction_index,
- * message_data_offset, message_data_size, message_instruction_index) tuples
- * per signature — the three `_instruction_index` fields point to the tx
- * instruction whose data holds the referenced bytes.
- *
- * The SDK builds the ix assuming it lives at position 0 in the tx (all three
- * indices hardcoded to 0). When we splice it in at a different position,
- * those bytes must be rewritten to the new position, or the pre-compile
- * reads from the wrong instruction's data and fails with Custom error
- * codes 2/3/4 (InvalidPublicKey / InvalidRecoveryId / InvalidDataOffsets).
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Note for future maintainers — Solana Secp256k1 pre-compile `instruction_index`
+//
+// If you ever compose an SDK-emitted Secp256k1 verify ix (Switchboard crank,
+// Wormhole guardian verify, or anything else that uses this pre-compile) into
+// a larger tx, READ THIS FIRST. It cost live-probe iterations to get right,
+// and the failure mode is silent Custom errors with no reference to this ix.
+//
+// What the pre-compile does:
+//   Agave's Secp256k1 pre-compile verifies an EVM-style ECDSA signature over
+//   a Keccak-256 digest and returns the recovered public key — all inside the
+//   runtime, no BPF program. Switchboard uses it to attest that an oracle
+//   price came from a specific quorum-signed gateway attestation; Wormhole
+//   uses it for guardian-set signatures.
+//
+// Data layout (per Agave `sdk/secp256k1-program/src/lib.rs`):
+//   [0]        num_signatures             (u8)       — patch assumes ==1
+//   [1..=2]    signature_offset           (u16 LE)
+//   [3]        signature_instruction_index (u8)      ← position-ABSOLUTE
+//   [4..=5]    eth_address_offset         (u16 LE)
+//   [6]        eth_address_instruction_index (u8)    ← position-ABSOLUTE
+//   [7..=8]    message_data_offset        (u16 LE)
+//   [9..=10]   message_data_size          (u16 LE)
+//   [11]       message_instruction_index  (u8)       ← position-ABSOLUTE
+//   [12..]     the actual signature / eth-address / message bytes
+//
+// The subtle bit:
+//   The three `_instruction_index` fields are ABSOLUTE tx-relative indices,
+//   NOT self-relative. `0` does NOT mean "this instruction" — it means
+//   literally ix[0] of the outer tx. SDKs that build these ixs (Switchboard
+//   `PullFeed.fetchUpdateManyIx`, Wormhole's guardian verifier) hardcode all
+//   three to `0` because they expect to own the whole tx and sit at position
+//   0 themselves.
+//
+// The 0xff sentinel is NOT valid here:
+//   Some Solana pre-compiles interpret 0xff as "same instruction". Secp256k1
+//   does not — live-probed against mainnet, 0xff returns Custom:4
+//   (InvalidDataOffsets). Only absolute indices work.
+//
+// What happens when you get this wrong:
+//   Splice the ix in at position 2 without rewriting the bytes, and the
+//   pre-compile reads signature/eth-address/message data out of ix[0]'s
+//   data (e.g. the `nonceAdvance` ix). Result: Custom:2 (InvalidPublicKey),
+//   :3 (InvalidRecoveryId), or :4 (InvalidDataOffsets) depending on what
+//   random bytes those fields land on. None of the error messages mention
+//   offsets.
+//
+// The fix:
+//   Rewrite bytes 3, 6, and 11 to the ix's final tx-relative position before
+//   including it. `patchSecp256k1CrankIxPosition` below does exactly that.
+//   Single-signature payloads only — multi-sig would need additional writes
+//   at +11-byte strides, and we guard against that case.
+//
+// Provenance:
+//   Issue #116 ask C; live-probed against Switchboard's Crossbar gateway
+//   2026-04-24 via `createUpdateFeedIx` from @mrgnlabs/marginfi-client-v2
+//   v6.4.1. The specific Agave runtime version: mainnet slot 2026-04-24.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `KeccakSecp256k11111111111111111111111111111` — the pre-compile program. */
 const SECP256K1_PROGRAM_ID = new PublicKey(
   "KeccakSecp256k11111111111111111111111111111",
 );
@@ -102,24 +145,14 @@ interface ClientLike {
 }
 
 /**
- * Rewrite a Secp256k1 verify ix's three `_instruction_index` fields so
- * they point to the ix's actual position in the final tx. Required
- * whenever the crank isn't the very first instruction (e.g. prepended
- * after a durable-nonce advance).
+ * Rewrite a Secp256k1 verify ix's three `_instruction_index` fields so they
+ * point to the ix's actual position in the final tx. Required whenever the
+ * crank isn't the first instruction (which is always, in our flow — see the
+ * file-header reference block for why and what breaks if you skip this).
  *
- * Returns a NEW `TransactionInstruction` with a patched data buffer;
- * the input instruction is left untouched (defensive — the caller may
- * hold references to the original in other arrays).
- *
- * Offsets in the ix data (per Agave's Secp256k1 pre-compile layout):
- *   [0]   : num_signatures (u8)
- *   [1..=2]: signature_offset (u16 LE)
- *   [3]   : signature_instruction_index (u8) ← patch
- *   [4..=5]: eth_address_offset (u16 LE)
- *   [6]   : eth_address_instruction_index (u8) ← patch
- *   [7..=8]: message_data_offset (u16 LE)
- *   [9..=10]: message_data_size (u16 LE)
- *   [11]  : message_instruction_index (u8) ← patch
+ * Returns a NEW `TransactionInstruction` with a patched data buffer; the
+ * input is left untouched so callers can still hold references to the
+ * SDK-emitted original.
  */
 export function patchSecp256k1CrankIxPosition(
   ix: TransactionInstruction,
