@@ -77,6 +77,7 @@ import {
   prepareNativeStakeDeactivate,
   prepareNativeStakeWithdraw,
   prepareSolanaLifiSwap,
+  prepareTronLifiSwap,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -120,6 +121,7 @@ import {
   prepareNativeStakeDeactivateInput,
   prepareNativeStakeWithdrawInput,
   prepareSolanaLifiSwapInput,
+  prepareTronLifiSwapInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -1520,6 +1522,32 @@ async function main() {
       inputSchema: prepareSolanaLifiSwapInput.shape,
     },
     handler(prepareSolanaLifiSwap)
+  );
+
+  server.registerTool(
+    "prepare_tron_lifi_swap",
+    {
+      description:
+        "Build an unsigned LiFi-routed cross-chain bridge with TRON as the source chain. " +
+        "User signs a TRON tx via Ledger over USB; the bridge protocol delivers tokens on " +
+        "the destination (any EVM chain or Solana) after the source confirms (typically " +
+        "1-15 min). LiFi aggregates NearIntents, Wormhole, Allbridge, etc. The builder " +
+        "(1) decodes the TRON protobuf to extract the TriggerSmartContract envelope, " +
+        "(2) asserts the contract_address is the LiFi Diamond on TRON " +
+        "(TU3ymitEKCWQFtASkEeHaPb8NfZcJtCHLt) and the owner_address is the user's wallet, " +
+        "(3) decodes the inner ABI calldata's BridgeData tuple and cross-checks " +
+        "destinationChainId + receiver against the user's request — refuses on any " +
+        "mismatch. TRC-20 source flows REQUIRE a prior approve to the LiFi Diamond — this " +
+        "tool does NOT prepare the approve; insufficient allowance reverts on-chain. " +
+        "BLIND-SIGN on Ledger (LiFi Diamond not in TRON app's clear-sign allowlist) — " +
+        "enable \"Allow blind signing\" in the on-device Solana app Settings; the device " +
+        "shows the txID, which the user matches against the txID in the prepare receipt. " +
+        "Pair the Ledger via `pair_ledger_tron` first. Broadcast goes via TronGrid's " +
+        "`/wallet/broadcasthex` endpoint (LiFi gives us only raw_data_hex, not the " +
+        "deserialized JSON shape `/wallet/broadcasttransaction` requires).",
+      inputSchema: prepareTronLifiSwapInput.shape,
+    },
+    handler(prepareTronLifiSwap, { toolName: "prepare_tron_lifi_swap" })
   );
 
   server.registerTool(

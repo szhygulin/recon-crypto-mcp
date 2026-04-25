@@ -698,13 +698,20 @@ export interface UnsignedTronTx {
     | "freeze"
     | "unfreeze"
     | "withdraw_expire_unfreeze"
-    | "vote";
+    | "vote"
+    | "lifi_swap";
   /** Base58 owner address (prefix T). */
   from: string;
   /** TronGrid-returned transaction ID (sha256 of raw_data_hex, hex string). */
   txID: string;
-  /** TronGrid's raw_data object — opaque to us; serialized in raw_data_hex. */
-  rawData: unknown;
+  /**
+   * TronGrid's raw_data object — opaque to us; serialized in raw_data_hex.
+   * Required for the standard `/wallet/broadcasttransaction` path. ABSENT
+   * for `lifi_swap` flows where we receive only `raw_data_hex` from LiFi
+   * and broadcast via `/wallet/broadcasthex` instead (broadcast.ts branches
+   * on this).
+   */
+  rawData?: unknown;
   /** Hex-encoded raw_data used by the signer. */
   rawDataHex: string;
   /** Human-readable description for the preview. */
