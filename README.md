@@ -46,6 +46,17 @@ git clone https://github.com/szhygulin/vaultpilot-skill.git \
 
 Restart Claude Code after installing. When the skill is missing, the MCP emits a one-shot `VAULTPILOT NOTICE` until you install it. The skill file's expected SHA-256 is pinned in the server source and verified on every signing flow, so on-disk tamper or plugin-collision attempts produce a visible `integrity check FAILED`.
 
+### Conversational `/setup` (optional)
+
+For a chat-driven onboarding flow that detects current config, asks one question to classify the use case, and only collects API keys you actually need, install the companion [`vaultpilot-setup-skill`](https://github.com/szhygulin/vaultpilot-setup-skill):
+
+```bash
+git clone https://github.com/szhygulin/vaultpilot-setup-skill.git \
+  ~/.claude/skills/vaultpilot-setup
+```
+
+Restart Claude Code, then type `/setup` — the agent uses `get_vaultpilot_config_status` (read-only, no secrets leak) to snapshot what's already configured and walks you through whatever's missing. Skip if you'd rather edit the config file directly.
+
 ## Supported chains
 
 **EVM**: Ethereum, Arbitrum, Polygon, Base. Lido reads work on both Ethereum and Arbitrum; Lido writes (`prepare_lido_stake` / `_unstake`) are Ethereum-only. EigenLayer is Ethereum-only. Morpho Blue is currently Ethereum-only (Base deployment tracked as a follow-up).
