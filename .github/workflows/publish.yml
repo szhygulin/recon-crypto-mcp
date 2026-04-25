@@ -42,7 +42,20 @@ jobs:
       - name: Publish to npm
         # Node 22 ships npm 10.x; Trusted Publisher OIDC token exchange
         # needs npm >= 11.5.1, so invoke latest npm via npx just for this step.
-        run: npx --yes npm@latest publish --provenance --access public
+        #
+        # Idempotent guard: if the version is already on npm we no-op
+        # rather than failing. This matters when publish.yml is re-run
+        # via workflow_dispatch after a failure in a downstream step
+        # (e.g. MCP Registry publish failing on a stale server.json) —
+        # the npm side is already done, no point retrying it.
+        run: |
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          REMOTE_VERSION=$(npm view vaultpilot-mcp@${LOCAL_VERSION} version 2>/dev/null || echo "")
+          if [ "$LOCAL_VERSION" = "$REMOTE_VERSION" ]; then
+            echo "vaultpilot-mcp@${LOCAL_VERSION} already on npm — skipping publish."
+          else
+            npx --yes npm@latest publish --provenance --access public
+          fi
 
       - name: Install mcp-publisher
         run: |
