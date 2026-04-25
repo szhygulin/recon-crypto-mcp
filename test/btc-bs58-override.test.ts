@@ -25,6 +25,7 @@ import { createRequire } from "node:module";
  * exactly the way its CJS code resolves dependencies at runtime, so
  * if either override is ever dropped (or hw-app-btc upgrades and
  * shifts its transitive shape) we catch it in CI before it ships.
+ * bump
  */
 describe("@ledgerhq/hw-app-btc bs58/base-x subtree (issue #181 + sibling)", () => {
   // Resolve bs58check the same way hw-app-btc's CJS code does at
