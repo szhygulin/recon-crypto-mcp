@@ -76,6 +76,7 @@ import {
   prepareNativeStakeDelegate,
   prepareNativeStakeDeactivate,
   prepareNativeStakeWithdraw,
+  prepareSolanaLifiSwap,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -118,6 +119,7 @@ import {
   prepareNativeStakeDelegateInput,
   prepareNativeStakeDeactivateInput,
   prepareNativeStakeWithdrawInput,
+  prepareSolanaLifiSwapInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -1492,6 +1494,28 @@ async function main() {
       inputSchema: prepareNativeStakeWithdrawInput.shape,
     },
     handler(prepareNativeStakeWithdraw)
+  );
+
+  server.registerTool(
+    "prepare_solana_lifi_swap",
+    {
+      description:
+        "Build an unsigned LiFi-routed swap or bridge with Solana as the source chain. " +
+        "Returns a Solana v0 tx the user signs on Ledger. Two flows share this surface: " +
+        "(1) IN-CHAIN swap when toChain=\"solana\" — LiFi internally routes through Jupiter " +
+        "/ Orca / similar; consider `prepare_solana_swap` (Jupiter direct) as the more " +
+        "direct path for in-chain only. (2) CROSS-CHAIN bridge when toChain is an EVM chain " +
+        "— LiFi aggregates Wormhole, deBridge, Mayan, Allbridge. The Solana source tx " +
+        "confirms first; destination delivery happens after via the bridge protocol " +
+        "(typically 1-15 min). DURABLE NONCE REQUIRED. The builder rejects multi-tx routes " +
+        "(returned by some bridge variants) and multi-signer routes (which would need an " +
+        "ephemeral signer LiFi normally provides via its wallet adapter — Ledger-only " +
+        "signing can't supply it). Reverse direction (EVM → Solana) is not yet wired in " +
+        "this server; track as a follow-up. BLIND-SIGN on Ledger — match the Message Hash " +
+        "on-device after `preview_solana_send`.",
+      inputSchema: prepareSolanaLifiSwapInput.shape,
+    },
+    handler(prepareSolanaLifiSwap)
   );
 
   server.registerTool(

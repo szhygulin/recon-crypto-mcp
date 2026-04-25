@@ -54,7 +54,8 @@ export interface SolanaDraftMeta {
     | "marinade_unstake_immediate"
     | "native_stake_delegate"
     | "native_stake_deactivate"
-    | "native_stake_withdraw";
+    | "native_stake_withdraw"
+    | "lifi_solana_swap";
   from: string;
   description: string;
   decoded: {

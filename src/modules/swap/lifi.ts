@@ -13,6 +13,15 @@ export function initLifi(): void {
   initialized = true;
 }
 
+/**
+ * LiFi numeric chain ID for Solana. Authoritative value from
+ * `@lifi/types/chains/base.ChainId.SOL` (= 1151111081099710 — derived from
+ * the bytes "sol" interpreted as ASCII codes appended to a marker prefix).
+ * Hoisted to a constant here so callers passing through the EVM-only
+ * `toLifiChain` helper aren't forced to reach into the SDK.
+ */
+export const LIFI_SOLANA_CHAIN_ID = 1151111081099710 as const;
+
 /** Map our chain name to LiFi's numeric chain ID. */
 function toLifiChain(chain: SupportedChain): number {
   return CHAIN_IDS[chain];
@@ -80,3 +89,87 @@ export async function fetchStatus(txHash: string, fromChain: SupportedChain, toC
     toChain: toLifiChain(toChain) as LifiChainId,
   });
 }
+
+/**
+ * Solana-source LiFi quote. Distinct shape from `LifiQuoteRequest` because
+ * Solana addresses are base58 (not 0x-prefixed hex) and the destination can
+ * be EVM (cross-chain bridge) or Solana (in-chain swap; LiFi will internally
+ * route through Jupiter / similar). Output is a LiFi `Quote` whose
+ * `transactionRequest.data` field carries the base64-encoded
+ * `VersionedTransaction` for the source chain (= Solana) — see
+ * `@lifi/sdk/src/_esm/core/Solana/SolanaStepExecutor.js`.
+ *
+ * `fromToken` accepts either:
+ *   - a base58 SPL mint (e.g. USDC mint EPjFW...Dt1v)
+ *   - the literal string "native" — interpreted as wrapped-SOL
+ *     (So11111111111111111111111111111111111111112), the canonical token
+ *     for SOL value transfer in LiFi's API
+ *
+ * `toToken` accepts:
+ *   - base58 SPL mint (when toChain is "solana")
+ *   - 0x-prefixed EVM token address (when toChain is an EVM chain)
+ *   - "native" for native-asset on either chain (mapped to the chain's
+ *     conventional native sentinel by LiFi)
+ */
+export interface LifiSolanaQuoteRequest {
+  /** Solana base58 wallet — funds the swap, signs the source tx. */
+  fromAddress: string;
+  /** Source token: SPL mint (base58) or "native" for SOL. */
+  fromToken: string | "native";
+  /** Raw integer base units to sell (e.g. "1000000000" for 1 SOL @ 9 decimals). */
+  fromAmount: string;
+  /** Destination chain — either "solana" (in-chain swap) or an EVM chain (bridge). */
+  toChain: SupportedChain | "solana";
+  /** Destination token; format depends on toChain (see jsdoc on the type). */
+  toToken: string | "native";
+  /** Optional explicit destination wallet (defaults to fromAddress for same-chain). */
+  toAddress?: string;
+  /** Slippage as a fraction — e.g. 0.005 = 50 bps. LiFi default is 0.005. */
+  slippage?: number;
+}
+
+const SOLANA_NATIVE_SENTINEL = "11111111111111111111111111111111";
+const SOLANA_WSOL_MINT = "So11111111111111111111111111111111111111112";
+const EVM_NATIVE_SENTINEL = NATIVE; // 0x0…0
+
+/**
+ * Fetch a LiFi quote with Solana as the source chain. Wraps the SDK's
+ * `getQuote` (which is chain-agnostic — it accepts numeric chain IDs and
+ * `string`-typed addresses + tokens, so this isn't a separate API endpoint).
+ *
+ * Native-token coercion:
+ *   - Source: "native" → wrapped-SOL mint (LiFi treats wSOL as the canonical
+ *     SOL handle in its routing graph; the Solana step builds in the wrap
+ *     ix when needed).
+ *   - Destination: "native" → 0x0…0 if EVM destination, else wrapped-SOL.
+ */
+export async function fetchSolanaQuote(req: LifiSolanaQuoteRequest) {
+  initLifi();
+  const fromTokenResolved =
+    req.fromToken === "native" ? SOLANA_WSOL_MINT : req.fromToken;
+  const toIsSolana = req.toChain === "solana";
+  let toTokenResolved: string;
+  if (req.toToken === "native") {
+    toTokenResolved = toIsSolana ? SOLANA_WSOL_MINT : EVM_NATIVE_SENTINEL;
+  } else {
+    toTokenResolved = req.toToken;
+  }
+  const toChainId = toIsSolana
+    ? LIFI_SOLANA_CHAIN_ID
+    : CHAIN_IDS[req.toChain as SupportedChain];
+
+  return getQuote({
+    fromChain: LIFI_SOLANA_CHAIN_ID as LifiChainId,
+    toChain: toChainId as LifiChainId,
+    fromToken: fromTokenResolved,
+    toToken: toTokenResolved,
+    fromAmount: req.fromAmount,
+    fromAddress: req.fromAddress,
+    ...(req.toAddress !== undefined ? { toAddress: req.toAddress } : {}),
+    ...(req.slippage !== undefined ? { slippage: req.slippage } : {}),
+  });
+}
+
+// Re-export so the Solana wrapper module can use the wSOL constant without
+// re-defining it (single source of truth).
+export { SOLANA_WSOL_MINT, SOLANA_NATIVE_SENTINEL };

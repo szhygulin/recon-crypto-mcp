@@ -897,7 +897,8 @@ export interface RenderableSolanaPrepareResult {
     | "marinade_unstake_immediate"
     | "native_stake_delegate"
     | "native_stake_deactivate"
-    | "native_stake_withdraw";
+    | "native_stake_withdraw"
+    | "lifi_solana_swap";
   from: string;
   description: string;
   decoded: { functionName: string; args: Record<string, string> };
@@ -945,6 +946,8 @@ function solanaActionLabel(action: RenderableSolanaPrepareResult["action"]): str
       return "Native stake deactivate (one-epoch cooldown before withdrawable)";
     case "native_stake_withdraw":
       return "Native stake withdraw (from inactive stake account)";
+    case "lifi_solana_swap":
+      return "LiFi swap / bridge (Solana source)";
   }
 }
 
@@ -1005,6 +1008,7 @@ export function renderSolanaPrepareAgentTaskBlock(
   const isMarginfi = r.action.startsWith("marginfi_");
   const isMarinade = r.action.startsWith("marinade_");
   const isNativeStake = r.action.startsWith("native_stake_");
+  const isLifiSolana = r.action === "lifi_solana_swap";
   const marginfiActionWord =
     r.action === "marginfi_init"
       ? "MarginFi account init"
@@ -1042,7 +1046,7 @@ export function renderSolanaPrepareAgentTaskBlock(
             ? "durable-nonce close"
             : r.action === "jupiter_swap"
               ? "Jupiter swap"
-              : marginfiActionWord ?? marinadeActionWord ?? nativeStakeActionWord ?? "Solana tx";
+              : marginfiActionWord ?? marinadeActionWord ?? nativeStakeActionWord ?? (isLifiSolana ? "LiFi swap / bridge (Solana source)" : "Solana tx");
   const nonceBullet =
     r.nonceAccount && r.action !== "nonce_init"
       ? ["  - Nonce: <short nonce-account addr>"]
@@ -1164,6 +1168,18 @@ export function renderSolanaPrepareAgentTaskBlock(
                       "  - Wallet: <from + recipient>",
                       "  - Stake account: <stakeAccount from decoded.args>",
                       "  - Amount: <amountSol> SOL (or 'max')",
+                      ...nonceBullet,
+                      "  - Fee: <est. fee in SOL>",
+                    ]
+                  : isLifiSolana
+                  ? [
+                      "  - Headline: \"Prepared LiFi <swap|bridge> — <fromAmount> <inputSymbol> → ~<minOutput> <outputSymbol> on <toChain>\"",
+                      "  - From wallet: <from address>",
+                      "  - Input: <fromAmount from decoded.args> <inputSymbol> (mint: <fromMint>)",
+                      "  - Output: ~<minOutput> <outputSymbol> on <toChain> (token: <toToken>)",
+                      "  - Tool / route: <tool from decoded.args>",
+                      "  - Slippage: <slippageBps from decoded.args> bps",
+                      "  - Destination wallet: <toAddress, or 'same as source' if absent>",
                       ...nonceBullet,
                       "  - Fee: <est. fee in SOL>",
                     ]
@@ -1327,6 +1343,7 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     tx.action === "native_stake_delegate" ||
     tx.action === "native_stake_deactivate" ||
     tx.action === "native_stake_withdraw";
+  const isLifiSolana = tx.action === "lifi_solana_swap";
   const marginfiActionLabel =
     tx.action === "marginfi_init"
       ? "account init"
@@ -1406,14 +1423,14 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
   // as ix[0] — this flag drives the "DURABLE-NONCE MODE" explainer text +
   // the Nonce bullet in the summary + the expected-shape text for CHECK 1.
   const hasAdvanceNonceIx =
-    isNativeSend || isSpl || isNonceClose || isJupiterSwap || isMarginfi || isMarinade || isNativeStake;
+    isNativeSend || isSpl || isNonceClose || isJupiterSwap || isMarginfi || isMarinade || isNativeStake || isLifiSolana;
   // The Ledger Solana app only clear-signs a small allowlist of programs
   // (System Program's transfer/advance/initialize/withdraw, and a few
   // others). Everything else falls to blind-sign, which shows only the
   // Message Hash on-device and requires the user to match it against the
   // hash the server displayed. SPL TransferChecked AND Jupiter swaps both
   // fall in that bucket.
-  const isBlindSign = isSpl || isJupiterSwap || isMarginfi || isMarinade || isNativeStake;
+  const isBlindSign = isSpl || isJupiterSwap || isMarginfi || isMarinade || isNativeStake || isLifiSolana;
   const ledgerHash = isBlindSign ? solanaLedgerMessageHash(tx.messageBase64) : null;
 
   const checksPayload = {
@@ -1552,7 +1569,20 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
                             "  - Fee: <est. fee in SOL>",
                             "  - Note: stake account must already be inactive (1 epoch after deactivate); on-chain reverts otherwise",
                           ]
-                        : [
+                        : tx.action === "lifi_solana_swap"
+                          ? [
+                              "  - Headline: \"Prepared LiFi <swap|bridge> — <fromAmount> <inputSymbol> → ~<minOutput> <outputSymbol>\"",
+                              "  - From wallet: <from address>",
+                              "  - Input: <fromAmount> <inputSymbol> (mint: <fromMint from decoded.args>)",
+                              "  - Output: ~<minOutput> <outputSymbol> on <toChain> (token: <toToken from decoded.args>)",
+                              "  - Tool / route: <tool from decoded.args>",
+                              "  - Slippage: <slippageBps from decoded.args> bps",
+                              "  - Destination wallet: <toAddress from decoded.args, or 'same as source' if omitted>",
+                              ...(nonceBullet ? [nonceBullet] : []),
+                              "  - Fee: <est. fee in SOL>",
+                              "  - Note: cross-chain bridges complete in 2 stages — Solana source tx confirms first; destination delivery happens after via the bridge protocol (typically 1-15 min depending on tool).",
+                            ]
+                          : [
                       // marginfi_supply / withdraw / borrow / repay — same shape,
                       // only the "Action" bullet text differs; keep one template.
                       `  - Headline: \"Prepared MarginFi ${marginfiActionLabel} — <amount> <symbol>\"`,
