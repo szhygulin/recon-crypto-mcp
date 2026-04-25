@@ -124,7 +124,8 @@ export interface PreparedSolanaTx {
     | "marinade_unstake_immediate"
     | "native_stake_delegate"
     | "native_stake_deactivate"
-    | "native_stake_withdraw";
+    | "native_stake_withdraw"
+    | "lifi_solana_swap";
   chain: "solana";
   from: string;
   description: string;

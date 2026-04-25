@@ -783,7 +783,8 @@ export interface UnsignedSolanaTx {
     | "marinade_unstake_immediate"
     | "native_stake_delegate"
     | "native_stake_deactivate"
-    | "native_stake_withdraw";
+    | "native_stake_withdraw"
+    | "lifi_solana_swap";
   /** Base58 owner address (44-char ed25519 pubkey). */
   from: string;
   /**

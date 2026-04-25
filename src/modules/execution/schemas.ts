@@ -380,6 +380,79 @@ export const getSolanaSetupStatusInput = z.object({
 });
 
 /**
+ * LiFi-on-Solana write action. Cross-chain bridges (Solana → EVM) and
+ * in-chain swaps (Solana → Solana) share one tool surface; LiFi internally
+ * picks the right protocol (Jupiter for in-chain, Wormhole / deBridge /
+ * Mayan / Allbridge for bridges).
+ *
+ * For pure in-chain Solana swaps `prepare_solana_swap` (Jupiter, single
+ * aggregator) is the more direct path — fewer hops, simpler routing.
+ * Reach for `prepare_solana_lifi_swap` when you need Solana → EVM bridge
+ * functionality, or you explicitly want LiFi's multi-aggregator routing
+ * on Solana.
+ */
+export const prepareSolanaLifiSwapInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana base58 wallet — funds the swap and signs the source tx. Must " +
+      "have an initialized durable-nonce account (prepare_solana_nonce_init)."
+  ),
+  fromMint: z
+    .string()
+    .max(50)
+    .describe(
+      "Source token: SPL mint address (base58) or the literal string \"native\" " +
+        "to swap SOL (LiFi maps \"native\" to wrapped-SOL internally; the wrap " +
+        "ix is built into the route)."
+    ),
+  fromAmount: z
+    .string()
+    .max(50)
+    .regex(/^\d+$/)
+    .describe(
+      "Raw integer amount in base units (NOT decimal-adjusted). Decimals are " +
+        "the source token's decimals — e.g. 1 USDC (6 decimals) = '1000000', " +
+        "1 SOL (9 decimals) = '1000000000'."
+    ),
+  toChain: z
+    .enum([
+      "solana",
+      ...(SUPPORTED_CHAINS as unknown as [string, ...string[]]),
+    ])
+    .describe(
+      "Destination chain. \"solana\" runs an in-chain swap (LiFi routes " +
+        "through Jupiter / Orca / similar — consider prepare_solana_swap for " +
+        "the more direct path). EVM chains run a cross-chain bridge."
+    ),
+  toToken: z
+    .string()
+    .max(80)
+    .describe(
+      "Destination token. SPL mint (base58) when toChain=\"solana\"; 0x-prefixed " +
+        "EVM token address otherwise. \"native\" works on both (resolves to the " +
+        "chain's conventional native sentinel)."
+    ),
+  toAddress: z
+    .string()
+    .max(80)
+    .optional()
+    .describe(
+      "Optional destination wallet. Defaults to the source wallet for in-chain " +
+        "swaps. REQUIRED for cross-chain bridges since the Solana base58 source " +
+        "wallet won't be a valid EVM-chain recipient."
+    ),
+  slippageBps: z
+    .number()
+    .int()
+    .min(0)
+    .max(10_000)
+    .optional()
+    .describe(
+      "Slippage tolerance in basis points (50 = 0.5%). Omit for LiFi's default " +
+        "(0.5%). Cross-chain bridges may impose their own minimums above this."
+    ),
+});
+
+/**
  * No args — `get_vaultpilot_config_status` returns a structured snapshot of
  * the local server config, intended for diagnostic / onboarding flows.
  * The output deliberately never echoes any secret values (API keys, RPC
@@ -710,5 +783,6 @@ export type PrepareNativeStakeWithdrawArgs = z.infer<
 export type GetMarginfiPositionsArgs = z.infer<typeof getMarginfiPositionsInput>;
 export type GetSolanaStakingPositionsArgs = z.infer<typeof getSolanaStakingPositionsInput>;
 export type GetSolanaSetupStatusArgs = z.infer<typeof getSolanaSetupStatusInput>;
+export type PrepareSolanaLifiSwapArgs = z.infer<typeof prepareSolanaLifiSwapInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;

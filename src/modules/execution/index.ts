@@ -103,6 +103,7 @@ import type {
   PrepareNativeStakeDelegateArgs,
   PrepareNativeStakeDeactivateArgs,
   PrepareNativeStakeWithdrawArgs,
+  PrepareSolanaLifiSwapArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -429,6 +430,24 @@ export async function prepareNativeStakeWithdraw(
     wallet: args.wallet,
     stakeAccount: args.stakeAccount,
     amountSol: args.amountSol,
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareSolanaLifiSwap(
+  args: PrepareSolanaLifiSwapArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildLifiSolanaSwap } = await import("../solana/lifi-swap.js");
+  const slippage =
+    args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined;
+  const prepared = await buildLifiSolanaSwap({
+    wallet: args.wallet,
+    fromMint: args.fromMint,
+    fromAmount: args.fromAmount,
+    toChain: args.toChain as Parameters<typeof buildLifiSolanaSwap>[0]["toChain"],
+    toToken: args.toToken,
+    ...(args.toAddress !== undefined ? { toAddress: args.toAddress } : {}),
+    ...(slippage !== undefined ? { slippage } : {}),
   });
   return prepared as unknown as PreparedSolanaTx;
 }
@@ -1823,7 +1842,8 @@ export interface SolanaVerificationArtifact {
     | "marinade_unstake_immediate"
     | "native_stake_delegate"
     | "native_stake_deactivate"
-    | "native_stake_withdraw";
+    | "native_stake_withdraw"
+    | "lifi_solana_swap";
   from: string;
   messageBase64: string;
   recentBlockhash: string;
@@ -1942,6 +1962,7 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       "native_stake_delegate",
       "native_stake_deactivate",
       "native_stake_withdraw",
+      "lifi_solana_swap",
     ]);
     const ledgerMessageHash = blindSignActions.has(tx.action)
       ? solanaLedgerMessageHash(tx.messageBase64)
