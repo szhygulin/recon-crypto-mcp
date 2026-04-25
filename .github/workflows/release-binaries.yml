@@ -1,0 +1,156 @@
+name: Release binaries
+
+# Builds a standalone executable per target OS/arch and attaches the artifacts
+# to a published GitHub Release. Runs in parallel with `publish.yml` (npm +
+# MCP registry) on the same `release.published` trigger — binary users and
+# npm users both consume the same version.
+#
+# Implementation notes for future-me:
+#   - `@yao-pkg/pkg` is a community-maintained fork of Vercel's pkg. It
+#     bundles the Node runtime + our dist + all deps + native `.node`
+#     artifacts into one executable per target.
+#   - Cross-compile from Linux → macOS / Windows does NOT work for this
+#     project: `node-hid` builds from source via `node-gyp` and its
+#     `.node` output is OS-specific. So we build each target on its own
+#     OS and let `npm ci` rebuild `node-hid` for that platform before
+#     `pkg` picks it up via the `pkg.assets` glob in package.json.
+#   - macOS arm64 runs on `macos-14` (Apple silicon); macOS x64 runs on
+#     `macos-13` (Intel). Node 22 is available on both.
+#   - `workflow_dispatch` is included so we can rebuild binaries for a
+#     past release without re-publishing the tag.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build binaries for (e.g. v0.6.1). Used when triggered manually."
+        required: true
+        type: string
+
+concurrency:
+  group: release-binaries-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each platform produces TWO binaries — one for the MCP server
+        # (entry: dist/index.js) and one for the setup wizard (entry:
+        # dist/setup.js). @yao-pkg/pkg bundles only a single entry per
+        # binary, and the setup wizard has side-effectful top-level code
+        # that can't be reliably merged into the server entry via
+        # dynamic import under pkg's ESM→CJS transformer. Two binaries
+        # keeps both users (MCP runtime, first-run wizard) on the
+        # zero-node-install path with no fragile dispatching.
+        include:
+          - target: node22-linux-x64
+            runner: ubuntu-latest
+            server_asset: vaultpilot-mcp-linux-x64
+            setup_asset: vaultpilot-mcp-setup-linux-x64
+          - target: node22-macos-x64
+            runner: macos-13
+            server_asset: vaultpilot-mcp-macos-x64
+            setup_asset: vaultpilot-mcp-setup-macos-x64
+          - target: node22-macos-arm64
+            runner: macos-14
+            server_asset: vaultpilot-mcp-macos-arm64
+            setup_asset: vaultpilot-mcp-setup-macos-arm64
+          - target: node22-win-x64
+            runner: windows-latest
+            server_asset: vaultpilot-mcp-windows-x64.exe
+            setup_asset: vaultpilot-mcp-setup-windows-x64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Prefer the release tag on `release.published`, fall back to
+          # the manual-dispatch input. `github.ref` on manual runs is
+          # the branch, which is not what we want for a release asset.
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        # Kamino SDK's transitive peer-dep nest requires legacy resolution
+        # — mirrors publish.yml. `npm ci` rebuilds node-hid from source
+        # against the current OS toolchain, producing the `.node` that
+        # `pkg` will bundle in the next step.
+        run: npm ci --legacy-peer-deps
+
+      - name: Build dist/
+        run: npm run build
+
+      - name: Bundle server binary
+        # `pkg .` (not `pkg dist/index.js`) so pkg picks up package.json
+        # context including the `pkg.scripts` glob and the bin block.
+        # The bin block has `vaultpilot-mcp` first, so this builds the
+        # MCP server. Direct-entrypoint mode (`pkg dist/index.js`) trips
+        # an ESM exports-map resolution bug for subpath imports like
+        # `@modelcontextprotocol/sdk/server/mcp.js` — `pkg .` is the
+        # supported path.
+        run: npx pkg . --target ${{ matrix.target }} --output release/${{ matrix.server_asset }}
+        env:
+          CI: "true"
+
+      - name: Bundle setup binary
+        # Direct entrypoint here is fine — setup.js doesn't import any
+        # subpath exports from CJS-fallback packages, so the resolution
+        # bug above doesn't apply.
+        run: npx pkg dist/setup.js --target ${{ matrix.target }} --output release/${{ matrix.setup_asset }}
+        env:
+          CI: "true"
+
+      - name: Smoke-test server binary (non-Windows)
+        if: runner.os != 'Windows'
+        # Pipe a `tools/list` JSON-RPC request into the binary — if it
+        # returns a JSON envelope with `result.tools[]`, the MCP is up.
+        # The `sleep 2` + timeout pattern gives the server time to
+        # respond before the parent closes stdin and we SIGTERM.
+        run: |
+          chmod +x ./release/${{ matrix.server_asset }}
+          (echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'; sleep 3) | \
+            timeout 20 ./release/${{ matrix.server_asset }} | \
+            node -e "const s=require('fs').readFileSync(0,'utf8'); const line=s.split('\n').find(l=>l.startsWith('{')) ?? '{}'; const j=JSON.parse(line); if(!j.result?.tools?.length) { console.error('no tools in response'); process.exit(1); } console.log('tools:', j.result.tools.length);"
+
+      - name: Smoke-test server binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $out = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | & "./release/${{ matrix.server_asset }}"
+          $line = $out -split "`n" | Where-Object { $_.StartsWith("{") } | Select-Object -First 1
+          $json = $line | ConvertFrom-Json
+          if (-not $json.result.tools) { Write-Error "no tools in response"; exit 1 }
+          Write-Host "tools: $($json.result.tools.Count)"
+
+      - name: Upload assets to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/${{ matrix.server_asset }}
+            release/${{ matrix.setup_asset }}
+          fail_on_unmatched_files: true
+
+      - name: Upload assets to existing release (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            release/${{ matrix.server_asset }}
+            release/${{ matrix.setup_asset }}
+          fail_on_unmatched_files: true
