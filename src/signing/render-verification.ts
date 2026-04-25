@@ -892,7 +892,9 @@ export interface RenderableSolanaPrepareResult {
     | "marginfi_supply"
     | "marginfi_withdraw"
     | "marginfi_borrow"
-    | "marginfi_repay";
+    | "marginfi_repay"
+    | "marinade_stake"
+    | "marinade_unstake_immediate";
   from: string;
   description: string;
   decoded: { functionName: string; args: Record<string, string> };
@@ -930,6 +932,10 @@ function solanaActionLabel(action: RenderableSolanaPrepareResult["action"]): str
       return "MarginFi borrow";
     case "marginfi_repay":
       return "MarginFi repay";
+    case "marinade_stake":
+      return "Marinade stake (SOL → mSOL)";
+    case "marinade_unstake_immediate":
+      return "Marinade liquid unstake (mSOL → SOL via pool)";
   }
 }
 
@@ -988,6 +994,7 @@ export function renderSolanaPrepareAgentTaskBlock(
   r: RenderableSolanaPrepareResult,
 ): string {
   const isMarginfi = r.action.startsWith("marginfi_");
+  const isMarinade = r.action.startsWith("marinade_");
   const marginfiActionWord =
     r.action === "marginfi_init"
       ? "MarginFi account init"
@@ -1000,6 +1007,12 @@ export function renderSolanaPrepareAgentTaskBlock(
             : r.action === "marginfi_repay"
               ? "MarginFi repay"
               : null;
+  const marinadeActionWord =
+    r.action === "marinade_stake"
+      ? "Marinade stake"
+      : r.action === "marinade_unstake_immediate"
+        ? "Marinade liquid unstake"
+        : null;
   const actionWord =
     r.action === "native_send"
       ? "native SOL send"
@@ -1011,7 +1024,7 @@ export function renderSolanaPrepareAgentTaskBlock(
             ? "durable-nonce close"
             : r.action === "jupiter_swap"
               ? "Jupiter swap"
-              : marginfiActionWord ?? "Solana tx";
+              : marginfiActionWord ?? marinadeActionWord ?? "Solana tx";
   const nonceBullet =
     r.nonceAccount && r.action !== "nonce_init"
       ? ["  - Nonce: <short nonce-account addr>"]
@@ -1087,6 +1100,24 @@ export function renderSolanaPrepareAgentTaskBlock(
                       "  - MarginfiAccount: <marginfiAccount from decoded.args>",
                       "  - Bank: <bank from decoded.args> (<symbol>)",
                       "  - Amount: <human amount + symbol>",
+                      ...nonceBullet,
+                      "  - Fee: <est. fee in SOL>",
+                    ]
+                  : r.action === "marinade_stake"
+                  ? [
+                      "  - Headline: \"Prepared Marinade stake — <amountSol> SOL → mSOL\"",
+                      "  - Wallet: <from address>",
+                      "  - Amount: <amountSol> SOL (deposit)",
+                      "  - mSOL ATA: <mSolAta from decoded.args>",
+                      ...nonceBullet,
+                      "  - Fee: <est. fee in SOL>",
+                    ]
+                  : r.action === "marinade_unstake_immediate"
+                  ? [
+                      "  - Headline: \"Prepared Marinade liquid unstake — <amountMSol> mSOL → SOL (pool, with fee)\"",
+                      "  - Wallet: <from address>",
+                      "  - Amount: <amountMSol> mSOL (burned)",
+                      "  - mSOL ATA: <mSolAta from decoded.args>",
                       ...nonceBullet,
                       "  - Fee: <est. fee in SOL>",
                     ]
@@ -1243,6 +1274,9 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     tx.action === "marginfi_withdraw" ||
     tx.action === "marginfi_borrow" ||
     tx.action === "marginfi_repay";
+  const isMarinade =
+    tx.action === "marinade_stake" ||
+    tx.action === "marinade_unstake_immediate";
   const marginfiActionLabel =
     tx.action === "marginfi_init"
       ? "account init"
@@ -1322,14 +1356,14 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
   // as ix[0] — this flag drives the "DURABLE-NONCE MODE" explainer text +
   // the Nonce bullet in the summary + the expected-shape text for CHECK 1.
   const hasAdvanceNonceIx =
-    isNativeSend || isSpl || isNonceClose || isJupiterSwap || isMarginfi;
+    isNativeSend || isSpl || isNonceClose || isJupiterSwap || isMarginfi || isMarinade;
   // The Ledger Solana app only clear-signs a small allowlist of programs
   // (System Program's transfer/advance/initialize/withdraw, and a few
   // others). Everything else falls to blind-sign, which shows only the
   // Message Hash on-device and requires the user to match it against the
   // hash the server displayed. SPL TransferChecked AND Jupiter swaps both
   // fall in that bucket.
-  const isBlindSign = isSpl || isJupiterSwap || isMarginfi;
+  const isBlindSign = isSpl || isJupiterSwap || isMarginfi || isMarinade;
   const ledgerHash = isBlindSign ? solanaLedgerMessageHash(tx.messageBase64) : null;
 
   const checksPayload = {
@@ -1418,17 +1452,36 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
                   "  - Fee: <est. fee in SOL>",
                   "  - Note: one-time deterministic PDA — no rent-exempt seed moved",
                 ]
-              : [
-                  // marginfi_supply / withdraw / borrow / repay — same shape,
-                  // only the "Action" bullet text differs; keep one template.
-                  `  - Headline: \"Prepared MarginFi ${marginfiActionLabel} — <amount> <symbol>\"`,
-                  "  - Wallet: <from address>",
-                  "  - MarginfiAccount: <marginfiAccount from decoded.args>",
-                  "  - Bank: <bank from decoded.args> (<symbol>)",
-                  "  - Amount: <human amount + symbol>",
-                  ...(nonceBullet ? [nonceBullet] : []),
-                  "  - Fee: <est. fee in SOL>",
-                ];
+              : tx.action === "marinade_stake"
+                ? [
+                    "  - Headline: \"Prepared Marinade stake — <amountSol> SOL → mSOL\"",
+                    "  - Wallet: <from address>",
+                    "  - Amount: <amountSol> SOL (deposit)",
+                    "  - mSOL ATA: <mSolAta from decoded.args (created on first stake if missing)>",
+                    ...(nonceBullet ? [nonceBullet] : []),
+                    "  - Fee: <est. fee in SOL>",
+                  ]
+                : tx.action === "marinade_unstake_immediate"
+                  ? [
+                      "  - Headline: \"Prepared Marinade liquid unstake — <amountMSol> mSOL → SOL (via pool, with fee)\"",
+                      "  - Wallet: <from address>",
+                      "  - Amount: <amountMSol> mSOL (burned)",
+                      "  - mSOL ATA: <mSolAta from decoded.args>",
+                      "  - Note: routes via Marinade's liquidity pool — small fee, immediate (NOT delayed-unstake / OrderUnstake — that flow needs an ephemeral signer and isn't shipped here)",
+                      ...(nonceBullet ? [nonceBullet] : []),
+                      "  - Fee: <est. fee in SOL>",
+                    ]
+                  : [
+                      // marginfi_supply / withdraw / borrow / repay — same shape,
+                      // only the "Action" bullet text differs; keep one template.
+                      `  - Headline: \"Prepared MarginFi ${marginfiActionLabel} — <amount> <symbol>\"`,
+                      "  - Wallet: <from address>",
+                      "  - MarginfiAccount: <marginfiAccount from decoded.args>",
+                      "  - Bank: <bank from decoded.args> (<symbol>)",
+                      "  - Amount: <human amount + symbol>",
+                      ...(nonceBullet ? [nonceBullet] : []),
+                      "  - Fee: <est. fee in SOL>",
+                    ];
 
   const inspectorUrl = solanaInspectorUrl(tx.messageBase64);
 
