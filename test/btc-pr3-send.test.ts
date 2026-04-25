@@ -301,6 +301,28 @@ describe("sendBitcoinTransaction", () => {
     expect(options.accountPath).toBe("84'/0'/0'");
     expect(options.addressFormat).toBe("bech32");
     expect(options.finalizePsbt).toBe(true);
+    // Issue #206 regression: the SDK keys knownAddressDerivations by the
+    // witness-program payload (P2WPKH: 20-byte hash160 from the script's
+    // bytes 2..22), NOT sha256(scriptPubKey). The previous sha256 keying
+    // never matched at lookup time → derivations stayed empty → Ledger
+    // BTC app v2.x rejected with 0x6a80 before any UI.
+    const known = options.knownAddressDerivations as Map<
+      string,
+      { pubkey: Buffer; path: number[] }
+    >;
+    expect(known.size).toBe(1);
+    const [[lookupKey, entry]] = [...known.entries()];
+    expect(lookupKey).toMatch(/^[0-9a-f]{40}$/);
+    expect(lookupKey).not.toMatch(/^[0-9a-f]{64}$/);
+    expect(entry.pubkey.toString("hex")).toBe(SEGWIT_PUBKEY);
+    // 84'/0'/0'/0/0 — three hardened segments + receive chain + index 0.
+    expect(entry.path).toEqual([
+      (84 | 0x80000000) >>> 0,
+      (0 | 0x80000000) >>> 0,
+      (0 | 0x80000000) >>> 0,
+      0,
+      0,
+    ]);
   });
 
   it("refuses to sign when the device derives a different address", async () => {
