@@ -81,6 +81,7 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 - `get_transaction_history` — merged recent-tx reader across external / ERC-20 / internal (and Solana `program_interaction`) with 4byte-decoded methods and historical USD values (Etherscan for EVM, TronGrid for TRON, Solana RPC for Solana)
 - `get_tron_staking`, `list_tron_witnesses` — TRON staking state + SR list
 - `get_solana_setup_status` — cheap probe of a wallet's Solana setup PDAs (nonce + MarginFi account existence)
+- `get_vaultpilot_config_status` — diagnostic snapshot of the local server config (RPC source per chain, API-key presence per service, paired-account counts, WC session-topic suffix, preflight-skill state). Strict no-secrets contract — booleans / counts / source enums / topic suffix only, never values. Use to triage "why isn't my balance read working" before suggesting `vaultpilot-mcp-setup`.
 - `resolve_ens_name`, `reverse_resolve_ens` — ENS forward/reverse
 - `get_swap_quote` (LiFi, EVM), `get_solana_swap_quote` (Jupiter v6)
 - `check_contract_security`, `check_permission_risks`, `get_protocol_risk_score` — risk tooling

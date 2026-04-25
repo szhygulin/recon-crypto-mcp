@@ -310,6 +310,16 @@ export const getSolanaSetupStatusInput = z.object({
   ),
 });
 
+/**
+ * No args — `get_vaultpilot_config_status` returns a structured snapshot of
+ * the local server config, intended for diagnostic / onboarding flows.
+ * The output deliberately never echoes any secret values (API keys, RPC
+ * URLs that may carry keys, full WC session topics) — every field is
+ * either a boolean, a count, a category enum, or a session-topic suffix
+ * (last 8 chars).
+ */
+export const getVaultPilotConfigStatusInput = z.object({});
+
 export const getMarginfiPositionsInput = z.object({
   wallet: solanaAddressSchema.describe(
     "Solana wallet to enumerate MarginFi positions for. Probes the first 4 MarginfiAccount " +
@@ -613,3 +623,4 @@ export type PrepareMarinadeUnstakeImmediateArgs = z.infer<
 export type GetMarginfiPositionsArgs = z.infer<typeof getMarginfiPositionsInput>;
 export type GetSolanaStakingPositionsArgs = z.infer<typeof getSolanaStakingPositionsInput>;
 export type GetSolanaSetupStatusArgs = z.infer<typeof getSolanaSetupStatusInput>;
+export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
