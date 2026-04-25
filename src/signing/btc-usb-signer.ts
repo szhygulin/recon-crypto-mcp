@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import {
   openLedger,
@@ -554,6 +553,38 @@ function pathStringToNumbers(path: string): number[] {
 }
 
 /**
+ * Extract the witness-program payload from a P2WPKH or P2TR scriptPubKey
+ * as the lookup key for `signPsbtBuffer.knownAddressDerivations`. The
+ * Ledger SDK's `populateMissingBip32Derivations` keys its lookup map by
+ * this same payload (bytes 2..22 — hash160(pubkey) — for P2WPKH; bytes
+ * 2..34 — tweaked x-only key — for P2TR), not by sha256(scriptPubKey).
+ * Mirrors `@ledgerhq/psbtv2::extractHashFromScriptPubKey` for just the
+ * two script types Phase 1 sends support; legacy / P2SH-wrapped sends
+ * are out of scope (`buildBitcoinNativeSend` rejects them upfront).
+ */
+function extractWitnessProgramHex(scriptPubKey: Buffer): string {
+  if (
+    scriptPubKey.length === 22 &&
+    scriptPubKey[0] === 0x00 &&
+    scriptPubKey[1] === 0x14
+  ) {
+    return scriptPubKey.subarray(2, 22).toString("hex");
+  }
+  if (
+    scriptPubKey.length === 34 &&
+    scriptPubKey[0] === 0x51 &&
+    scriptPubKey[1] === 0x20
+  ) {
+    return scriptPubKey.subarray(2, 34).toString("hex");
+  }
+  throw new Error(
+    `Unexpected scriptPubKey shape (length=${scriptPubKey.length}, ` +
+      `bytes=0x${scriptPubKey.subarray(0, Math.min(4, scriptPubKey.length)).toString("hex")}). ` +
+      `Phase 1 BTC sends only support P2WPKH (segwit, bc1q...) and P2TR (taproot, bc1p...).`,
+  );
+}
+
+/**
  * Sign a base64-encoded PSBT v0 on the Ledger BTC app. The device walks
  * every output (address + amount + the "change" label for known
  * internal-chain outputs), shows the total fee, and asks the user to
@@ -605,16 +636,21 @@ export async function signBtcPsbtOnLedger(args: {
 
       // Build the knownAddressDerivations map. Phase 1 sends keep change
       // on the source address, so a single entry covers both inputs and
-      // any same-address output. The script the wallet owns is the
-      // source address's scriptPubKey; the SDK keys the map by sha256
-      // of the scriptPubKey, hex-encoded.
+      // any same-address output. The SDK keys the map by the witness-
+      // program payload extracted from each scriptPubKey — bytes 2..22
+      // (hash160 of pubkey) for P2WPKH, bytes 2..34 (tweaked x-only key)
+      // for P2TR. Mirrors @ledgerhq/psbtv2 `extractHashFromScriptPubKey`,
+      // which is what `populateMissingBip32Derivations` looks up against.
+      // Issue #206: an earlier sha256(scriptPubKey) key never matched, so
+      // the library left the PSBT without bip32Derivation and the Ledger
+      // BTC app v2.x rejected with 0x6a80 before any UI.
       const scriptPubKey = bitcoinjs.address.toOutputScript(
         args.expectedFrom,
         bitcoinjs.networks.bitcoin,
       );
-      const scriptHash = createHash("sha256").update(scriptPubKey).digest("hex");
+      const lookupKey = extractWitnessProgramHex(scriptPubKey);
       const known = new Map<string, { pubkey: Buffer; path: number[] }>();
-      known.set(scriptHash, {
+      known.set(lookupKey, {
         pubkey: Buffer.from(derived.publicKey, "hex"),
         path: pathStringToNumbers(args.path),
       });
