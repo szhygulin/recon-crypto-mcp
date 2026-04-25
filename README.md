@@ -171,7 +171,11 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 
 ## Install
 
-From npm (recommended):
+From a standalone binary (no Node.js required):
+
+Download the matching pair for your OS from the [latest release page](https://github.com/szhygulin/vaultpilot-mcp/releases/latest) — each release ships an MCP server binary plus a setup wizard binary per platform (Linux x64, macOS arm64, macOS x64, Windows x64). Mark them executable (`chmod +x` on Unix), then run `./vaultpilot-mcp-setup-<platform>` for the first-run config and point your client at `./vaultpilot-mcp-<platform>` afterwards. The binaries bundle their own Node.js runtime — no `npm install`, no native-compile toolchain.
+
+From npm:
 
 ```bash
 npm install -g vaultpilot-mcp

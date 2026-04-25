@@ -21,7 +21,20 @@
     "setup": "node dist/setup.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "bundle": "pkg .",
     "postinstall": "patch-package"
+  },
+  "pkg": {
+    "scripts": [
+      "dist/**/*.js"
+    ],
+    "assets": [
+      "node_modules/node-hid/build/Release/*.node",
+      "node_modules/usb/prebuilds/**/*.node",
+      "node_modules/bufferutil/prebuilds/**/*.node",
+      "node_modules/utf-8-validate/prebuilds/**/*.node"
+    ],
+    "outputPath": "release"
   },
   "keywords": [
     "mcp",
@@ -139,6 +152,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
+    "@yao-pkg/pkg": "^6.19.0",
     "patch-package": "^8.0.1",
     "typescript": "^5.6.0",
     "vitest": "^4.1.4"
