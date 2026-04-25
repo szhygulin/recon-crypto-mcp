@@ -84,6 +84,10 @@ import {
   prepareKaminoWithdraw,
   prepareKaminoRepay,
   getKaminoPositions,
+  getBitcoinBalance,
+  getBitcoinBalances,
+  getBitcoinFeeEstimates,
+  getBitcoinTxHistory,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -134,6 +138,10 @@ import {
   prepareKaminoWithdrawInput,
   prepareKaminoRepayInput,
   getKaminoPositionsInput,
+  getBitcoinBalanceInput,
+  getBitcoinBalancesInput,
+  getBitcoinFeeEstimatesInput,
+  getBitcoinTxHistoryInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -1722,6 +1730,64 @@ async function main() {
       inputSchema: getKaminoPositionsInput.shape,
     },
     handler(getKaminoPositions)
+  );
+
+  // ---- Module: Bitcoin (Phase 1 — read-only) ----
+  server.registerTool(
+    "get_btc_balance",
+    {
+      description:
+        "READ-ONLY — fetch the confirmed + mempool balance for a single Bitcoin mainnet " +
+        "address. Returns sats (raw) and BTC (formatted), separated into confirmed and " +
+        "mempool components, plus the address type (legacy / P2SH / native segwit / taproot) " +
+        "and a tx count. Backed by mempool.space's public API by default; configurable via " +
+        "`BITCOIN_INDEXER_URL` env var or `userConfig.bitcoinIndexerUrl` for self-hosted " +
+        "Esplora / Electrs. Phase 1 is mainnet-only (testnet/signet rejected).",
+      inputSchema: getBitcoinBalanceInput.shape,
+    },
+    handler(getBitcoinBalance)
+  );
+
+  server.registerTool(
+    "get_btc_balances",
+    {
+      description:
+        "READ-ONLY — multi-address Bitcoin balance fetch (1-20 addresses). Per-address " +
+        "indexer errors are surfaced as `errored` entries instead of failing the whole " +
+        "call (mirrors how EVM portfolio enumeration handles flaky RPCs). Each successful " +
+        "entry has the same shape as `get_btc_balance`'s output.",
+      inputSchema: getBitcoinBalancesInput.shape,
+    },
+    handler(getBitcoinBalances)
+  );
+
+  server.registerTool(
+    "get_btc_fee_estimates",
+    {
+      description:
+        "READ-ONLY — current Bitcoin fee-rate recommendations in sat/vB. Returns five " +
+        "labels: `fastestFee` (~next block), `halfHourFee` (~3 blocks), `hourFee` (~6 " +
+        "blocks), `economyFee` (~144 blocks / 1 day), and `minimumFee` (mempool floor). " +
+        "Sourced from mempool.space's `/v1/fees/recommended` endpoint when available; " +
+        "falls back to per-target estimates from the standard Esplora `/fee-estimates` " +
+        "for self-hosted indexers.",
+      inputSchema: getBitcoinFeeEstimatesInput.shape,
+    },
+    handler(getBitcoinFeeEstimates)
+  );
+
+  server.registerTool(
+    "get_btc_tx_history",
+    {
+      description:
+        "READ-ONLY — recent Bitcoin transaction history for a single address (newest-" +
+        "first). Each entry surfaces txid, received/sent sats from this address's " +
+        "perspective, the network fee, block height + time (when confirmed), and an " +
+        "RBF-eligible flag (sequence < 0xFFFFFFFE on at least one input). Default 25 " +
+        "txs, capped at 50 (one Esplora page); pagination beyond is a follow-up.",
+      inputSchema: getBitcoinTxHistoryInput.shape,
+    },
+    handler(getBitcoinTxHistory)
   );
 
   server.registerTool(

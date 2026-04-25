@@ -975,5 +975,59 @@ export type PrepareKaminoBorrowArgs = z.infer<typeof prepareKaminoBorrowInput>;
 export type PrepareKaminoWithdrawArgs = z.infer<typeof prepareKaminoWithdrawInput>;
 export type PrepareKaminoRepayArgs = z.infer<typeof prepareKaminoRepayInput>;
 export type GetKaminoPositionsArgs = z.infer<typeof getKaminoPositionsInput>;
+
+/**
+ * Bitcoin (Phase 1) — read-only schemas.
+ *
+ * Address validation is deliberately a string-with-format-check rather
+ * than a tight regex schema: Bitcoin has 4 distinct mainnet address
+ * shapes (P2PKH `1...`, P2SH `3...`, native segwit `bc1q...`, taproot
+ * `bc1p...`) of varying lengths, so the runtime validator in
+ * `src/modules/btc/address.ts` is the source of truth.
+ */
+const bitcoinAddressSchema = z
+  .string()
+  .min(26)
+  .max(64)
+  .describe(
+    "Bitcoin mainnet address. Accepts legacy (1...), P2SH (3...), native " +
+      "segwit (bc1q...), and taproot (bc1p...). Testnet/signet not supported."
+  );
+
+export const getBitcoinBalanceInput = z.object({
+  address: bitcoinAddressSchema,
+});
+
+export const getBitcoinBalancesInput = z.object({
+  addresses: z
+    .array(bitcoinAddressSchema)
+    .min(1)
+    .max(20)
+    .describe(
+      "1-20 Bitcoin addresses to fetch in parallel. Per-address errors are " +
+        "surfaced as `errored` entries rather than failing the whole call."
+    ),
+});
+
+export const getBitcoinFeeEstimatesInput = z.object({});
+
+export const getBitcoinTxHistoryInput = z.object({
+  address: bitcoinAddressSchema,
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .describe(
+      "Max number of txs to return (newest-first). Default 25; capped at 50 " +
+        "(one Esplora page). Pagination beyond this is a follow-up."
+    ),
+});
+
+export type GetBitcoinBalanceArgs = z.infer<typeof getBitcoinBalanceInput>;
+export type GetBitcoinBalancesArgs = z.infer<typeof getBitcoinBalancesInput>;
+export type GetBitcoinFeeEstimatesArgs = z.infer<typeof getBitcoinFeeEstimatesInput>;
+export type GetBitcoinTxHistoryArgs = z.infer<typeof getBitcoinTxHistoryInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;

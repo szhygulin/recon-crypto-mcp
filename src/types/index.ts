@@ -1100,6 +1100,14 @@ export interface UserConfig {
    * takes priority over this field.
    */
   solanaRpcUrl?: string;
+  /**
+   * Bitcoin indexer base URL (Esplora-compatible REST API). Defaults to
+   * mempool.space's free public API; override here when running against a
+   * self-hosted Esplora / Electrs / Mempool.space instance, or any
+   * privacy-preserving relay. Env var `BITCOIN_INDEXER_URL` takes priority
+   * over this field.
+   */
+  bitcoinIndexerUrl?: string;
   walletConnect?: {
     projectId?: string;
     /** Topic of the active WC session (so we can resume after restart). */

@@ -111,6 +111,10 @@ import type {
   PrepareKaminoWithdrawArgs,
   PrepareKaminoRepayArgs,
   GetKaminoPositionsArgs,
+  GetBitcoinBalanceArgs,
+  GetBitcoinBalancesArgs,
+  GetBitcoinFeeEstimatesArgs,
+  GetBitcoinTxHistoryArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -547,6 +551,36 @@ export async function getKaminoPositions(args: GetKaminoPositionsArgs) {
   );
   const conn = getSolanaConnection();
   return { positions: await reader(conn, args.wallet) };
+}
+
+export async function getBitcoinBalance(args: GetBitcoinBalanceArgs) {
+  const { getBitcoinBalance: reader } = await import(
+    "../btc/balances.js"
+  );
+  return reader(args.address);
+}
+
+export async function getBitcoinBalances(args: GetBitcoinBalancesArgs) {
+  const { getBitcoinBalances: reader } = await import(
+    "../btc/balances.js"
+  );
+  return { balances: await reader(args.addresses) };
+}
+
+export async function getBitcoinFeeEstimates(_args: GetBitcoinFeeEstimatesArgs) {
+  void _args;
+  const { getBitcoinIndexer } = await import("../btc/indexer.js");
+  return getBitcoinIndexer().getFeeEstimates();
+}
+
+export async function getBitcoinTxHistory(args: GetBitcoinTxHistoryArgs) {
+  const { getBitcoinIndexer } = await import("../btc/indexer.js");
+  const { assertBitcoinAddress } = await import("../btc/address.js");
+  assertBitcoinAddress(args.address);
+  const txs = await getBitcoinIndexer().getAddressTxs(args.address, {
+    ...(args.limit !== undefined ? { limit: args.limit } : {}),
+  });
+  return { address: args.address, txs };
 }
 
 export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
