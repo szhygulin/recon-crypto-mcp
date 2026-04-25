@@ -17,3 +17,35 @@ ignore:
           dependency.
         created: 2026-04-23T00:00:00.000Z
         expires: 2027-04-23T00:00:00.000Z
+  SNYK-JS-ELLIPTIC-14908844:
+    - '*':
+        reason: >-
+          CVE-2025-14505 / GHSA-848j-6mx2-7j84. The CVE is in elliptic's
+          ECDSA sign() implementation: when an interim k value has
+          leading zeros, the byte-length is mis-computed, faulty
+          signatures leak, and an attacker who collects both faulty +
+          correct signatures over the same input can recover the
+          private key. No upstream fix exists at any elliptic version
+          (advisory says "<= 6.6.1" with no first_patched_version);
+          npm's audit-fix suggestion downgrades @ledgerhq/hw-app-btc to
+          v6.7.0, which predates the modern PSBT API the BTC plan
+          (claude-work/plan-bitcoin-ledger-phase1.md) is built around.
+
+          The vulnerable code path is NOT REACHABLE in our deployment.
+          User keys live on the Ledger Secure Element; every BTC
+          ECDSA signature is produced by the device via APDU. The
+          host's elliptic dep is pulled in transitively
+          (@ledgerhq/hw-app-btc → bitcoinjs-lib@5 → tiny-secp256k1@1 →
+          elliptic) for ADDRESS DERIVATION (point operations only, no
+          signing), pubkey decompression, and tx-hash computation. None
+          of these call elliptic.ec.sign() against a private key, so
+          the faulty-k path the CVE exploits cannot fire in our flow.
+
+          Re-evaluate when (a) elliptic ships a patched release, or (b)
+          @ledgerhq/hw-app-btc upgrades to bitcoinjs-lib@6 (which uses
+          @noble/curves instead of elliptic) and we can take that
+          version, or (c) we override tiny-secp256k1 to v2 (the
+          @noble-backed major bump) without breaking the SDK's v5
+          bitcoinjs-lib expectations.
+        created: 2026-04-25T00:00:00.000Z
+        expires: 2027-04-25T00:00:00.000Z
