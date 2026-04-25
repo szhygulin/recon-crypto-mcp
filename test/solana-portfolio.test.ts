@@ -55,6 +55,15 @@ vi.mock("../src/modules/staking/index.js", () => ({
 
 vi.mock("../src/modules/compound/index.js", () => ({
   getCompoundPositions: async () => ({ wallet: "0x0", positions: [] }),
+  prefetchCompoundProbes: async () => undefined,
+}));
+
+vi.mock("../src/modules/positions/aave.js", () => ({
+  prefetchAaveAccountData: async () => undefined,
+}));
+
+vi.mock("../src/modules/staking/lido.js", () => ({
+  prefetchLidoMainnet: async () => undefined,
 }));
 
 vi.mock("../src/modules/morpho/index.js", () => ({
@@ -173,15 +182,29 @@ describe("get_portfolio_summary with solanaAddress", () => {
     expect(res.totalUsd).toBeGreaterThanOrEqual(0); // EVM summary still works.
   });
 
-  it("throws when solanaAddress is combined with multi-wallet", async () => {
-    const { getPortfolioSummary } = await import("../src/modules/portfolio/index.js");
-    await expect(
-      getPortfolioSummary({
-        wallets: [EVM_WALLET, "0x2222222222222222222222222222222222222222"],
-        chains: ["ethereum"],
-        solanaAddress: SOL_WALLET,
-      }),
-    ).rejects.toThrow(/solanaAddress.*single EVM `wallet`/);
+  it("solanaAddress + multi-wallet: Solana surfaces as a sibling slice (issue #201)", async () => {
+    // Solana balance fetch path: empty wallet — the test only checks
+    // that the multi-wallet response carries a `nonEvm.solana` block
+    // and that NO per-wallet entry has solanaUsd folded in.
+    connectionStub.getBalance.mockResolvedValue(0);
+    connectionStub.getTokenAccountsByOwner.mockResolvedValue({ value: [] });
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ coins: {} }) })));
+    const { getPortfolioSummary } = await import(
+      "../src/modules/portfolio/index.js"
+    );
+    const res = await getPortfolioSummary({
+      wallets: [EVM_WALLET, "0x2222222222222222222222222222222222222222"],
+      chains: ["ethereum"],
+      solanaAddress: SOL_WALLET,
+    });
+    if (!("perWallet" in res)) {
+      throw new Error("expected multi-wallet summary");
+    }
+    expect(res.perWallet[0].solanaUsd).toBeUndefined();
+    expect(res.perWallet[1].solanaUsd).toBeUndefined();
+    expect(res.nonEvm?.solana).toBeDefined();
+    expect(res.nonEvm?.solana?.length).toBe(1);
+    vi.unstubAllGlobals();
   });
 
   it("folds staking positions into breakdown.solana.staking + solanaStakingUsd when holdings exist + SOL price resolved", async () => {
