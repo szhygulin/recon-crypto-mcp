@@ -226,6 +226,18 @@ describe("pairLedgerBitcoin", () => {
 
 describe("get_ledger_status — btc section", () => {
   it("surfaces paired BTC entries when at least one is cached", async () => {
+    // Reset the module cache + stub walletconnect so getSessionStatus's
+    // getSignClient() call doesn't try to resolve a WC project ID under
+    // CI (where WALLETCONNECT_PROJECT_ID is unset). Mirrors the TRON
+    // get-ledger-status test's pattern.
+    vi.resetModules();
+    vi.doMock("../src/signing/walletconnect.js", () => ({
+      getSignClient: async () => ({}),
+      getCurrentSession: () => null,
+      getConnectedAccountsDetailed: async () => [],
+      isPeerUnreachable: () => false,
+    }));
+
     getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
     getWalletPublicKeyMock.mockImplementation(
       async (_path: string, opts: { format: string }) => ({
@@ -259,6 +271,13 @@ describe("get_ledger_status — btc section", () => {
   });
 
   it("omits the btc section when no Bitcoin pairings are cached", async () => {
+    vi.resetModules();
+    vi.doMock("../src/signing/walletconnect.js", () => ({
+      getSignClient: async () => ({}),
+      getCurrentSession: () => null,
+      getConnectedAccountsDetailed: async () => [],
+      isPeerUnreachable: () => false,
+    }));
     const { getSessionStatus } = await import("../src/signing/session.js");
     const status = await getSessionStatus();
     expect(status.bitcoin).toBeUndefined();
