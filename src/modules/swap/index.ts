@@ -5,7 +5,62 @@ import type { GetSwapQuoteArgs, PrepareSwapArgs } from "./schemas.js";
 import { getClient } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { readUserConfig, resolveOneInchApiKey } from "../../config/user-config.js";
+import { SOLANA_ADDRESS } from "../../shared/address-patterns.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
+
+/**
+ * Validate destination addressing for cross-chain-type bridges. The schema
+ * widens `toChain` to include `"solana"` and `toAddress` to a free-form
+ * string, but zod can't cross-reference fields within a union — so this
+ * helper enforces:
+ *
+ *   - When `toChain === "solana"`, `toAddress` is REQUIRED and must be
+ *     base58 (43-44 chars). EVM destinations don't need this — LiFi
+ *     defaults to the source wallet.
+ *   - When `toAddress` is supplied for an EVM destination, it must match
+ *     EVM hex format (defense-in-depth: catches a Solana-format address
+ *     accidentally landing on an EVM-destination call).
+ *   - Reject exact-out (`amountSide: "to"`) for cross-chain-type bridges.
+ *     LiFi's quote API has no reliable exact-out for cross-chain routes
+ *     and the bridge-protocol-side delivery introduces additional fee
+ *     drift the user would not see in the quote.
+ */
+function assertCrossChainAddressing(
+  args: GetSwapQuoteArgs | PrepareSwapArgs,
+): void {
+  const toIsSolana = args.toChain === "solana";
+  if (toIsSolana) {
+    if (!args.toAddress) {
+      throw new Error(
+        `toAddress is required when toChain === "solana" — the source EVM wallet ` +
+          `is not a valid Solana recipient. Pass an explicit base58 destination address.`,
+      );
+    }
+    if (!SOLANA_ADDRESS.test(args.toAddress)) {
+      throw new Error(
+        `toAddress "${args.toAddress}" is not a valid Solana base58 address ` +
+          `(expected 43-44 chars). Refusing to prepare a bridge to an unparseable destination.`,
+      );
+    }
+    if (args.amountSide === "to") {
+      throw new Error(
+        `Exact-out (amountSide: "to") is not supported for cross-chain bridges to Solana. ` +
+          `LiFi's quote API has no reliable exact-out for cross-chain routes; the bridge ` +
+          `protocol's delivery side adds fee drift the quote can't account for. Use ` +
+          `amountSide: "from" (default) and inspect the quote's toAmountMin.`,
+      );
+    }
+  } else if (args.toAddress) {
+    // EVM destination with explicit toAddress — must be EVM hex.
+    if (!/^0x[a-fA-F0-9]{40}$/.test(args.toAddress)) {
+      throw new Error(
+        `toAddress "${args.toAddress}" is not a valid EVM address. ` +
+          `For toChain="${args.toChain}" pass a 0x-prefixed 40-hex-char address, ` +
+          `or omit toAddress to default to the source wallet.`,
+      );
+    }
+  }
+}
 
 /**
  * Sum LiFi fee/gas cost entries into a USD number.
@@ -121,13 +176,23 @@ export function assertSlippageOk(slippageBps: number | undefined, ack: boolean |
 
 export async function getSwapQuote(args: GetSwapQuoteArgs) {
   assertSlippageOk(args.slippageBps, args.acknowledgeHighSlippage);
+  assertCrossChainAddressing(args);
   const chain = args.fromChain as SupportedChain;
-  const toChain = args.toChain as SupportedChain;
+  const toIsSolana = args.toChain === "solana";
   const amountSide = args.amountSide ?? "from";
   const isExactOut = amountSide === "to";
 
+  // Resolve decimals for the side `amount` refers to. For exact-in this is
+  // always the source-chain (EVM) read. For exact-out we read the
+  // destination side — but exact-out is rejected for cross-chain-type
+  // bridges in `assertCrossChainAddressing`, so this branch is intra-EVM
+  // only and `toChain` is safely castable to `SupportedChain`.
   const sideDecimals = isExactOut
-    ? await resolveDecimals(toChain, args.toToken as `0x${string}` | "native", args.toTokenDecimals)
+    ? await resolveDecimals(
+        args.toChain as SupportedChain,
+        args.toToken as `0x${string}` | "native",
+        args.toTokenDecimals,
+      )
     : await resolveDecimals(chain, args.fromToken as `0x${string}` | "native", args.fromTokenDecimals);
   const amountWei = parseUnits(args.amount, sideDecimals).toString();
 
@@ -141,10 +206,13 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
 
   const lifiReq = {
     fromChain: chain,
-    toChain,
+    toChain: toIsSolana ? "solana" : (args.toChain as SupportedChain),
     fromToken: args.fromToken as `0x${string}` | "native",
+    // Destination token format depends on chain type — LiFi accepts both.
+    // The cast is widened so Solana base58 mints aren't rejected.
     toToken: args.toToken as `0x${string}` | "native",
     fromAddress: args.wallet as `0x${string}`,
+    ...(args.toAddress !== undefined ? { toAddress: args.toAddress } : {}),
     slippage: args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined,
     ...(isExactOut ? { toAmount: amountWei } : { fromAmount: amountWei }),
   } as Parameters<typeof fetchQuote>[0];
@@ -277,22 +345,31 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
 
 export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
   assertSlippageOk(args.slippageBps, args.acknowledgeHighSlippage);
+  assertCrossChainAddressing(args);
   const chain = args.fromChain as SupportedChain;
-  const toChain = args.toChain as SupportedChain;
+  const toIsSolana = args.toChain === "solana";
   const amountSide = args.amountSide ?? "from";
   const isExactOut = amountSide === "to";
 
+  // Same exact-out branch story as getSwapQuote — exact-out is rejected
+  // for Solana destinations, so the cast to SupportedChain in that branch
+  // is safe.
   const sideDecimals = isExactOut
-    ? await resolveDecimals(toChain, args.toToken as `0x${string}` | "native", args.toTokenDecimals)
+    ? await resolveDecimals(
+        args.toChain as SupportedChain,
+        args.toToken as `0x${string}` | "native",
+        args.toTokenDecimals,
+      )
     : await resolveDecimals(chain, args.fromToken as `0x${string}` | "native", args.fromTokenDecimals);
   const amountWei = parseUnits(args.amount, sideDecimals).toString();
 
   const lifiReq = {
     fromChain: chain,
-    toChain,
+    toChain: toIsSolana ? "solana" : (args.toChain as SupportedChain),
     fromToken: args.fromToken as `0x${string}` | "native",
     toToken: args.toToken as `0x${string}` | "native",
     fromAddress: args.wallet as `0x${string}`,
+    ...(args.toAddress !== undefined ? { toAddress: args.toAddress } : {}),
     slippage: args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined,
     ...(isExactOut ? { toAmount: amountWei } : { fromAmount: amountWei }),
   } as Parameters<typeof fetchQuote>[0];
@@ -307,12 +384,20 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
   // would mean either LiFi has stale metadata or the route targets a token different
   // from what we asked for — in either case, the formatted expectedOut/minOut shown
   // to the user would be wrong, so refuse. Native assets are skipped (no contract).
+  //
+  // Solana destination (cross-chain bridge): we cannot read SPL decimals via EVM
+  // RPC. The user's signature only authorizes the EVM-side action; the bridge
+  // protocol delivers SPL on Solana with whatever decimals LiFi reports. The
+  // destination cross-check is dropped here — the source-side check (which is
+  // what the user's signed bytes pull) still fires.
   const fromToken = args.fromToken as `0x${string}` | "native";
-  const toToken = args.toToken as `0x${string}` | "native";
-  const [fromDecimalsOnchain, toDecimalsOnchain] = await Promise.all([
-    readOnchainDecimals(chain, fromToken),
-    readOnchainDecimals(args.toChain as SupportedChain, toToken),
-  ]);
+  const fromDecimalsOnchain = await readOnchainDecimals(chain, fromToken);
+  const toDecimalsOnchain = toIsSolana
+    ? undefined
+    : await readOnchainDecimals(
+        args.toChain as SupportedChain,
+        args.toToken as `0x${string}` | "native",
+      );
   if (
     fromDecimalsOnchain !== undefined &&
     fromDecimalsOnchain !== quote.action.fromToken.decimals

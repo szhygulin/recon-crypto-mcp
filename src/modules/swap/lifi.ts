@@ -29,11 +29,29 @@ function toLifiChain(chain: SupportedChain): number {
 
 interface LifiQuoteRequestBase {
   fromChain: SupportedChain;
-  toChain: SupportedChain;
+  /**
+   * Destination chain. Either a known EVM `SupportedChain` (existing
+   * intra-EVM and EVM-EVM-cross flows) or `"solana"` (cross-chain bridge
+   * landing on Solana). LiFi's API itself accepts any numeric chain ID;
+   * we constrain to chains we've validated end-to-end in this server.
+   */
+  toChain: SupportedChain | "solana";
   /** Use "native" or "0x0000000000000000000000000000000000000000" for native token. */
   fromToken: `0x${string}` | "native";
-  toToken: `0x${string}` | "native";
+  /**
+   * Destination token. EVM hex when `toChain` is EVM; SPL mint (base58)
+   * when `toChain === "solana"`. `"native"` resolves to the chain's
+   * native sentinel (`0x0…0` for EVM, wSOL mint for Solana — handled
+   * inside `fetchQuote`).
+   */
+  toToken: string | "native";
   fromAddress: `0x${string}`;
+  /**
+   * Destination wallet. Defaults to `fromAddress` for intra-EVM swaps
+   * (LiFi behavior). REQUIRED when `toChain === "solana"` because the
+   * source EVM hex wallet isn't a valid Solana recipient.
+   */
+  toAddress?: string;
   /** Optional slippage override — LiFi default is 0.5% (0.005). */
   slippage?: number;
 }
@@ -55,9 +73,20 @@ const NATIVE = "0x0000000000000000000000000000000000000000";
 export async function fetchQuote(req: LifiQuoteRequest) {
   initLifi();
   const fromChain = toLifiChain(req.fromChain);
-  const toChain = toLifiChain(req.toChain);
+  const toIsSolana = req.toChain === "solana";
+  const toChain = toIsSolana
+    ? LIFI_SOLANA_CHAIN_ID
+    : toLifiChain(req.toChain as SupportedChain);
   const fromToken = req.fromToken === "native" ? NATIVE : req.fromToken;
-  const toToken = req.toToken === "native" ? NATIVE : req.toToken;
+  // Destination native sentinel depends on the chain family — wSOL for
+  // Solana, 0x0…0 for EVM. LiFi's routing graph treats both as the
+  // canonical native handle.
+  const toToken =
+    req.toToken === "native"
+      ? toIsSolana
+        ? "So11111111111111111111111111111111111111112"
+        : NATIVE
+      : req.toToken;
 
   if (req.toAmount !== undefined) {
     return getQuote({
@@ -67,6 +96,7 @@ export async function fetchQuote(req: LifiQuoteRequest) {
       toToken,
       toAmount: req.toAmount,
       fromAddress: req.fromAddress,
+      ...(req.toAddress !== undefined ? { toAddress: req.toAddress } : {}),
       slippage: req.slippage,
     });
   }
@@ -77,6 +107,7 @@ export async function fetchQuote(req: LifiQuoteRequest) {
     toToken,
     fromAmount: req.fromAmount,
     fromAddress: req.fromAddress,
+    ...(req.toAddress !== undefined ? { toAddress: req.toAddress } : {}),
     slippage: req.slippage,
   });
 }

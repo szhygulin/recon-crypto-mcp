@@ -1,20 +1,52 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
-import { EVM_ADDRESS } from "../../shared/address-patterns.js";
+import { EVM_ADDRESS, SOLANA_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
+/**
+ * Destination-chain enum: EVM chains plus Solana. Used for cross-chain
+ * bridging where the user signs an EVM tx and the bridge protocol delivers
+ * SPL tokens on Solana. Source chain stays EVM-only (this tool does not
+ * sign Solana txs — that's `prepare_solana_lifi_swap`).
+ */
+const toChainEnum = z.enum([
+  ...(SUPPORTED_CHAINS as unknown as [string, ...string[]]),
+  "solana",
+]);
 const walletSchema = z.string().regex(EVM_ADDRESS);
 const tokenSchema = z.union([
   z.literal("native"),
   z.string().regex(EVM_ADDRESS),
 ]);
+/**
+ * Destination token: EVM hex when `toChain` is EVM, base58 SPL mint when
+ * `toChain === "solana"`. Format-validated per-chain in the resolver
+ * (`assertCrossChainAddressing`) since zod can't cross-reference fields
+ * within `union` cleanly.
+ */
+const toTokenSchema = z.union([
+  z.literal("native"),
+  z.string().regex(EVM_ADDRESS),
+  z.string().regex(SOLANA_ADDRESS),
+]);
 
 const baseSwapSchema = z.object({
   wallet: walletSchema,
   fromChain: chainEnum,
-  toChain: chainEnum,
+  toChain: toChainEnum,
   fromToken: tokenSchema,
-  toToken: tokenSchema,
+  toToken: toTokenSchema,
+  toAddress: z
+    .string()
+    .max(80)
+    .optional()
+    .describe(
+      "Destination wallet. OMIT for same-chain-type swaps (defaults to the source " +
+        "wallet — LiFi behavior). REQUIRED when `toChain === \"solana\"` because " +
+        "the source EVM hex wallet isn't a valid Solana recipient. Format must " +
+        "match the destination chain (Solana base58 for `toChain: \"solana\"`, " +
+        "EVM hex for EVM destinations)."
+    ),
   amount: z
     .string()
     .max(50)
