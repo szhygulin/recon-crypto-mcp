@@ -369,6 +369,65 @@ export interface PinnedGasFields {
  */
 const WC_SEND_REQUEST_TIMEOUT_MS = 120_000;
 
+/**
+ * Compose the dead-session error message. Issue #219: the prior wording
+ * told users to "reconnect in Ledger Live → Settings → Connected Apps",
+ * but on a relay-side end Ledger Live's UI shows the session as still
+ * connected and there is no reconnect affordance — the user has to
+ * `pair_ledger_live` to get a fresh topic. Lead with that and explicitly
+ * call out the stale-UI case so the agent can relay actionable guidance.
+ *
+ * Exported for test-side inspection so we don't have to source-scrape.
+ */
+export function deadSessionMessage(): string {
+  return (
+    "WalletConnect session is gone from the relay's perspective (the local " +
+    "client got an explicit peer-end signal, not a timeout). The local " +
+    "session record has been cleared. " +
+    "Run `pair_ledger_live` to start a fresh session — you'll get a new QR / " +
+    "URI to approve in Ledger Live. The prepared handle is still valid for " +
+    "the next 15 minutes, so re-call send_transaction on the same handle once " +
+    "the new session is active. " +
+    "Heads-up: Ledger Live's UI may still list VaultPilot under Settings → " +
+    "Connected Apps even though the relay has dropped the topic. That listing " +
+    "is stale — there is no \"reconnect\" affordance on the stale entry; the " +
+    "only path forward is `pair_ledger_live` to create a fresh topic. If you " +
+    "want to clean up the stale UI entry, manually disconnect VaultPilot in " +
+    "Ledger Live → Settings → Connected Apps before re-pairing. Issue #219."
+  );
+}
+
+/**
+ * Compose the timeout error message. Issue #218: the prior wording said
+ * "the handle is still valid for retry" without qualification, which
+ * invited blind retries that risk a double-broadcast (Ledger Live may
+ * still complete signing + broadcast asynchronously after our 120s
+ * timer fires — our timer aborts only THIS server's wait, not the
+ * device-side request). Surface the pinned (from, nonce, chainId) so the
+ * agent can suggest concrete on-chain checks before retrying.
+ *
+ * Exported for test-side inspection so we don't have to source-scrape.
+ */
+export function timeoutMessage(args: {
+  timeoutSeconds: number;
+  from: `0x${string}` | string;
+  nonce: number | "<unpinned — check pending nonce on chain>";
+  chainId: number | string;
+}): string {
+  return (
+    `WalletConnect signing request did not complete within ${args.timeoutSeconds}s on this server's clock — ` +
+    `the user may simply still be reviewing the tx on the Ledger device. ` +
+    `CRITICAL: this timeout aborts only THIS server's wait; it does NOT cancel the request on Ledger Live's side. ` +
+    `If the user signs after this point, Ledger Live may still broadcast the tx asynchronously without us seeing the response. ` +
+    `DO NOT retry blindly — that risks a double-broadcast attempt against the chain (saved here only by the chain's duplicate-nonce protection, which is incidental, not by design). ` +
+    `Before any retry, verify the original request did NOT land on chain: ` +
+    `query \`get_transaction_status\` against the chain's mempool / latest block, ` +
+    `or check a block explorer for txs from \`${args.from}\` with nonce \`${args.nonce}\` on chain id \`${args.chainId}\`. ` +
+    `Only retry send_transaction (same handle, 15-min TTL from prepare) if RPC confirms the pinned nonce is still UNCONSUMED on the pending state. ` +
+    `Issue #218.`
+  );
+}
+
 /** Send an `eth_sendTransaction` request. Ledger Live shows it, user signs on device, we get tx hash back. */
 export async function requestSendTransaction(
   tx: UnsignedTx,
@@ -389,13 +448,26 @@ export async function requestSendTransaction(
   // raises an actionable structured error instead.
   const liveness = await probeSessionLiveness(c, currentSession.topic);
   if (liveness === "dead") {
-    throw new WalletConnectSessionUnavailableError(
-      "WalletConnect session has been ended by the peer (Ledger Live disconnected it, " +
-        "or the relay rejected the topic). Open Ledger Live → Settings → Connected " +
-        "Apps → VaultPilot and reconnect, or run `pair_ledger_live` to start a fresh " +
-        "session. The handle is still valid for the next 15 minutes, so you can retry " +
-        "send_transaction with the same handle once WC is reconnected.",
-    );
+    // Issue #219: drop the local session record so subsequent retries
+    // don't replay the same probe→error against a known-dead topic. The
+    // startup branch in `getSignClient` does this same cleanup; without
+    // it here, the user can re-pair and end up with two locally-tracked
+    // sessions where this dead one fires first on every retry. Best-
+    // effort delete; ignore failure (the relay-side record may already
+    // be gone, which is the case that produced the dead probe to begin
+    // with).
+    const deadTopic = currentSession.topic;
+    try {
+      await c.session.delete(deadTopic, getSdkError("USER_DISCONNECTED"));
+    } catch {
+      // Ignore — the local record is what we actually need to clear.
+    }
+    currentSession = null;
+    peerUnreachable = false;
+    patchUserConfig({
+      walletConnect: { sessionTopic: undefined, pairingTopic: undefined },
+    });
+    throw new WalletConnectSessionUnavailableError(deadSessionMessage());
   }
   if (liveness === "unknown") {
     throw new WalletConnectSessionUnavailableError(
@@ -441,6 +513,14 @@ export async function requestSendTransaction(
   // Hard wall-clock cap so even if the peer accepts the request but never
   // responds (common failure mode when Ledger Live is backgrounded mid-sign),
   // the tool eventually surfaces control back to the agent. Issue #75.
+  //
+  // CRITICAL framing — Issue #218: the timeout aborts THIS server's wait,
+  // it does NOT cancel the request on Ledger Live's side. If the user is
+  // mid-review on the Ledger when the timer fires, signing may still
+  // complete and Ledger Live may still broadcast asynchronously after the
+  // error returns. The error message must NOT advise a blind retry — that
+  // risks a double-broadcast. Surface the pinned (from, nonce, chainId)
+  // so the agent can suggest checking on-chain state before re-sending.
   let timedOut = false;
   const hash = await Promise.race([
     c.request(request) as Promise<`0x${string}`>,
@@ -449,9 +529,12 @@ export async function requestSendTransaction(
         timedOut = true;
         reject(
           new WalletConnectRequestTimeoutError(
-            `WalletConnect signing request did not complete within ${WC_SEND_REQUEST_TIMEOUT_MS / 1000}s. ` +
-              "The peer may be unresponsive or the user may have walked away from the Ledger. " +
-              "The handle is still valid for retry (15-minute TTL from prepare time).",
+            timeoutMessage({
+              timeoutSeconds: WC_SEND_REQUEST_TIMEOUT_MS / 1000,
+              from,
+              nonce: pinned ? pinned.nonce : "<unpinned — check pending nonce on chain>",
+              chainId,
+            }),
           ),
         );
       }, WC_SEND_REQUEST_TIMEOUT_MS),
