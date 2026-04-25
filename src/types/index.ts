@@ -762,6 +762,39 @@ export interface MultiWalletPortfolioSummary {
   stakingUsd: number;
   perChain: Record<SupportedChain, number>;
   perWallet: PortfolioSummary[];
+  /**
+   * Non-EVM holdings surfaced as PARALLEL siblings of the EVM wallets,
+   * NOT folded into any specific `perWallet[i]`. Issue #201 — TRON / BTC /
+   * Solana addresses on a Ledger are independent identities (different
+   * BIP-44 derivation paths), so attributing them to "the first EVM
+   * wallet" produced misleading per-wallet rollups.
+   *
+   * Each chain's slice is surfaced when the corresponding address arg
+   * (`tronAddress`/`tronAddresses`, `solanaAddress`/`solanaAddresses`,
+   * `bitcoinAddress`/`bitcoinAddresses`) was passed to
+   * `getPortfolioSummary`. The USD rollups below sum across whichever
+   * slices were fetched.
+   */
+  nonEvm?: {
+    /** Per-address TRON slice; one entry per requested tronAddress. */
+    tron?: TronPortfolioSlice[];
+    /** Per-address Solana slice; one entry per requested solanaAddress. */
+    solana?: SolanaPortfolioSlice[];
+    /** Multi-address Bitcoin slice; aggregates every requested btc address. */
+    bitcoin?: BitcoinPortfolioSlice;
+  };
+  /** Sum of all TRON wallet balances (TRX + TRC-20) across the queried addresses. */
+  tronUsd?: number;
+  /** Sum of TRON staking (frozen TRX + claimable rewards). */
+  tronStakingUsd?: number;
+  /** Sum of all Solana wallet balances (SOL + SPL) across queried addresses. */
+  solanaUsd?: number;
+  /** Sum of MarginFi + Kamino netValueUsd across queried Solana addresses. */
+  solanaLendingUsd?: number;
+  /** Sum of Marinade + Jito + native-stake totals across queried Solana addresses. */
+  solanaStakingUsd?: number;
+  /** Sum of BTC × USD-price across queried Bitcoin addresses. */
+  bitcoinUsd?: number;
   coverage: PortfolioCoverage;
 }
 

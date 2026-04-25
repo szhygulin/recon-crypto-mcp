@@ -252,20 +252,73 @@ describe("portfolio BTC integration", () => {
     ).rejects.toThrow(/single.*OR.*array/i);
   });
 
-  it("rejects multi-wallet + bitcoinAddress", async () => {
+  it("multi-wallet + bitcoinAddress: BTC surfaces as a sibling slice (issue #201)", async () => {
+    fetchBitcoinPriceMock.mockResolvedValue(50_000);
+    getBalanceMock.mockResolvedValue({
+      address: SEGWIT_ADDR,
+      confirmedSats: 200_000n, // 0.002 BTC
+      mempoolSats: 0n,
+      totalSats: 200_000n,
+      txCount: 1,
+    });
     vi.resetModules();
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        getBalance: async () => 0n,
+        multicall: async () => [],
+      }),
+      verifyChainId: async () => undefined,
+    }));
+    vi.doMock("../src/data/prices.ts", () => ({
+      getTokenPrice: async () => undefined,
+      getTokenPrices: async () => new Map(),
+    }));
+    vi.doMock("../src/modules/positions/index.ts", () => ({
+      getLendingPositions: async () => ({ wallet: "", positions: [] }),
+      getLpPositions: async () => ({ wallet: "", positions: [] }),
+    }));
+    vi.doMock("../src/modules/staking/index.ts", () => ({
+      getStakingPositions: async () => ({ wallet: "", positions: [] }),
+    }));
+    vi.doMock("../src/modules/compound/index.ts", () => ({
+      getCompoundPositions: async () => ({ wallet: "", positions: [] }),
+      prefetchCompoundProbes: async () => undefined,
+    }));
+    vi.doMock("../src/modules/positions/aave.ts", () => ({
+      prefetchAaveAccountData: async () => undefined,
+    }));
+    vi.doMock("../src/modules/staking/lido.ts", () => ({
+      prefetchLidoMainnet: async () => undefined,
+    }));
+    vi.doMock("../src/modules/morpho/index.ts", () => ({
+      getMorphoPositions: async () => ({
+        wallet: "",
+        positions: [],
+        discoverySkipped: false,
+      }),
+    }));
     const { getPortfolioSummary } = await import(
       "../src/modules/portfolio/index.ts"
     );
-    await expect(
-      getPortfolioSummary({
-        wallets: [
-          "0x1111111111111111111111111111111111111111",
-          "0x2222222222222222222222222222222222222222",
-        ],
-        bitcoinAddress: SEGWIT_ADDR,
-      }),
-    ).rejects.toThrow(/single EVM/);
+    const result = await getPortfolioSummary({
+      wallets: [
+        "0x1111111111111111111111111111111111111111",
+        "0x2222222222222222222222222222222222222222",
+      ],
+      bitcoinAddress: SEGWIT_ADDR,
+    });
+    if (!("perWallet" in result)) {
+      throw new Error("expected multi-wallet summary");
+    }
+    // BTC must NOT be folded into either per-wallet entry.
+    expect(result.perWallet[0].bitcoinUsd).toBeUndefined();
+    expect(result.perWallet[1].bitcoinUsd).toBeUndefined();
+    // Instead it lives at the top-level nonEvm block.
+    expect(result.nonEvm?.bitcoin).toBeDefined();
+    expect(result.nonEvm?.bitcoin?.addresses).toEqual([SEGWIT_ADDR]);
+    expect(result.bitcoinUsd).toBe(100); // 0.002 BTC × $50,000
+    // And rolls into totalUsd at the top level.
+    expect(result.totalUsd).toBe(100);
   });
 });
 

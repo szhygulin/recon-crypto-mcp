@@ -107,11 +107,40 @@ export async function getPortfolioSummary(
     ? [args.wallet as `0x${string}`]
     : [];
 
-  const tronAddress = args.tronAddress;
-  const solanaAddress = args.solanaAddress;
+  // Resolve singular/plural args. Mutually exclusive forms throw — pass
+  // either the single-address or the array form, not both. Issue #201:
+  // multi-wallet mode now ALSO accepts non-EVM addresses; they're
+  // surfaced as parallel siblings on the response (`nonEvm` block)
+  // rather than folded into a chosen EVM wallet's totals.
+  if (args.tronAddress && args.tronAddresses && args.tronAddresses.length > 0) {
+    throw new Error(
+      "Pass `tronAddress` (single) OR `tronAddresses` (array), not both.",
+    );
+  }
+  const tronAddresses: string[] = args.tronAddresses?.length
+    ? args.tronAddresses
+    : args.tronAddress
+    ? [args.tronAddress]
+    : [];
+
+  if (
+    args.solanaAddress &&
+    args.solanaAddresses &&
+    args.solanaAddresses.length > 0
+  ) {
+    throw new Error(
+      "Pass `solanaAddress` (single) OR `solanaAddresses` (array), not both.",
+    );
+  }
+  const solanaAddresses: string[] = args.solanaAddresses?.length
+    ? args.solanaAddresses
+    : args.solanaAddress
+    ? [args.solanaAddress]
+    : [];
+
   if (args.bitcoinAddress && args.bitcoinAddresses && args.bitcoinAddresses.length > 0) {
     throw new Error(
-      "Pass `bitcoinAddress` (single) OR `bitcoinAddresses` (array), not both."
+      "Pass `bitcoinAddress` (single) OR `bitcoinAddresses` (array), not both.",
     );
   }
   const bitcoinAddresses = args.bitcoinAddresses?.length
@@ -120,33 +149,35 @@ export async function getPortfolioSummary(
     ? [args.bitcoinAddress]
     : [];
 
-  // Branch: single wallet returns the flat summary; multi-wallet aggregates.
-  // TRON, Solana, and Bitcoin are only folded into the single-wallet summary —
-  // a multi-wallet view with a single non-EVM address would be ambiguous
-  // ("which EVM wallet does it belong to?"), so the caller must use
-  // single-wallet mode when pairing with a non-EVM address.
+  // Single-wallet branch: keep the existing fold-non-EVM-into-totals
+  // shape (backwards compat). Multi-address TRON/Solana don't have a
+  // single-slice projection in this shape; reject explicitly so the
+  // caller can switch to multi-wallet mode rather than silently lose
+  // entries 2..N. BTC already supports multi-address natively
+  // (BitcoinPortfolioSlice carries an `addresses[]` array).
   if (wallets.length === 1) {
+    if (tronAddresses.length > 1) {
+      throw new Error(
+        "`tronAddresses` with multiple entries can't fold into a single-`wallet` " +
+          "summary (each TRON address is a separate identity). Use `wallets: [...]` " +
+          "(multi-wallet mode) so the TRON addresses are surfaced as parallel siblings " +
+          "in `nonEvm.tron[]`.",
+      );
+    }
+    if (solanaAddresses.length > 1) {
+      throw new Error(
+        "`solanaAddresses` with multiple entries can't fold into a single-`wallet` " +
+          "summary (each Solana address is a separate identity). Use `wallets: [...]` " +
+          "(multi-wallet mode) so the Solana addresses are surfaced as parallel siblings " +
+          "in `nonEvm.solana[]`.",
+      );
+    }
     return buildWalletSummary(
       wallets[0],
       chains,
-      tronAddress,
-      solanaAddress,
+      tronAddresses[0],
+      solanaAddresses[0],
       bitcoinAddresses,
-    );
-  }
-  if (tronAddress) {
-    throw new Error(
-      "`tronAddress` can only be combined with a single EVM `wallet`. For multi-wallet portfolios, call `get_portfolio_summary` once per EVM wallet."
-    );
-  }
-  if (solanaAddress) {
-    throw new Error(
-      "`solanaAddress` can only be combined with a single EVM `wallet`. For multi-wallet portfolios, call `get_portfolio_summary` once per EVM wallet."
-    );
-  }
-  if (bitcoinAddresses.length > 0) {
-    throw new Error(
-      "`bitcoinAddress` / `bitcoinAddresses` can only be combined with a single EVM `wallet`. For multi-wallet portfolios, call `get_portfolio_summary` once per EVM wallet."
     );
   }
 
@@ -164,19 +195,46 @@ export async function getPortfolioSummary(
   //
   // Run in parallel across subsystems (each batches by chain
   // internally); one slow subsystem doesn't serialize the others.
-  await Promise.all([
-    prefetchCompoundProbes(wallets, chains),
-    prefetchAaveAccountData(wallets, chains),
-    // Lido mainnet is the most rate-limit-sensitive staking read;
-    // arbitrum wstETH is low volume and stays per-wallet.
-    chains.includes("ethereum") ? prefetchLidoMainnet(wallets) : Promise.resolve(),
+  // Non-EVM aggregation (issue #201) runs in parallel with the EVM
+  // path — TRON / Solana / BTC are independent identities and don't
+  // contend for the same RPC.
+  const [evmPrefetchDone, nonEvm] = await Promise.all([
+    Promise.all([
+      prefetchCompoundProbes(wallets, chains),
+      prefetchAaveAccountData(wallets, chains),
+      // Lido mainnet is the most rate-limit-sensitive staking read;
+      // arbitrum wstETH is low volume and stays per-wallet.
+      chains.includes("ethereum") ? prefetchLidoMainnet(wallets) : Promise.resolve(),
+    ]),
+    aggregateNonEvm({
+      tronAddresses,
+      solanaAddresses,
+      bitcoinAddresses,
+    }),
   ]);
+  void evmPrefetchDone;
   const perWallet = await Promise.all(wallets.map((w) => buildWalletSummary(w, chains)));
-  const totalUsd = round(perWallet.reduce((s, p) => s + p.totalUsd, 0), 2);
+  const evmTotal = round(perWallet.reduce((s, p) => s + p.totalUsd, 0), 2);
   const walletBalancesUsd = round(perWallet.reduce((s, p) => s + p.walletBalancesUsd, 0), 2);
   const lendingNetUsd = round(perWallet.reduce((s, p) => s + p.lendingNetUsd, 0), 2);
   const lpUsd = round(perWallet.reduce((s, p) => s + p.lpUsd, 0), 2);
   const stakingUsd = round(perWallet.reduce((s, p) => s + p.stakingUsd, 0), 2);
+  // Non-EVM contribution to totalUsd. Each chain's USD already aggregates
+  // wallet balances + (where applicable) staking + lending; sum them all
+  // for the top-line totalUsd. NOTE: this does NOT roll into
+  // `walletBalancesUsd` because that field documents EVM-only-ish
+  // semantics across the codebase; non-EVM gets its own per-chain USD
+  // fields below for clarity.
+  const nonEvmContribution = round(
+    (nonEvm.tronUsd ?? 0) +
+      (nonEvm.tronStakingUsd ?? 0) +
+      (nonEvm.solanaUsd ?? 0) +
+      (nonEvm.solanaLendingUsd ?? 0) +
+      (nonEvm.solanaStakingUsd ?? 0) +
+      (nonEvm.bitcoinUsd ?? 0),
+    2,
+  );
+  const totalUsd = round(evmTotal + nonEvmContribution, 2);
   const perChain: Record<SupportedChain, number> = Object.fromEntries(
     chains.map((c) => [c, 0])
   ) as Record<SupportedChain, number>;
@@ -197,11 +255,31 @@ export async function getPortfolioSummary(
     morpho: mergeCoverage(perWallet.map((p) => p.coverage.morpho)),
     uniswapV3: mergeCoverage(perWallet.map((p) => p.coverage.uniswapV3)),
     staking: mergeCoverage(perWallet.map((p) => p.coverage.staking)),
-    unpricedAssets: perWallet.reduce((s, p) => s + p.coverage.unpricedAssets, 0),
-    ...(aggregatedUnpricedDetail.length > 0
-      ? { unpricedAssetsDetail: aggregatedUnpricedDetail }
+    unpricedAssets:
+      perWallet.reduce((s, p) => s + p.coverage.unpricedAssets, 0) +
+      (nonEvm.unpricedAssetsDetail?.length ?? 0),
+    ...(aggregatedUnpricedDetail.length > 0 || (nonEvm.unpricedAssetsDetail?.length ?? 0) > 0
+      ? {
+          unpricedAssetsDetail: [
+            ...aggregatedUnpricedDetail,
+            ...(nonEvm.unpricedAssetsDetail ?? []),
+          ],
+        }
       : {}),
+    ...(nonEvm.coverage ?? {}),
   };
+
+  // Build the nonEvm block ONLY if at least one non-EVM source was
+  // queried. Avoids polluting the response with empty objects when the
+  // caller stays EVM-only.
+  const nonEvmBlock =
+    nonEvm.tron || nonEvm.solana || nonEvm.bitcoin
+      ? {
+          ...(nonEvm.tron ? { tron: nonEvm.tron } : {}),
+          ...(nonEvm.solana ? { solana: nonEvm.solana } : {}),
+          ...(nonEvm.bitcoin ? { bitcoin: nonEvm.bitcoin } : {}),
+        }
+      : undefined;
 
   return {
     wallets,
@@ -213,6 +291,19 @@ export async function getPortfolioSummary(
     stakingUsd,
     perChain,
     perWallet,
+    ...(nonEvmBlock ? { nonEvm: nonEvmBlock } : {}),
+    ...(nonEvm.tronUsd !== undefined ? { tronUsd: nonEvm.tronUsd } : {}),
+    ...(nonEvm.tronStakingUsd !== undefined
+      ? { tronStakingUsd: nonEvm.tronStakingUsd }
+      : {}),
+    ...(nonEvm.solanaUsd !== undefined ? { solanaUsd: nonEvm.solanaUsd } : {}),
+    ...(nonEvm.solanaLendingUsd !== undefined
+      ? { solanaLendingUsd: nonEvm.solanaLendingUsd }
+      : {}),
+    ...(nonEvm.solanaStakingUsd !== undefined
+      ? { solanaStakingUsd: nonEvm.solanaStakingUsd }
+      : {}),
+    ...(nonEvm.bitcoinUsd !== undefined ? { bitcoinUsd: nonEvm.bitcoinUsd } : {}),
     coverage: mergedCoverage,
   };
 }
@@ -389,6 +480,436 @@ async function fetchBitcoinSlice(
       balances,
       walletBalancesUsd: round(walletBalancesUsd, 2),
     },
+    unpriced,
+  };
+}
+
+/**
+ * Multi-wallet non-EVM aggregation. Issue #201 — when the caller
+ * passes `wallets[]` together with TRON / Solana / BTC addresses, the
+ * non-EVM holdings are independent identities and shouldn't fold into
+ * any specific EVM wallet's totals. This helper builds the parallel
+ * `nonEvm` block surfaced at the top of `MultiWalletPortfolioSummary`.
+ *
+ * Each chain's per-address fetches run in parallel (subreaders run
+ * sequentially within an address but parallel across addresses) so a
+ * 4-wallet + 2-TRON + 2-Solana + 3-BTC call collapses to roughly the
+ * latency of the slowest single subreader on the slowest single
+ * address, not the sum.
+ *
+ * Per-address failures degrade gracefully: a flaky TronGrid call on
+ * address A doesn't drop address B from the response. Errored
+ * subsystems flip the relevant `coverage.{tron,solana,bitcoin}` flag.
+ *
+ * Returns the slices + USD rollups + coverage bits ready to merge
+ * into the multi-wallet response. The function is private — callers
+ * should go through `getPortfolioSummary`.
+ */
+async function aggregateNonEvm(args: {
+  tronAddresses: string[];
+  solanaAddresses: string[];
+  bitcoinAddresses: string[];
+}): Promise<{
+  tron?: TronPortfolioSlice[];
+  solana?: SolanaPortfolioSlice[];
+  bitcoin?: BitcoinPortfolioSlice;
+  tronUsd?: number;
+  tronStakingUsd?: number;
+  solanaUsd?: number;
+  solanaLendingUsd?: number;
+  solanaStakingUsd?: number;
+  bitcoinUsd?: number;
+  coverage?: Pick<
+    PortfolioCoverage,
+    "tron" | "tronStaking" | "solana" | "marginfi" | "kamino" | "solanaStaking" | "bitcoin"
+  >;
+  unpricedAssetsDetail?: UnpricedAsset[];
+}> {
+  // Fan out all three chain groups in parallel — they don't share
+  // network paths so latency stacks pessimistically only inside a
+  // single chain group.
+  const [tronResult, solanaResult, bitcoinResult] = await Promise.all([
+    aggregateTron(args.tronAddresses),
+    aggregateSolana(args.solanaAddresses),
+    args.bitcoinAddresses.length > 0
+      ? fetchBitcoinSlice(args.bitcoinAddresses)
+      : Promise.resolve(null),
+  ]);
+
+  const out: Awaited<ReturnType<typeof aggregateNonEvm>> = {};
+  const coverage: NonNullable<
+    Awaited<ReturnType<typeof aggregateNonEvm>>["coverage"]
+  > = {};
+  const unpricedAssetsDetail: UnpricedAsset[] = [];
+
+  if (args.tronAddresses.length > 0) {
+    if (tronResult.slices.length > 0) {
+      out.tron = tronResult.slices;
+      out.tronUsd = round(
+        tronResult.slices.reduce((s, x) => s + x.walletBalancesUsd, 0),
+        2,
+      );
+      const stakingUsd = tronResult.slices.reduce(
+        (s, x) => s + (x.staking?.totalStakedUsd ?? 0),
+        0,
+      );
+      if (stakingUsd > 0) out.tronStakingUsd = round(stakingUsd, 2);
+    }
+    coverage.tron = tronResult.balanceErrored
+      ? {
+          covered: false,
+          errored: true,
+          note:
+            "One or more TRON balance fetches failed (TronGrid). Affected addresses dropped from totals.",
+        }
+      : { covered: true };
+    coverage.tronStaking = tronResult.stakingErrored
+      ? {
+          covered: false,
+          errored: true,
+          note:
+            "One or more TRON staking fetches failed (TronGrid getReward/accounts). Affected entries dropped from totals.",
+        }
+      : { covered: true };
+    unpricedAssetsDetail.push(...tronResult.unpriced);
+  }
+
+  if (args.solanaAddresses.length > 0) {
+    if (solanaResult.slices.length > 0) {
+      out.solana = solanaResult.slices;
+      out.solanaUsd = round(
+        solanaResult.slices.reduce((s, x) => s + x.walletBalancesUsd, 0),
+        2,
+      );
+      if (solanaResult.lendingUsd > 0)
+        out.solanaLendingUsd = round(solanaResult.lendingUsd, 2);
+      if (solanaResult.stakingUsd > 0)
+        out.solanaStakingUsd = round(solanaResult.stakingUsd, 2);
+    }
+    coverage.solana = solanaResult.balanceErrored
+      ? {
+          covered: false,
+          errored: true,
+          note:
+            "One or more Solana balance fetches failed. Check SOLANA_RPC_URL / solanaRpcUrl.",
+        }
+      : { covered: true };
+    coverage.marginfi = solanaResult.marginfiErrored
+      ? {
+          covered: false,
+          errored: true,
+          note: "MarginFi position fetch failed for at least one Solana address.",
+        }
+      : { covered: true };
+    coverage.kamino = solanaResult.kaminoErrored
+      ? {
+          covered: false,
+          errored: true,
+          note: "Kamino position fetch failed for at least one Solana address.",
+        }
+      : { covered: true };
+    coverage.solanaStaking = solanaResult.stakingErrored
+      ? {
+          covered: false,
+          errored: true,
+          note:
+            "Solana staking fetch failed for at least one address (Marinade / Jito / native stake-account read).",
+        }
+      : { covered: true };
+    unpricedAssetsDetail.push(...solanaResult.unpriced);
+  }
+
+  if (args.bitcoinAddresses.length > 0) {
+    if (bitcoinResult) {
+      out.bitcoin = bitcoinResult.slice;
+      out.bitcoinUsd = bitcoinResult.slice.walletBalancesUsd;
+      unpricedAssetsDetail.push(...bitcoinResult.unpriced);
+      coverage.bitcoin = { covered: true };
+    } else {
+      coverage.bitcoin = {
+        covered: false,
+        errored: true,
+        note:
+          "Bitcoin indexer fetch failed — BTC balances not included in totals. " +
+          "Check `BITCOIN_INDEXER_URL` env var or `bitcoinIndexerUrl` user config.",
+      };
+    }
+  }
+
+  if (Object.keys(coverage).length > 0) out.coverage = coverage;
+  if (unpricedAssetsDetail.length > 0) out.unpricedAssetsDetail = unpricedAssetsDetail;
+  return out;
+}
+
+/**
+ * Fan out `getTronBalances` + `getTronStaking` for every TRON address.
+ * Each address gets a TronPortfolioSlice that bundles wallet balances
+ * with staking (if the staking call succeeded), keeping the per-
+ * address shape interchangeable with the single-wallet response.
+ */
+async function aggregateTron(addresses: string[]): Promise<{
+  slices: TronPortfolioSlice[];
+  balanceErrored: boolean;
+  stakingErrored: boolean;
+  unpriced: UnpricedAsset[];
+}> {
+  if (addresses.length === 0) {
+    return { slices: [], balanceErrored: false, stakingErrored: false, unpriced: [] };
+  }
+  const settled = await Promise.all(
+    addresses.map(async (addr) => {
+      const [balanceR, stakingR] = await Promise.allSettled([
+        getTronBalances(addr),
+        getTronStaking(addr),
+      ]);
+      const balanceOk = balanceR.status === "fulfilled" ? balanceR.value : null;
+      const stakingOk = stakingR.status === "fulfilled" ? stakingR.value : null;
+      return {
+        addr,
+        balance: balanceOk,
+        staking: stakingOk,
+        balanceErrored: balanceR.status === "rejected",
+        stakingErrored: stakingR.status === "rejected",
+      };
+    }),
+  );
+  const slices: TronPortfolioSlice[] = [];
+  const unpriced: UnpricedAsset[] = [];
+  let balanceErrored = false;
+  let stakingErrored = false;
+  for (const r of settled) {
+    if (r.balanceErrored) balanceErrored = true;
+    if (r.stakingErrored) stakingErrored = true;
+    if (r.balance) {
+      slices.push({
+        ...r.balance,
+        ...(r.staking ? { staking: r.staking } : {}),
+      });
+      // Pull priceMissing entries into the multi-wallet unpriced list.
+      for (const t of [...r.balance.native, ...r.balance.trc20]) {
+        if (t.priceMissing) {
+          unpriced.push({
+            chain: "tron" as const,
+            symbol: t.symbol,
+            amount: t.formatted,
+          });
+        }
+      }
+    }
+  }
+  return { slices, balanceErrored, stakingErrored, unpriced };
+}
+
+/**
+ * Fan out `getSolanaBalances` + MarginFi + Kamino + Solana-staking
+ * subreaders for every Solana address. Returns one
+ * SolanaPortfolioSlice per address (extended with marginfi/kamino/
+ * staking projections, same shape `buildWalletSummary` produces in
+ * the single-wallet branch) plus rolled-up USD totals across all
+ * addresses for the response's top-level `solanaLendingUsd` /
+ * `solanaStakingUsd`.
+ */
+async function aggregateSolana(addresses: string[]): Promise<{
+  slices: SolanaPortfolioSlice[];
+  lendingUsd: number;
+  stakingUsd: number;
+  balanceErrored: boolean;
+  marginfiErrored: boolean;
+  kaminoErrored: boolean;
+  stakingErrored: boolean;
+  unpriced: UnpricedAsset[];
+}> {
+  if (addresses.length === 0) {
+    return {
+      slices: [],
+      lendingUsd: 0,
+      stakingUsd: 0,
+      balanceErrored: false,
+      marginfiErrored: false,
+      kaminoErrored: false,
+      stakingErrored: false,
+      unpriced: [],
+    };
+  }
+  const conn = getSolanaConnection();
+  const perAddress = await Promise.all(
+    addresses.map(async (addr) => {
+      const [balanceR, marginfiR, kaminoR, stakingR] = await Promise.allSettled([
+        getSolanaBalances(addr),
+        readMarginfiPositions(conn, addr),
+        readKaminoPositions(conn, addr),
+        readSolanaStakingPositions(conn, addr),
+      ]);
+      return { addr, balanceR, marginfiR, kaminoR, stakingR };
+    }),
+  );
+
+  const slices: SolanaPortfolioSlice[] = [];
+  const unpriced: UnpricedAsset[] = [];
+  let lendingUsd = 0;
+  let stakingUsd = 0;
+  let balanceErrored = false;
+  let marginfiErrored = false;
+  let kaminoErrored = false;
+  let stakingErrored = false;
+  for (const r of perAddress) {
+    if (r.balanceR.status !== "fulfilled") {
+      balanceErrored = true;
+      continue;
+    }
+    const balance = r.balanceR.value;
+    let solPriceUsd: number | undefined;
+    for (const b of balance.native) {
+      if (b.token === "native" && typeof b.priceUsd === "number") {
+        solPriceUsd = b.priceUsd;
+        break;
+      }
+    }
+
+    const marginfiSlices: SolanaMarginfiPositionSlice[] = [];
+    if (r.marginfiR.status === "fulfilled") {
+      for (const pos of r.marginfiR.value) {
+        marginfiSlices.push({
+          protocol: "marginfi",
+          chain: "solana",
+          marginfiAccount: pos.marginfiAccount,
+          supplied: pos.supplied.map((b) => ({
+            symbol: b.symbol,
+            amount: b.amount,
+            valueUsd: b.valueUsd,
+          })),
+          borrowed: pos.borrowed.map((b) => ({
+            symbol: b.symbol,
+            amount: b.amount,
+            valueUsd: b.valueUsd,
+          })),
+          totalSuppliedUsd: pos.totalSuppliedUsd,
+          totalBorrowedUsd: pos.totalBorrowedUsd,
+          netValueUsd: pos.netValueUsd,
+          healthFactor: pos.healthFactor,
+          warnings: pos.warnings,
+        });
+      }
+    } else {
+      marginfiErrored = true;
+    }
+
+    const kaminoSlices: SolanaKaminoPositionSlice[] = [];
+    if (r.kaminoR.status === "fulfilled") {
+      for (const pos of r.kaminoR.value) {
+        kaminoSlices.push({
+          protocol: "kamino",
+          chain: "solana",
+          obligation: pos.obligation,
+          supplied: pos.supplied.map((b) => ({
+            symbol: b.symbol,
+            amount: b.amount,
+            valueUsd: b.valueUsd,
+          })),
+          borrowed: pos.borrowed.map((b) => ({
+            symbol: b.symbol,
+            amount: b.amount,
+            valueUsd: b.valueUsd,
+          })),
+          totalSuppliedUsd: pos.totalSuppliedUsd,
+          totalBorrowedUsd: pos.totalBorrowedUsd,
+          netValueUsd: pos.netValueUsd,
+          healthFactor: pos.healthFactor,
+          warnings: pos.warnings,
+        });
+      }
+    } else {
+      kaminoErrored = true;
+    }
+    const addrLendingUsd =
+      marginfiSlices.reduce((s, p) => s + p.netValueUsd, 0) +
+      kaminoSlices.reduce((s, p) => s + p.netValueUsd, 0);
+    lendingUsd += addrLendingUsd;
+
+    let solanaStakingSlice: SolanaStakingPositionSlice | undefined;
+    let addrStakingUsd = 0;
+    if (r.stakingR.status === "fulfilled" && r.stakingR.value) {
+      const raw = r.stakingR.value;
+      solanaStakingSlice = {
+        chain: "solana",
+        marinade: {
+          mSolBalance: raw.marinade.mSolBalance,
+          solEquivalent: raw.marinade.solEquivalent,
+          exchangeRate: raw.marinade.exchangeRate,
+        },
+        jito: {
+          jitoSolBalance: raw.jito.jitoSolBalance,
+          solEquivalent: raw.jito.solEquivalent,
+          exchangeRate: raw.jito.exchangeRate,
+        },
+        nativeStakes: raw.nativeStakes.map((s) => ({
+          stakePubkey: s.stakePubkey,
+          ...(s.validator ? { validator: s.validator } : {}),
+          stakeSol: s.stakeSol,
+          status: s.status,
+          ...(s.activationEpoch !== undefined
+            ? { activationEpoch: s.activationEpoch }
+            : {}),
+          ...(s.deactivationEpoch !== undefined
+            ? { deactivationEpoch: s.deactivationEpoch }
+            : {}),
+        })),
+        totalSolEquivalent: raw.totalSolEquivalent,
+      };
+      if (typeof solPriceUsd === "number") {
+        addrStakingUsd = raw.totalSolEquivalent * solPriceUsd;
+        stakingUsd += addrStakingUsd;
+      }
+    } else if (r.stakingR.status === "rejected") {
+      stakingErrored = true;
+    }
+
+    const slice: SolanaPortfolioSlice = {
+      ...balance,
+      ...(marginfiSlices.length > 0
+        ? {
+            marginfi: marginfiSlices,
+            marginfiNetUsd: round(
+              marginfiSlices.reduce((s, p) => s + p.netValueUsd, 0),
+              2,
+            ),
+          }
+        : {}),
+      ...(kaminoSlices.length > 0
+        ? {
+            kamino: kaminoSlices,
+            kaminoNetUsd: round(
+              kaminoSlices.reduce((s, p) => s + p.netValueUsd, 0),
+              2,
+            ),
+          }
+        : {}),
+      ...(solanaStakingSlice && solanaStakingSlice.totalSolEquivalent > 0
+        ? {
+            staking: solanaStakingSlice,
+            stakingNetUsd: round(addrStakingUsd, 2),
+          }
+        : {}),
+    };
+    slices.push(slice);
+    for (const b of [...balance.native, ...balance.spl]) {
+      if (b.priceMissing) {
+        unpriced.push({
+          chain: "solana" as const,
+          symbol: b.symbol,
+          amount: b.formatted,
+        });
+      }
+    }
+  }
+  return {
+    slices,
+    lendingUsd,
+    stakingUsd,
+    balanceErrored,
+    marginfiErrored,
+    kaminoErrored,
+    stakingErrored,
     unpriced,
   };
 }

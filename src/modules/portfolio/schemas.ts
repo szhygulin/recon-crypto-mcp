@@ -54,17 +54,51 @@ export const getPortfolioSummaryInput = z.object({
   tronAddress: tronAddressSchema
     .optional()
     .describe(
-      "TRON mainnet address. When provided alongside a single `wallet`, TRX + TRC-20 balances and TRON staking are folded into the same portfolio total (`breakdown.tron`, `tronUsd`, `tronStakingUsd`). Multi-wallet mode + tronAddress is ambiguous and throws — call once per EVM wallet in that case."
+      "Single TRON mainnet address. With a single `wallet`: TRX + TRC-20 + " +
+        "TRON staking are folded into the same per-wallet totals (`breakdown.tron`, " +
+        "`tronUsd`, `tronStakingUsd`). With multi-wallet `wallets[]`: surfaced as " +
+        "a parallel sibling slice on the response — see `nonEvm.tron` (issue #201). " +
+        "Mutually exclusive with `tronAddresses`."
+    ),
+  tronAddresses: z
+    .array(tronAddressSchema)
+    .min(1)
+    .max(10)
+    .optional()
+    .describe(
+      "Multiple TRON addresses (Ledger account 0, 1, 2, …). Each is fetched " +
+        "in parallel; the per-address slices are surfaced in `nonEvm.tron[]` " +
+        "with rolled-up `tronUsd` / `tronStakingUsd` totals. 1-10 entries. " +
+        "Mutually exclusive with `tronAddress`."
     ),
   solanaAddress: solanaAddressSchema
     .optional()
     .describe(
-      "Solana mainnet address (base58, 43 or 44 chars). When provided, SOL + enumerated SPL token balances are folded into the same portfolio total (`breakdown.solana`, `solanaUsd`). Multi-wallet mode + solanaAddress is ambiguous and throws — call once per EVM wallet in that case. Requires SOLANA_RPC_URL or `solanaRpcUrl` user config (Helius recommended; public mainnet RPC is rate-limited)."
+      "Single Solana mainnet address (base58, 43-44 chars). With a single " +
+        "`wallet`: SOL + SPL + MarginFi + Kamino + Solana staking are folded into " +
+        "per-wallet totals. With multi-wallet `wallets[]`: surfaced as a parallel " +
+        "sibling slice (`nonEvm.solana`, issue #201). Mutually exclusive with " +
+        "`solanaAddresses`. Requires `SOLANA_RPC_URL` or `solanaRpcUrl` user config."
+    ),
+  solanaAddresses: z
+    .array(solanaAddressSchema)
+    .min(1)
+    .max(5)
+    .optional()
+    .describe(
+      "Multiple Solana mainnet addresses. Each gets its own balances + " +
+        "MarginFi + Kamino + staking subreaders fanned out in parallel. Per-" +
+        "address slices in `nonEvm.solana[]` with rolled-up USD totals. 1-5 " +
+        "entries (Solana subreaders are RPC-heavy — keep this lean). Mutually " +
+        "exclusive with `solanaAddress`."
     ),
   bitcoinAddress: bitcoinAddressSchema
     .optional()
     .describe(
-      "Single Bitcoin mainnet address. When provided alongside a single `wallet`, the BTC balance × USD price is folded into the same portfolio total (`breakdown.bitcoin`, `bitcoinUsd`). Mutually exclusive with `bitcoinAddresses`. Multi-wallet mode + bitcoin address(es) is ambiguous and throws — call once per EVM wallet in that case."
+      "Single Bitcoin mainnet address. With a single `wallet`: BTC balance × " +
+        "USD price is folded into per-wallet totals (`breakdown.bitcoin`, " +
+        "`bitcoinUsd`). With multi-wallet `wallets[]`: surfaced in `nonEvm.bitcoin` " +
+        "(issue #201). Mutually exclusive with `bitcoinAddresses`."
     ),
   bitcoinAddresses: z
     .array(bitcoinAddressSchema)
@@ -72,7 +106,11 @@ export const getPortfolioSummaryInput = z.object({
     .max(20)
     .optional()
     .describe(
-      "Multiple Bitcoin addresses to fold into the same portfolio total (e.g. legacy + segwit + taproot for the same Ledger account). 1-20 entries; per-address fetch errors degrade gracefully via `coverage.bitcoin`. Mutually exclusive with `bitcoinAddress`."
+      "Multiple Bitcoin addresses (e.g. legacy + segwit + taproot for the " +
+        "same Ledger account, or several account-level scans). 1-20 entries; " +
+        "per-address fetch errors degrade via `coverage.bitcoin`. Multi-wallet " +
+        "mode aggregates ALL passed addresses into a single `nonEvm.bitcoin` " +
+        "slice. Mutually exclusive with `bitcoinAddress`."
     ),
 });
 
