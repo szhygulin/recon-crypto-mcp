@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
 import { approvalCapSchema } from "../shared/approval.js";
-import { EVM_ADDRESS, SOLANA_ADDRESS } from "../../shared/address-patterns.js";
+import { EVM_ADDRESS, SOLANA_ADDRESS, TRON_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 const walletSchema = z.string().regex(EVM_ADDRESS);
@@ -453,6 +453,82 @@ export const prepareSolanaLifiSwapInput = z.object({
 });
 
 /**
+ * TRON-source LiFi swap / bridge. User signs a TRON tx via Ledger over
+ * USB; the bridge protocol delivers tokens on the destination chain
+ * (any EVM chain or Solana) after the source tx confirms.
+ *
+ * BLIND-SIGN on Ledger — the LiFi Diamond on TRON is not in the TRON
+ * app's clear-sign allowlist. User must enable "Allow blind signing" in
+ * the on-device Settings; the device then displays the txID (sha256 of
+ * raw_data_hex), which the user matches against the txID printed in the
+ * prepare receipt. TRC-20 source flows require a prior approve — this
+ * tool does not prepare it; insufficient allowance reverts on-chain.
+ */
+export const prepareTronLifiSwapInput = z.object({
+  wallet: z
+    .string()
+    .regex(TRON_ADDRESS)
+    .describe(
+      "TRON base58 wallet (T-prefixed, 34 chars) — funds the swap and signs " +
+        "the source tx on Ledger via USB. Pair via `pair_ledger_tron` first."
+    ),
+  fromToken: z
+    .string()
+    .max(50)
+    .describe(
+      "Source token. T-prefixed TRC-20 contract address OR the literal string " +
+        "\"native\" for TRX (LiFi maps \"native\" to TRX's contract address " +
+        "internally). TRC-20 source REQUIRES a prior approve to the LiFi " +
+        "Diamond on TRON (TU3ymitEKCWQFtASkEeHaPb8NfZcJtCHLt) — this tool " +
+        "does not prepare the approve; insufficient allowance reverts on-chain."
+    ),
+  fromAmount: z
+    .string()
+    .max(50)
+    .regex(/^\d+$/)
+    .describe(
+      "Raw integer amount in base units (NOT decimal-adjusted). For TRX (6 decimals) " +
+        "1 TRX = '1000000'; for TRC-20 USDT (6 decimals) 10 USDT = '10000000'."
+    ),
+  toChain: z
+    .enum([
+      ...(SUPPORTED_CHAINS as unknown as [string, ...string[]]),
+      "solana",
+    ])
+    .describe(
+      "Destination chain. Any EVM chain (cross-chain bridge to EVM) or \"solana\" " +
+        "(cross-chain bridge to Solana). LiFi internally picks the best bridge " +
+        "protocol (NearIntents, Wormhole, Allbridge, etc.)."
+    ),
+  toToken: z
+    .string()
+    .max(80)
+    .describe(
+      "Destination token. 0x-prefixed EVM token when toChain is EVM; SPL mint base58 " +
+        "when toChain=\"solana\". \"native\" works on both (resolves to the chain's " +
+        "conventional native sentinel)."
+    ),
+  toAddress: z
+    .string()
+    .max(80)
+    .describe(
+      "Destination wallet — REQUIRED. EVM hex when toChain is EVM; Solana base58 " +
+        "when toChain=\"solana\". The TRON source wallet isn't a valid recipient on " +
+        "either destination chain family."
+    ),
+  slippageBps: z
+    .number()
+    .int()
+    .min(0)
+    .max(10_000)
+    .optional()
+    .describe(
+      "Slippage tolerance in basis points (50 = 0.5%). Omit for LiFi's default " +
+        "(0.5%). Cross-chain bridges may impose their own minimums above this."
+    ),
+});
+
+/**
  * No args — `get_vaultpilot_config_status` returns a structured snapshot of
  * the local server config, intended for diagnostic / onboarding flows.
  * The output deliberately never echoes any secret values (API keys, RPC
@@ -784,5 +860,6 @@ export type GetMarginfiPositionsArgs = z.infer<typeof getMarginfiPositionsInput>
 export type GetSolanaStakingPositionsArgs = z.infer<typeof getSolanaStakingPositionsInput>;
 export type GetSolanaSetupStatusArgs = z.infer<typeof getSolanaSetupStatusInput>;
 export type PrepareSolanaLifiSwapArgs = z.infer<typeof prepareSolanaLifiSwapInput>;
+export type PrepareTronLifiSwapArgs = z.infer<typeof prepareTronLifiSwapInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;

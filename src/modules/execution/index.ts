@@ -104,6 +104,7 @@ import type {
   PrepareNativeStakeDeactivateArgs,
   PrepareNativeStakeWithdrawArgs,
   PrepareSolanaLifiSwapArgs,
+  PrepareTronLifiSwapArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -459,6 +460,23 @@ export async function prepareSolanaLifiSwap(
     ...(slippage !== undefined ? { slippage } : {}),
   });
   return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareTronLifiSwap(
+  args: PrepareTronLifiSwapArgs,
+): Promise<UnsignedTronTx> {
+  const { buildTronLifiSwap } = await import("../tron/lifi-swap.js");
+  const slippage =
+    args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined;
+  return buildTronLifiSwap({
+    wallet: args.wallet,
+    fromToken: args.fromToken,
+    fromAmount: args.fromAmount,
+    toChain: args.toChain as Parameters<typeof buildTronLifiSwap>[0]["toChain"],
+    toToken: args.toToken,
+    toAddress: args.toAddress,
+    ...(slippage !== undefined ? { slippage } : {}),
+  });
 }
 
 export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {

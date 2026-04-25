@@ -419,3 +419,79 @@ function verifyOwnerOnly(
   expectType(type, expectedType, label);
   expectAddress(requireBytes(inner, 1, `${label}.owner_address`), from, "owner_address");
 }
+
+// --- LiFi-specific extractor ----------------------------------------------
+
+/**
+ * Decode just enough of a TRON `raw_data_hex` to expose the
+ * `TriggerSmartContract` envelope. Used by the LiFi-on-TRON flow to
+ * cross-check that LiFi's response targets the LiFi Diamond contract on
+ * TRON and to extract the inner ABI calldata for the universal
+ * `BridgeData` decoder. Mirrors the structural assertions in
+ * `assertTronRawDataMatches` for `kind: "trc20_send"` but returns the
+ * raw fields to the caller rather than asserting against a fixed
+ * expectation.
+ *
+ * Throws if the contract type isn't TriggerSmartContract or the protobuf
+ * is malformed.
+ */
+export interface DecodedTronTriggerSmartContract {
+  /** Hex string (no 0x prefix) of the owner_address — 21 bytes including `41` TRON prefix. */
+  ownerAddressHex: string;
+  /** Hex string (no 0x prefix) of the contract_address — 21 bytes. */
+  contractAddressHex: string;
+  /** ABI calldata (selector + args) the call invokes on the contract. */
+  dataHex: `0x${string}`;
+  /** Native TRX value passed with the call (typically 0 for TRC-20 swaps; non-zero for TRX-source). */
+  callValueSun: bigint;
+  /** Fee limit in SUN — bound on the energy burn for this call. */
+  feeLimitSun: bigint;
+}
+
+export function decodeTronTriggerSmartContract(
+  rawDataHex: string,
+): DecodedTronTriggerSmartContract {
+  const buf = hexToBytes(rawDataHex);
+  const raw = parseProtobuf(buf);
+  const contracts = raw.get(11) ?? [];
+  if (contracts.length !== 1) {
+    throw new Error(
+      `TRON raw_data_hex must have exactly 1 contract, got ${contracts.length}. ` +
+        `LiFi-routed TRON txs are single-contract by design.`,
+    );
+  }
+  const contractBytes = contracts[0].bytes;
+  if (!contractBytes) {
+    throw new Error("TRON raw_data_hex: contract[0] not length-delimited");
+  }
+  const contract = parseProtobuf(contractBytes);
+  const typeField = contract.get(1)?.[0];
+  if (!typeField || typeField.varint === undefined) {
+    throw new Error("TRON raw_data_hex: contract.type missing");
+  }
+  const type = Number(typeField.varint);
+  if (type !== CONTRACT_TYPE.TriggerSmartContract) {
+    throw new Error(
+      `TRON raw_data_hex: expected TriggerSmartContract (${CONTRACT_TYPE.TriggerSmartContract}), got contract type ${type}. ` +
+        `LiFi-routed TRON txs are always smart-contract calls; refusing.`,
+    );
+  }
+  const parameterBytes = requireBytes(contract, 2, "contract.parameter");
+  const anyFields = parseProtobuf(parameterBytes);
+  const innerBytes = requireBytes(anyFields, 2, "Any.value");
+  const inner = parseProtobuf(innerBytes);
+
+  const ownerAddress = requireBytes(inner, 1, "TriggerSmartContract.owner_address");
+  const contractAddress = requireBytes(inner, 2, "TriggerSmartContract.contract_address");
+  const callValueSun = optionalVarint(inner, 3);
+  const dataBytes = optionalBytes(inner, 4) ?? new Uint8Array();
+  const feeLimitSun = optionalVarint(raw, 18);
+
+  return {
+    ownerAddressHex: toHex(ownerAddress),
+    contractAddressHex: toHex(contractAddress),
+    dataHex: ("0x" + toHex(dataBytes)) as `0x${string}`,
+    callValueSun,
+    feeLimitSun,
+  };
+}

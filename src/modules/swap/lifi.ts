@@ -36,7 +36,13 @@ function toLifiChain(chain: SupportedChain): number {
 }
 
 interface LifiQuoteRequestBase {
-  fromChain: SupportedChain;
+  /**
+   * Source chain. EVM `SupportedChain` for the existing `prepare_swap`
+   * flow, or `"tron"` for the LiFi-on-TRON flow (`prepare_tron_lifi_swap`)
+   * that signs a TRON tx. Solana-source has its own quote shape
+   * (`fetchSolanaQuote`) — it doesn't share this type.
+   */
+  fromChain: SupportedChain | "tron";
   /**
    * Destination chain. EVM `SupportedChain` (intra-EVM + EVM-cross), or
    * `"solana"` / `"tron"` (cross-chain bridge to a non-EVM chain). LiFi's
@@ -54,7 +60,12 @@ interface LifiQuoteRequestBase {
    * contract address for TRON — handled inside `fetchQuote`).
    */
   toToken: string | "native";
-  fromAddress: `0x${string}`;
+  /**
+   * Source wallet. EVM hex when `fromChain` is EVM; TRON base58 when
+   * `fromChain === "tron"`. LiFi's API accepts either — typed as the
+   * narrow EVM-hex string for legacy callers; TRON callers cast through.
+   */
+  fromAddress: `0x${string}` | string;
   /**
    * Destination wallet. Defaults to `fromAddress` for intra-EVM swaps
    * (LiFi behavior). REQUIRED when `toChain` is `"solana"` or `"tron"`
@@ -87,7 +98,10 @@ const TRON_NATIVE = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb";
 
 export async function fetchQuote(req: LifiQuoteRequest) {
   initLifi();
-  const fromChain = toLifiChain(req.fromChain);
+  const fromIsTron = req.fromChain === "tron";
+  const fromChain = fromIsTron
+    ? LIFI_TRON_CHAIN_ID
+    : toLifiChain(req.fromChain as SupportedChain);
   const toIsSolana = req.toChain === "solana";
   const toIsTron = req.toChain === "tron";
   const toChain = toIsSolana
