@@ -44,6 +44,8 @@ import {
 import { getPortfolioSummary } from "./modules/portfolio/index.js";
 import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 
+import { getVaultPilotConfigStatus } from "./modules/diagnostics/index.js";
+
 import { getTransactionHistory } from "./modules/history/index.js";
 import { getTransactionHistoryInput } from "./modules/history/schemas.js";
 
@@ -113,6 +115,7 @@ import {
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
   getSolanaSetupStatusInput,
+  getVaultPilotConfigStatusInput,
   getLedgerStatusInput,
   prepareAaveSupplyInput,
   prepareAaveWithdrawInput,
@@ -1449,6 +1452,25 @@ async function main() {
       inputSchema: getSolanaSetupStatusInput.shape,
     },
     handler(getSolanaSetupStatus)
+  );
+
+  server.registerTool(
+    "get_vaultpilot_config_status",
+    {
+      description:
+        "READ-ONLY — report what the server knows about its local config without revealing any " +
+        "secret values. Returns the config-file path + existence, server version, per-chain RPC " +
+        "URL source classification (env-var / provider-key / custom-url / public-fallback), " +
+        "API-key presence + source per service (Etherscan, 1inch, TronGrid, WalletConnect — " +
+        "boolean + source enum, never values), counts of paired Ledger accounts (Solana / TRON), " +
+        "the WC session-topic SUFFIX (last 8 chars only — same convention as get_ledger_status), " +
+        "and the agent-side preflight-skill install state. Pure local I/O — reads " +
+        "~/.vaultpilot-mcp/config.json + process.env, no RPC calls, no network. Use this when " +
+        "the user asks 'is my config set up correctly' or 'why is my Solana balance read failing' " +
+        "before suggesting they re-run setup or paste keys.",
+      inputSchema: getVaultPilotConfigStatusInput.shape,
+    },
+    handler(getVaultPilotConfigStatus)
   );
 
   server.registerTool(
