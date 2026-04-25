@@ -1173,7 +1173,9 @@ async function main() {
     "get_swap_quote",
     {
       description:
-        "Get a LiFi aggregator quote for a token swap (same-chain) or bridge (cross-chain). Returns expected output, fees, execution time, and the underlying tool selected. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out quotes (`amount` = target toToken output). No transaction is built.",
+        "Get a LiFi aggregator quote for a token swap (same-chain) or bridge (cross-chain). Returns expected output, fees, execution time, and the underlying tool selected. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out quotes (`amount` = target toToken output). " +
+        "Source chain is always EVM. Destination can be any EVM chain OR Solana — pass `toChain: \"solana\"` + an explicit `toAddress` (Solana base58); the bridge protocol delivers SPL tokens after the EVM source tx confirms (typically 1-15 min). Exact-out is not supported for cross-chain bridges to Solana. For Solana-source swaps and bridges (the reverse direction) use `prepare_solana_lifi_swap`. " +
+        "No transaction is built by this tool.",
       inputSchema: getSwapQuoteInput.shape,
     },
     handler(getSwapQuote)
@@ -1183,7 +1185,9 @@ async function main() {
     "prepare_swap",
     {
       description:
-        "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out (`amount` = target toToken output, e.g. \"I want 100 USDC out\"). The returned tx can be sent via `send_transaction`.",
+        "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out (`amount` = target toToken output, e.g. \"I want 100 USDC out\"). " +
+        "Source chain is always EVM. Destination can be any EVM chain OR Solana — pass `toChain: \"solana\"` + an explicit `toAddress` (Solana base58); the user signs an EVM tx and the bridge protocol delivers SPL tokens to the Solana address after confirmation. The destination-side decimals cross-check is dropped for Solana destinations (we can't read SPL via EVM RPC); LiFi's reported decimals are the source of truth there. Exact-out is not supported for cross-chain-to-Solana. For Solana-source swaps and bridges use `prepare_solana_lifi_swap`. " +
+        "The returned tx can be sent via `send_transaction`.",
       inputSchema: prepareSwapInput.shape,
     },
     txHandler("prepare_swap", prepareSwap)
