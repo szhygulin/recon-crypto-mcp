@@ -119,7 +119,9 @@ export interface PreparedSolanaTx {
     | "marginfi_supply"
     | "marginfi_withdraw"
     | "marginfi_borrow"
-    | "marginfi_repay";
+    | "marginfi_repay"
+    | "marinade_stake"
+    | "marinade_unstake_immediate";
   chain: "solana";
   from: string;
   description: string;

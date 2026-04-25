@@ -49,7 +49,9 @@ export interface SolanaDraftMeta {
     | "marginfi_supply"
     | "marginfi_withdraw"
     | "marginfi_borrow"
-    | "marginfi_repay";
+    | "marginfi_repay"
+    | "marinade_stake"
+    | "marinade_unstake_immediate";
   from: string;
   description: string;
   decoded: {

@@ -97,6 +97,8 @@ import type {
   PrepareMarginfiWithdrawArgs,
   PrepareMarginfiBorrowArgs,
   PrepareMarginfiRepayArgs,
+  PrepareMarinadeStakeArgs,
+  PrepareMarinadeUnstakeImmediateArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -334,6 +336,30 @@ export async function prepareMarginfiRepay(
     amount: args.amount,
     ...(args.accountIndex !== undefined ? { accountIndex: args.accountIndex } : {}),
     ...(args.repayAll !== undefined ? { repayAll: args.repayAll } : {}),
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareMarinadeStake(
+  args: PrepareMarinadeStakeArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarinadeStake } = await import("../solana/marinade.js");
+  const prepared = await buildMarinadeStake({
+    wallet: args.wallet,
+    amountSol: args.amountSol,
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareMarinadeUnstakeImmediate(
+  args: PrepareMarinadeUnstakeImmediateArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarinadeUnstakeImmediate } = await import(
+    "../solana/marinade.js"
+  );
+  const prepared = await buildMarinadeUnstakeImmediate({
+    wallet: args.wallet,
+    amountMSol: args.amountMSol,
   });
   return prepared as unknown as PreparedSolanaTx;
 }
@@ -1723,7 +1749,9 @@ export interface SolanaVerificationArtifact {
     | "marginfi_supply"
     | "marginfi_withdraw"
     | "marginfi_borrow"
-    | "marginfi_repay";
+    | "marginfi_repay"
+    | "marinade_stake"
+    | "marinade_unstake_immediate";
   from: string;
   messageBase64: string;
   recentBlockhash: string;
@@ -1837,6 +1865,8 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       "marginfi_withdraw",
       "marginfi_borrow",
       "marginfi_repay",
+      "marinade_stake",
+      "marinade_unstake_immediate",
     ]);
     const ledgerMessageHash = blindSignActions.has(tx.action)
       ? solanaLedgerMessageHash(tx.messageBase64)

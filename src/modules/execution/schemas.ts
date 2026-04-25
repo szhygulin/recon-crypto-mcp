@@ -265,6 +265,42 @@ export const prepareMarginfiRepayInput = z.object({
     ),
 });
 
+/**
+ * Marinade liquid-staking action schemas. Both flows share the
+ * durable-nonce-account requirement (ix[0] = nonceAdvance) so the wallet
+ * must have run prepare_solana_nonce_init first.
+ */
+export const prepareMarinadeStakeInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet that funds the deposit and receives mSOL. Must have an " +
+      "initialized durable-nonce account (prepare_solana_nonce_init) and enough " +
+      "SOL to cover the deposit + ATA rent (if mSOL ATA doesn't exist) + tx fee."
+  ),
+  amountSol: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable SOL amount to stake (e.g. "1.5"). Decimals are SOL-native ' +
+        '(9 dec); the builder rounds down to lamport precision.'
+    ),
+});
+
+export const prepareMarinadeUnstakeImmediateInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet that burns mSOL and receives SOL. Must have an initialized " +
+      "durable-nonce account and an mSOL position to unstake from. Liquid unstake " +
+      "routes through Marinade's liquidity pool (NOT delayed-unstake / OrderUnstake) " +
+      "so the user pays a small fee but receives SOL in the same tx — no one-epoch wait."
+  ),
+  amountMSol: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable mSOL amount to unstake (e.g. "1.5"). Builder converts to ' +
+        'mSOL base units (9 dec) and rounds down.'
+    ),
+});
+
 export const getSolanaSetupStatusInput = z.object({
   wallet: solanaAddressSchema.describe(
     "Solana wallet to probe. Returns the state of the durable-nonce account " +
@@ -570,6 +606,10 @@ export type PrepareMarginfiSupplyArgs = z.infer<typeof prepareMarginfiSupplyInpu
 export type PrepareMarginfiWithdrawArgs = z.infer<typeof prepareMarginfiWithdrawInput>;
 export type PrepareMarginfiBorrowArgs = z.infer<typeof prepareMarginfiBorrowInput>;
 export type PrepareMarginfiRepayArgs = z.infer<typeof prepareMarginfiRepayInput>;
+export type PrepareMarinadeStakeArgs = z.infer<typeof prepareMarinadeStakeInput>;
+export type PrepareMarinadeUnstakeImmediateArgs = z.infer<
+  typeof prepareMarinadeUnstakeImmediateInput
+>;
 export type GetMarginfiPositionsArgs = z.infer<typeof getMarginfiPositionsInput>;
 export type GetSolanaStakingPositionsArgs = z.infer<typeof getSolanaStakingPositionsInput>;
 export type GetSolanaSetupStatusArgs = z.infer<typeof getSolanaSetupStatusInput>;

@@ -68,6 +68,8 @@ import {
   prepareMarginfiWithdraw,
   prepareMarginfiBorrow,
   prepareMarginfiRepay,
+  prepareMarinadeStake,
+  prepareMarinadeUnstakeImmediate,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -105,6 +107,8 @@ import {
   prepareMarginfiWithdrawInput,
   prepareMarginfiBorrowInput,
   prepareMarginfiRepayInput,
+  prepareMarinadeStakeInput,
+  prepareMarinadeUnstakeImmediateInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -1395,6 +1399,39 @@ async function main() {
       inputSchema: prepareMarginfiRepayInput.shape,
     },
     handler(prepareMarginfiRepay)
+  );
+
+  server.registerTool(
+    "prepare_marinade_stake",
+    {
+      description:
+        "Build an unsigned Marinade stake tx: deposit `amountSol` SOL into Marinade " +
+        "and receive mSOL (Marinade's liquid-staking token). Uses the Marinade SDK's " +
+        "`marinade.deposit` so the on-chain Authorized signer is the user's wallet — no " +
+        "ephemeral keypair, Ledger-compatible. The mSOL ATA is created automatically on " +
+        "first stake (~0.002 SOL ATA rent, reclaimable). DURABLE NONCE REQUIRED — the " +
+        "wallet must have run `prepare_solana_nonce_init` first; otherwise this tool errors. " +
+        "BLIND-SIGN on Ledger (Marinade's program is not in the Solana app's clear-sign " +
+        "registry) — match the Message Hash on-device after `preview_solana_send`.",
+      inputSchema: prepareMarinadeStakeInput.shape,
+    },
+    handler(prepareMarinadeStake)
+  );
+
+  server.registerTool(
+    "prepare_marinade_unstake_immediate",
+    {
+      description:
+        "Build an unsigned Marinade IMMEDIATE liquid-unstake tx: burn `amountMSol` mSOL and " +
+        "receive SOL in the same tx via Marinade's liquidity pool (NOT delayed-unstake / " +
+        "OrderUnstake — that flow returns full SOL after one epoch but requires an ephemeral " +
+        "ticket-account signer the Ledger-only signing model can't provide; tracked as a " +
+        "follow-up). The pool charges a small fee (typically 0.3% — varies with pool depth) " +
+        "in exchange for instant liquidity. DURABLE NONCE REQUIRED + same Ledger signing " +
+        "constraints as `prepare_marinade_stake`. BLIND-SIGN on Ledger.",
+      inputSchema: prepareMarinadeUnstakeImmediateInput.shape,
+    },
+    handler(prepareMarinadeUnstakeImmediate)
   );
 
   server.registerTool(
