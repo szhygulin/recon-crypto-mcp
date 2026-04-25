@@ -24,3 +24,13 @@ export function getSolanaConnection(): Connection {
 export function resetSolanaConnection(): void {
   cachedConnection = undefined;
 }
+
+/**
+ * Resolve the mainnet RPC URL string. Same source-of-truth as
+ * `getSolanaConnection`, but exposes the URL to callers that need to
+ * construct a non-web3.js RPC client (e.g. `@solana/kit`'s `createSolanaRpc`
+ * for the Kamino SDK).
+ */
+export function getSolanaRpcUrl(): string {
+  return resolveSolanaRpcUrl(readUserConfig());
+}
