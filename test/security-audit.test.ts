@@ -178,25 +178,19 @@ describe("C4: Aave rejects native-coin pseudoaddresses", () => {
     symbol: "ETH",
   });
 
-  it("buildAaveSupply rejects the zero-address pseudoaddr", async () => {
-    const { buildAaveSupply } = await import("../src/modules/positions/actions.js");
-    await expect(
-      buildAaveSupply(makeArgs("0x0000000000000000000000000000000000000000"))
-    ).rejects.toThrow(/does not accept/i);
-  });
-
-  it("buildAaveSupply rejects the 0xEee…Eee pseudoaddr", async () => {
-    const { buildAaveSupply } = await import("../src/modules/positions/actions.js");
-    await expect(
-      buildAaveSupply(makeArgs("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"))
-    ).rejects.toThrow(/does not accept/i);
-  });
-
-  it("buildAaveRepay rejects the zero-address pseudoaddr", async () => {
-    const { buildAaveRepay } = await import("../src/modules/positions/actions.js");
-    await expect(
-      buildAaveRepay(makeArgs("0x0000000000000000000000000000000000000000"))
-    ).rejects.toThrow(/does not accept/i);
+  // Each row asserts: (1) the pseudoaddr is rejected, (2) error message
+  // includes the "does not accept" phrasing. The wrapped-token hint test
+  // stays separate (different assertion regex).
+  it.each([
+    ["buildAaveSupply", "0x0000000000000000000000000000000000000000"],
+    ["buildAaveSupply", "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"],
+    ["buildAaveRepay", "0x0000000000000000000000000000000000000000"],
+  ] as const)("%s rejects pseudoaddr %s", async (fnName, pseudo) => {
+    const mod = await import("../src/modules/positions/actions.js");
+    const fn = mod[fnName as "buildAaveSupply" | "buildAaveRepay"];
+    await expect(fn(makeArgs(pseudo as `0x${string}`))).rejects.toThrow(
+      /does not accept/i,
+    );
   });
 
   it("error message points the caller at the wrapped token", async () => {
@@ -525,57 +519,43 @@ describe("H10: RPC URL validation", () => {
     else process.env.RECON_ALLOW_INSECURE_RPC = savedLegacy;
   });
 
-  it("rejects plaintext http:// URLs", async () => {
+  // Each URL is rejected and the error message must include one of the
+  // expected fragments. Keeps RpcConfigError class assertion as a separate
+  // check (different shape — `.toThrow(ErrorClass)`).
+  it("rejects plaintext http:// URLs (RpcConfigError class check)", async () => {
     const { validateRpcUrl, RpcConfigError } = await import("../src/config/chains.js");
     expect(() => validateRpcUrl("ethereum", "http://mainnet.infura.io/v3/x"))
       .toThrow(RpcConfigError);
-    expect(() => validateRpcUrl("ethereum", "http://mainnet.infura.io/v3/x"))
-      .toThrow(/https/i);
   });
 
-  it("rejects IPv4 loopback", async () => {
+  it.each([
+    ["plaintext http", "http://mainnet.infura.io/v3/x", /https/i],
+    ["IPv4 loopback", "https://127.0.0.1:8545/", /private|loopback/i],
+    ["RFC1918 10/8", "https://10.0.0.1/", /private|loopback/i],
+    ["RFC1918 172.16/12", "https://172.16.5.4/", /private|loopback/i],
+    ["RFC1918 192.168/16", "https://192.168.1.1/", /private|loopback/i],
+    ["link-local (cloud metadata)", "https://169.254.169.254/", /private|loopback/i],
+    ["localhost", "https://localhost/", /./],
+    ["*.local hostname", "https://node.local/", /./],
+  ])("rejects %s (%s)", async (_label, url, errorPattern) => {
     const { validateRpcUrl } = await import("../src/config/chains.js");
-    expect(() => validateRpcUrl("ethereum", "https://127.0.0.1:8545/"))
-      .toThrow(/private|loopback/i);
+    expect(() => validateRpcUrl("ethereum", url)).toThrow(errorPattern);
   });
 
-  it("rejects RFC1918 private ranges (10/8, 172.16/12, 192.168/16)", async () => {
+  it.each([
+    "https://eth-mainnet.g.alchemy.com/v2/key",
+    "https://mainnet.infura.io/v3/key",
+  ])("accepts normal public https URL: %s", async (url) => {
     const { validateRpcUrl } = await import("../src/config/chains.js");
-    for (const url of [
-      "https://10.0.0.1/",
-      "https://172.16.5.4/",
-      "https://192.168.1.1/",
-      "https://169.254.169.254/", // link-local (cloud metadata)
-    ]) {
-      expect(() => validateRpcUrl("ethereum", url)).toThrow(/private|loopback/i);
-    }
+    expect(() => validateRpcUrl("ethereum", url)).not.toThrow();
   });
 
-  it("rejects localhost / *.local hostnames", async () => {
+  it.each([
+    ["VAULTPILOT_ALLOW_INSECURE_RPC", "VAULTPILOT_ALLOW_INSECURE_RPC=1 opts out (for anvil/hardhat forks)"],
+    ["RECON_ALLOW_INSECURE_RPC", "legacy RECON_ALLOW_INSECURE_RPC=1 still works (back-compat)"],
+  ])("%s allows http://127.0.0.1: %s", async (envVar) => {
     const { validateRpcUrl } = await import("../src/config/chains.js");
-    expect(() => validateRpcUrl("ethereum", "https://localhost/")).toThrow();
-    expect(() => validateRpcUrl("ethereum", "https://node.local/")).toThrow();
-  });
-
-  it("accepts normal public https URLs", async () => {
-    const { validateRpcUrl } = await import("../src/config/chains.js");
-    expect(() =>
-      validateRpcUrl("ethereum", "https://eth-mainnet.g.alchemy.com/v2/key")
-    ).not.toThrow();
-    expect(() =>
-      validateRpcUrl("ethereum", "https://mainnet.infura.io/v3/key")
-    ).not.toThrow();
-  });
-
-  it("VAULTPILOT_ALLOW_INSECURE_RPC=1 opts out (for anvil/hardhat forks)", async () => {
-    const { validateRpcUrl } = await import("../src/config/chains.js");
-    process.env.VAULTPILOT_ALLOW_INSECURE_RPC = "1";
-    expect(() => validateRpcUrl("ethereum", "http://127.0.0.1:8545")).not.toThrow();
-  });
-
-  it("legacy RECON_ALLOW_INSECURE_RPC=1 still works (back-compat)", async () => {
-    const { validateRpcUrl } = await import("../src/config/chains.js");
-    process.env.RECON_ALLOW_INSECURE_RPC = "1";
+    process.env[envVar] = "1";
     expect(() => validateRpcUrl("ethereum", "http://127.0.0.1:8545")).not.toThrow();
   });
 });
