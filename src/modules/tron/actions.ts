@@ -63,6 +63,16 @@ async function trongridPost<T>(
     headers,
     body: JSON.stringify(body),
   });
+  if (res.status === 429) {
+    // Same pattern as trongridGet — observability hook for the
+    // "set up a TronGrid API key" nudge surfaced by
+    // `get_vaultpilot_config_status`. Dynamic import to keep this
+    // file's import graph unchanged for code-loading order.
+    const { recordRateLimit } = await import(
+      "../../data/rate-limit-tracker.js"
+    );
+    recordRateLimit({ kind: "tron" });
+  }
   if (!res.ok) {
     throw new Error(`TronGrid ${path} returned ${res.status} ${res.statusText}`);
   }

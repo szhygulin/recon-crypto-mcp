@@ -23,6 +23,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readUserConfig, getConfigPath } from "../../config/user-config.js";
 import { SUPPORTED_CHAINS, type SupportedChain } from "../../types/index.js";
+import {
+  getActiveHints,
+  type SetupHint,
+} from "../../data/rate-limit-tracker.js";
 
 type EvmRpcSource =
   | "env-var"
@@ -118,6 +122,19 @@ interface VaultPilotConfigStatus {
     expectedPath: string;
     installed: boolean;
   };
+  /**
+   * Active setup-key nudges from the rate-limit tracker
+   * (`src/data/rate-limit-tracker.ts`). Surfaces when a no-key
+   * default RPC has been throttled past the threshold (3 hits in 5
+   * min). Each entry tells the user which provider to sign up for,
+   * the dashboard URL, and the wizard subcommand to add the key.
+   *
+   * Empty when no source has tripped (the common case). Agent-side
+   * convention: when non-empty, surface the entries to the user as
+   * actionable advice — these are NOT noise, they're a real
+   * remediation path the user wants to act on.
+   */
+  setupHints: SetupHint[];
 }
 
 /**
@@ -167,6 +184,27 @@ export function getVaultPilotConfigStatus(_args: Record<string, never> = {}): Va
       : undefined;
 
   const skillPath = skillMarkerPath();
+
+  // Rate-limit hints. Each `evmUsingDefault[chain]` is true iff the
+  // chain's RPC source classifier resolved to "public-fallback" —
+  // i.e. the user is on PublicNode without a key. solanaUsingDefault
+  // and tronUsingDefault use the same "no key set" check.
+  const evmUsingDefault = {
+    ethereum: rpc.ethereum.source === "public-fallback",
+    arbitrum: rpc.arbitrum.source === "public-fallback",
+    polygon: rpc.polygon.source === "public-fallback",
+    base: rpc.base.source === "public-fallback",
+    optimism: rpc.optimism.source === "public-fallback",
+  };
+  const solanaUsingDefault = rpc.solana.source === "public-fallback";
+  const tronGridKey = classifyApiKey("TRON_API_KEY", cfg?.tronApiKey);
+  const tronUsingDefault = !tronGridKey.set;
+  const setupHints = getActiveHints({
+    evmUsingDefault,
+    solanaUsingDefault,
+    tronUsingDefault,
+  });
+
   return {
     configPath,
     configFileExists: existsSync(configPath),
@@ -175,7 +213,7 @@ export function getVaultPilotConfigStatus(_args: Record<string, never> = {}): Va
     apiKeys: {
       etherscan: classifyApiKey("ETHERSCAN_API_KEY", cfg?.etherscanApiKey),
       oneInch: classifyApiKey("ONEINCH_API_KEY", cfg?.oneInchApiKey),
-      tronGrid: classifyApiKey("TRON_API_KEY", cfg?.tronApiKey),
+      tronGrid: tronGridKey,
       walletConnectProjectId: classifyApiKey(
         "WALLETCONNECT_PROJECT_ID",
         cfg?.walletConnect?.projectId,
@@ -190,5 +228,6 @@ export function getVaultPilotConfigStatus(_args: Record<string, never> = {}): Va
       expectedPath: skillPath,
       installed: existsSync(skillPath),
     },
+    setupHints,
   };
 }
