@@ -16,6 +16,11 @@
  *   - token_extension_change    (Token-2022 mint gained extensions vs cached
  *                                snapshot; flagged severity by extension class)
  *   - oracle_staleness          (Pyth feed publish_time > 60s old)
+ *   - oracle_price_anomaly      (Pyth feed price deviates >threshold% from
+ *                                rolling 24h median; per-feed override —
+ *                                stables tighter than volatiles. Issue #255.
+ *                                Background poller in oracle-poller.ts
+ *                                maintains the persistent history.)
  *   - known_exploit             (program in vendored exploit list +
  *                                optional SOLANA_INCIDENT_FEED_URL hybrid)
  *   - pending_squads_upgrade    (any pre-execution Squads V4 vault tx
@@ -25,7 +30,6 @@
  *
  * Deferred (separate v2 follow-up issues):
  *   - rpc_divergence            (needs 2nd RPC config — issue #248 family)
- *   - oracle_price_anomaly      (needs rolling 24h history — issue #255)
  */
 import { PublicKey } from "@solana/web3.js";
 import { getSolanaConnection } from "../solana/rpc.js";
@@ -647,6 +651,116 @@ export async function getSolanaProgramLayerSignals(
       flagThresholdSeconds: PYTH_STALENESS_FLAG_SECONDS,
       staleFeeds: stale,
       feedErrors,
+    },
+  });
+
+  // oracle_price_anomaly — current Pyth price vs persisted 24h rolling
+  // median (issue #255). The poller in oracle-poller.ts maintains the
+  // history; this signal compares the current read against it. Per-feed
+  // threshold (anomalyThresholdPct) — stables tighter than volatiles.
+  //
+  // Rationale for using parsePriceData (rather than the offset-208
+  // hand-decode the staleness signal uses): the issue explicitly
+  // flagged Pyth account-layout drift as a v2 risk, and price decode
+  // needs more than just publish_time. The official @pythnetwork/client
+  // parser handles version skew and emits typed prices; if the layout
+  // changes upstream the parser surfaces an error rather than silently
+  // returning garbage. Cost: extra dep (~30KB).
+  const { parsePriceData: _parsePriceData, PriceStatus: _PriceStatus } =
+    await import("@pythnetwork/client");
+  const { getMedian, getFeedSnapshot } = await import("./oracle-history.js");
+  type AnomalyEntry = {
+    feedAddress: string;
+    symbol: string;
+    currentPrice: number;
+    medianPrice: number;
+    deviationPct: number;
+    thresholdPct: number;
+    sampleCount: number;
+    historySpanHours?: number;
+  };
+  const anomalies: AnomalyEntry[] = [];
+  const anomalyFeedErrors: { feedAddress: string; error: string }[] = [];
+  const anomalyFeedSkipped: { feedAddress: string; reason: string }[] = [];
+  await Promise.all(
+    scannedFeeds.map(async (f) => {
+      try {
+        const acc = await conn.getAccountInfo(new PublicKey(f.feedAddress));
+        if (!acc) {
+          anomalyFeedErrors.push({
+            feedAddress: f.feedAddress,
+            error: "account not found",
+          });
+          return;
+        }
+        const data = _parsePriceData(acc.data);
+        if (data.status !== _PriceStatus.Trading || data.price === undefined) {
+          anomalyFeedSkipped.push({
+            feedAddress: f.feedAddress,
+            reason: `status=${_PriceStatus[data.status] ?? data.status}`,
+          });
+          return;
+        }
+        const median = getMedian(f.feedAddress);
+        if (median === undefined) {
+          // Not enough history yet — typical for the first hour after
+          // a fresh server start. The anomaly check is silently skipped
+          // for this feed; once the poller accumulates enough samples
+          // the detector starts firing.
+          anomalyFeedSkipped.push({
+            feedAddress: f.feedAddress,
+            reason: "history below minSamples threshold",
+          });
+          return;
+        }
+        if (median <= 0) {
+          // Median of zero or negative isn't a useful baseline; skip
+          // rather than divide by it.
+          anomalyFeedSkipped.push({
+            feedAddress: f.feedAddress,
+            reason: `median ${median} is non-positive`,
+          });
+          return;
+        }
+        const deviationPct = Math.abs(data.price - median) / median;
+        const snap = getFeedSnapshot(f.feedAddress);
+        const historySpanHours =
+          snap && snap.oldestSec !== undefined && snap.newestSec !== undefined
+            ? Math.round(((snap.newestSec - snap.oldestSec) / 3600) * 10) / 10
+            : undefined;
+        if (deviationPct > f.anomalyThresholdPct) {
+          anomalies.push({
+            feedAddress: f.feedAddress,
+            symbol: f.symbol,
+            currentPrice: data.price,
+            medianPrice: median,
+            deviationPct: Math.round(deviationPct * 10000) / 10000,
+            thresholdPct: f.anomalyThresholdPct,
+            sampleCount: snap?.count ?? 0,
+            ...(historySpanHours !== undefined ? { historySpanHours } : {}),
+          });
+        }
+      } catch (err) {
+        anomalyFeedErrors.push({
+          feedAddress: f.feedAddress,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }),
+  );
+  signals.push({
+    name: "oracle_price_anomaly",
+    available: true,
+    flagged: anomalies.length > 0,
+    detail: {
+      anomalies,
+      perFeedThresholds: scannedFeeds.map((f) => ({
+        feedAddress: f.feedAddress,
+        symbol: f.symbol,
+        thresholdPct: f.anomalyThresholdPct,
+      })),
+      feedErrors: anomalyFeedErrors,
+      feedsSkipped: anomalyFeedSkipped,
     },
   });
 

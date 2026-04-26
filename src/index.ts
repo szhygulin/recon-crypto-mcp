@@ -3032,6 +3032,18 @@ async function main() {
     handler(requestCapability)
   );
 
+  // Kick off the oracle-price-anomaly background poller (#255). Reads
+  // each KNOWN_PYTH_FEED every 60s and persists samples to
+  // ~/.vaultpilot-mcp/incidents/oracle-medians.json so the rolling
+  // 24h median survives MCP-server restarts. Idempotent — safe to
+  // call here even if a future code path also invokes it. The
+  // setInterval is unref'd so it doesn't keep the process alive
+  // beyond the stdio transport's lifecycle.
+  const { startOraclePoller } = await import(
+    "./modules/incidents/oracle-poller.js"
+  );
+  startOraclePoller();
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
