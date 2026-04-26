@@ -40,6 +40,15 @@ async function trongridGet<T>(path: string, apiKey: string | undefined): Promise
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["TRON-PRO-API-KEY"] = apiKey;
   const res = await fetchWithTimeout(`${TRONGRID_BASE_URL}${path}`, { headers });
+  if (res.status === 429) {
+    // Tag the rate-limit hit so `get_vaultpilot_config_status` can
+    // surface a "set up a TronGrid API key" hint to the user. We
+    // still throw — tagging is purely an observability hook.
+    const { recordRateLimit } = await import(
+      "../../data/rate-limit-tracker.js"
+    );
+    recordRateLimit({ kind: "tron" });
+  }
   if (!res.ok) {
     throw new Error(`TronGrid ${path} returned ${res.status} ${res.statusText}`);
   }

@@ -2,6 +2,57 @@ import { createPublicClient, http, type PublicClient, type Transport } from "vie
 import { resolveRpcUrl, VIEM_CHAINS } from "../config/chains.js";
 import { readUserConfig, onRpcConfigChange } from "../config/user-config.js";
 import { CHAIN_IDS, type SupportedChain } from "../types/index.js";
+import {
+  recordRateLimit,
+  resetRateLimitTracker,
+  type RateLimitSource,
+} from "./rate-limit-tracker.js";
+
+/**
+ * Type-narrowing predicate: which `SupportedChain`s does the
+ * rate-limit tracker know about? All current ones, but kept explicit
+ * so adding a new chain to `SupportedChain` without updating
+ * `RateLimitSource` is a compile-time error rather than a silent skip.
+ */
+function isTrackedEvmChain(
+  chain: SupportedChain,
+): chain is Extract<RateLimitSource, { kind: "evm" }>["chain"] {
+  return (
+    chain === "ethereum" ||
+    chain === "arbitrum" ||
+    chain === "polygon" ||
+    chain === "base" ||
+    chain === "optimism"
+  );
+}
+
+/**
+ * Detect a rate-limit error from a thrown viem RPC failure. viem
+ * surfaces HTTP 429 as `HttpRequestError` with `.status === 429`
+ * after its internal retries are exhausted; some providers (Alchemy,
+ * Infura) instead return a JSON-RPC error with code -32005 ("request
+ * limit exceeded") which viem wraps as an `RpcRequestError`. We accept
+ * either shape — the goal is "did the upstream throttle us", not
+ * "exact wire shape".
+ */
+function isRateLimitError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as {
+    status?: number;
+    code?: number;
+    cause?: { status?: number; code?: number };
+    details?: string;
+  };
+  if (e.status === 429) return true;
+  if (e.code === -32005) return true;
+  if (e.cause?.status === 429) return true;
+  if (e.cause?.code === -32005) return true;
+  // viem sometimes nests further (HttpRequestError → cause → cause).
+  const innerCause = (e.cause as { cause?: { status?: number; code?: number } })?.cause;
+  if (innerCause?.status === 429) return true;
+  if (innerCause?.code === -32005) return true;
+  return false;
+}
 
 const clients = new Map<SupportedChain, PublicClient>();
 const verifiedChains = new Set<SupportedChain>();
@@ -78,6 +129,10 @@ onRpcConfigChange(() => {
   clients.clear();
   verifiedChains.clear();
   limiters.clear();
+  // Drop accumulated 429 counts too — once the user adds an API key,
+  // historical hits against the previous (default) endpoint are
+  // irrelevant to whether the new endpoint is also being throttled.
+  resetRateLimitTracker();
 });
 
 /**
@@ -106,6 +161,15 @@ function limitedHttp(chain: SupportedChain, url: string, httpOpts: {
         await limiter.acquire();
         try {
           return await originalRequest(args);
+        } catch (err) {
+          // Tag rate-limit errors with the source-chain. This is what
+          // surfaces a setup-key nudge to the user via
+          // `get_vaultpilot_config_status`. We re-throw the original
+          // error untouched — this is purely an observability hook.
+          if (isRateLimitError(err) && isTrackedEvmChain(chain)) {
+            recordRateLimit({ kind: "evm", chain });
+          }
+          throw err;
         } finally {
           limiter.release();
         }
