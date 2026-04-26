@@ -1,0 +1,484 @@
+/**
+ * Top-level contacts orchestrator. Implements the four MCP tools —
+ * `add_contact` / `remove_contact` / `list_contacts` /
+ * `verify_contacts` — against the per-chain signed blobs in
+ * `~/.vaultpilot-mcp/contacts.json`.
+ *
+ * v1.0 chain support:
+ *   - BTC: anchor selected from non-taproot pairings (segwit > p2sh-segwit > legacy)
+ *   - EVM: anchor selected from active WC session's first account
+ *   - Solana / TRON: not yet supported, returns CONTACTS_CHAIN_NOT_YET_SUPPORTED
+ *
+ * In-memory anchor + version tracking — see `anchorState` below.
+ * Re-derived from the device on session start; mismatch with the
+ * disk-resident anchor surfaces CONTACTS_ANCHOR_MISMATCH at read time.
+ */
+import { canonicalize, buildSigningPreimage } from "./canonicalize.js";
+import {
+  readContactsFile,
+  readContactsStrict,
+  writeContactsFile,
+} from "./storage.js";
+import {
+  type ContactsFile,
+  type ChainBlob,
+  type ListedContact,
+  type VerifyResult,
+  type AddContactArgs,
+  type RemoveContactArgs,
+  type ListContactsArgs,
+  type VerifyContactsArgs,
+  type ContactChain,
+  type SignedContactEntry,
+  ContactsError,
+  CONTACT_ADDRESS_PATTERNS,
+  emptyContactsFile,
+} from "./schemas.js";
+import {
+  signContactsBlobBtc,
+  pickBtcAnchor,
+  assertBtcAnchorAvailable,
+  type BtcAnchor,
+} from "../signers/contacts/btc.js";
+import {
+  signContactsBlobEvm,
+  pickEvmAnchor,
+  type EvmAnchor,
+} from "../signers/contacts/evm.js";
+import { verifyBtcBlob, verifyEvmBlob } from "./verify.js";
+
+// ---------- in-memory anchor + version tracking ----------
+
+/**
+ * Per-chain in-memory state captured on first read of this session.
+ * Once set, subsequent reads compare against it: any disk swap that
+ * changes anchorAddress fails CONTACTS_ANCHOR_MISMATCH; any version
+ * decrement fails CONTACTS_VERSION_ROLLBACK.
+ *
+ * Caveat documented in SECURITY.md: a cold-start rollback before any
+ * session has read the file is undetectable here — that's the limit
+ * of in-memory tracking.
+ */
+const anchorState: Record<
+  ContactChain,
+  { anchorAddress?: string; maxVersion?: number }
+> = { btc: {}, evm: {}, solana: {}, tron: {} };
+
+function recordAnchor(chain: ContactChain, blob: ChainBlob | null): void {
+  if (!blob) return;
+  const state = anchorState[chain];
+  if (!state.anchorAddress) state.anchorAddress = blob.anchorAddress;
+  if (state.maxVersion === undefined || blob.version > state.maxVersion) {
+    state.maxVersion = blob.version;
+  }
+}
+
+/** Test-only: reset the in-memory anchor + version state. */
+export function _resetContactsAnchorStateForTests(): void {
+  anchorState.btc = {};
+  anchorState.evm = {};
+  anchorState.solana = {};
+  anchorState.tron = {};
+}
+
+// ---------- chain dispatch helpers ----------
+
+function isV1Chain(chain: ContactChain): chain is "btc" | "evm" {
+  return chain === "btc" || chain === "evm";
+}
+
+function rejectIfNotV1(chain: ContactChain): void {
+  if (!isV1Chain(chain)) {
+    throw new Error(
+      `${ContactsError.ChainNotYetSupported}: chain "${chain}" requires its own ` +
+        `internal signing helper which lands in v1.5. v1.0 supports btc + evm.`,
+    );
+  }
+}
+
+async function pickAnchorForChain(
+  chain: "btc" | "evm",
+): Promise<BtcAnchor | EvmAnchor> {
+  if (chain === "btc") return assertBtcAnchorAvailable();
+  return pickEvmAnchor();
+}
+
+async function signBlobForChain(args: {
+  chain: "btc" | "evm";
+  preimage: string;
+  anchor: BtcAnchor | EvmAnchor;
+}): Promise<string> {
+  if (args.chain === "btc") {
+    const out = await signContactsBlobBtc({
+      preimage: args.preimage,
+      anchor: args.anchor as BtcAnchor,
+    });
+    return out.signature;
+  }
+  const out = await signContactsBlobEvm({
+    preimage: args.preimage,
+    anchor: args.anchor as EvmAnchor,
+  });
+  return out.signature;
+}
+
+async function verifyBlobForChain(
+  chain: "btc" | "evm",
+  blob: ChainBlob,
+): Promise<boolean> {
+  if (chain === "btc") return verifyBtcBlob(blob);
+  return verifyEvmBlob(blob);
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+// ---------- read-side validation ----------
+
+/**
+ * Strict check on a single chain's blob. Throws the matching CONTACTS_*
+ * error code on any failure; returns the verified blob on success.
+ */
+async function validateChainBlob(
+  chain: ContactChain,
+  blob: ChainBlob,
+): Promise<ChainBlob> {
+  if (!isV1Chain(chain)) {
+    // We don't have signers for these in v1; storage shouldn't either.
+    throw new Error(
+      `${ContactsError.ChainNotYetSupported}: ${chain} blob exists in storage ` +
+        `but no v1 verifier is wired.`,
+    );
+  }
+  // Anchor-mismatch: in-memory anchor (if present) must match disk.
+  const recorded = anchorState[chain].anchorAddress;
+  if (recorded && recorded !== blob.anchorAddress) {
+    throw new Error(
+      `${ContactsError.AnchorMismatch}: ${chain} blob anchor changed mid-session ` +
+        `(recorded=${recorded}, disk=${blob.anchorAddress}). ` +
+        `Possible disk tampering — refusing to use this list.`,
+    );
+  }
+  // Version-rollback: must be ≥ the highest version this session has seen.
+  const maxV = anchorState[chain].maxVersion;
+  if (maxV !== undefined && blob.version < maxV) {
+    throw new Error(
+      `${ContactsError.VersionRollback}: ${chain} blob version ${blob.version} ` +
+        `is lower than highest seen this session (${maxV}). Replay/rollback ` +
+        `attempt — refusing.`,
+    );
+  }
+  // Signature: must verify.
+  const ok = await verifyBlobForChain(chain, blob);
+  if (!ok) {
+    throw new Error(
+      `${ContactsError.Tampered}: ${chain} blob signature invalid. The contacts ` +
+        `file may have been edited between sessions.`,
+    );
+  }
+  recordAnchor(chain, blob);
+  return blob;
+}
+
+// ---------- public API ----------
+
+export async function addContact(args: AddContactArgs): Promise<{
+  chain: ContactChain;
+  label: string;
+  address: string;
+  version: number;
+  anchorAddress: string;
+}> {
+  rejectIfNotV1(args.chain);
+  const chain = args.chain as "btc" | "evm";
+  // Address format validation up front.
+  if (!CONTACT_ADDRESS_PATTERNS[args.chain].test(args.address)) {
+    throw new Error(
+      `${ContactsError.AddressFormatMismatch}: address "${args.address}" does not ` +
+        `match the expected format for chain "${args.chain}".`,
+    );
+  }
+
+  const file = readContactsFile();
+  const existingBlob = file.chains[chain];
+  // If a blob exists, verify it BEFORE mutating — any tamper means we
+  // can't safely merge new entries in.
+  if (existingBlob) {
+    await validateChainBlob(chain, existingBlob);
+    // Duplicate detection: same (address) on the chain — reject;
+    // adding the same LABEL replaces (per design), but the same
+    // address under a different label is suspicious so we surface.
+    const collision = existingBlob.entries.find(
+      (e) => e.address === args.address && e.label !== args.label,
+    );
+    if (collision) {
+      throw new Error(
+        `${ContactsError.DuplicateAddress}: address ${args.address} is already ` +
+          `saved as "${collision.label}" on ${args.chain}. Remove the existing ` +
+          `entry first if you want to rename, or pick a different address.`,
+      );
+    }
+  }
+
+  const anchor = await pickAnchorForChain(chain);
+  // Build the new entries: replace if same label, append otherwise.
+  const oldEntries: SignedContactEntry[] = existingBlob?.entries ?? [];
+  const filtered = oldEntries.filter((e) => e.label !== args.label);
+  const newEntry: SignedContactEntry = {
+    label: args.label,
+    address: args.address,
+    addedAt:
+      oldEntries.find((e) => e.label === args.label)?.addedAt ?? nowIso(),
+  };
+  const nextEntries = [...filtered, newEntry];
+  const nextVersion = (existingBlob?.version ?? 0) + 1;
+  const signedAt = nowIso();
+  const preimage = canonicalize(
+    buildSigningPreimage({
+      chainId: chain,
+      version: nextVersion,
+      anchorAddress: anchor.address,
+      signedAt,
+      entries: nextEntries,
+    }),
+  );
+  const signature = await signBlobForChain({ chain, preimage, anchor });
+
+  const newBlob: ChainBlob = {
+    version: nextVersion,
+    anchorAddress: anchor.address,
+    anchorPath: anchor.path,
+    ...(chain === "btc"
+      ? { anchorAddressType: (anchor as BtcAnchor).addressType }
+      : {}),
+    signedAt,
+    entries: nextEntries.sort((a, b) =>
+      a.label < b.label ? -1 : a.label > b.label ? 1 : 0,
+    ),
+    signature,
+  };
+
+  // Update metadata sidecar if notes/tags supplied.
+  const newMetadata = { ...file.metadata };
+  if (args.notes !== undefined || args.tags !== undefined) {
+    const existingMeta = newMetadata[args.label];
+    newMetadata[args.label] = {
+      ...(args.notes !== undefined ? { notes: args.notes } : {}),
+      ...(args.tags !== undefined ? { tags: args.tags } : {}),
+      createdAt: existingMeta?.createdAt ?? nowIso(),
+    };
+  }
+
+  const next: ContactsFile = {
+    ...file,
+    chains: { ...file.chains, [chain]: newBlob },
+    metadata: newMetadata,
+  };
+  writeContactsFile(next);
+  recordAnchor(chain, newBlob);
+  return {
+    chain,
+    label: args.label,
+    address: args.address,
+    version: nextVersion,
+    anchorAddress: anchor.address,
+  };
+}
+
+export async function removeContact(args: RemoveContactArgs): Promise<{
+  removed: Array<{ chain: ContactChain; address: string; version: number }>;
+}> {
+  const file = readContactsFile();
+  const chains: Array<"btc" | "evm"> = args.chain
+    ? (rejectIfNotV1(args.chain), [args.chain as "btc" | "evm"])
+    : ["btc", "evm"];
+
+  const removed: Array<{ chain: ContactChain; address: string; version: number }> = [];
+  let next = file;
+  for (const chain of chains) {
+    const blob = next.chains[chain];
+    if (!blob) continue;
+    const target = blob.entries.find((e) => e.label === args.label);
+    if (!target) continue;
+    await validateChainBlob(chain, blob);
+    const anchor = await pickAnchorForChain(chain);
+    const filtered = blob.entries.filter((e) => e.label !== args.label);
+    const nextVersion = blob.version + 1;
+    const signedAt = nowIso();
+    const preimage = canonicalize(
+      buildSigningPreimage({
+        chainId: chain,
+        version: nextVersion,
+        anchorAddress: anchor.address,
+        signedAt,
+        entries: filtered,
+      }),
+    );
+    const signature = await signBlobForChain({ chain, preimage, anchor });
+    const newBlob: ChainBlob = {
+      ...blob,
+      version: nextVersion,
+      anchorAddress: anchor.address,
+      anchorPath: anchor.path,
+      signedAt,
+      entries: filtered,
+      signature,
+    };
+    next = {
+      ...next,
+      chains: { ...next.chains, [chain]: newBlob },
+    };
+    removed.push({ chain, address: target.address, version: nextVersion });
+    recordAnchor(chain, newBlob);
+  }
+
+  // Drop the metadata row if NO chain still references the label.
+  const stillReferenced = (["btc", "evm"] as const).some((c) =>
+    next.chains[c]?.entries.some((e) => e.label === args.label),
+  );
+  if (!stillReferenced && next.metadata[args.label]) {
+    const { [args.label]: _, ...rest } = next.metadata;
+    next = { ...next, metadata: rest };
+  }
+
+  if (removed.length === 0) {
+    throw new Error(
+      `${ContactsError.LabelNotFound}: no contact with label "${args.label}" found ` +
+        `on ${args.chain ? `chain ${args.chain}` : "any chain"}.`,
+    );
+  }
+  writeContactsFile(next);
+  return { removed };
+}
+
+export async function listContacts(
+  args: ListContactsArgs,
+): Promise<{ contacts: ListedContact[] }> {
+  const file = readContactsStrict();
+  const targets: Array<"btc" | "evm"> = args.chain
+    ? (rejectIfNotV1(args.chain), [args.chain as "btc" | "evm"])
+    : ["btc", "evm"];
+
+  // Verify every target chain BEFORE building the joined view.
+  // Strict failure — any tamper aborts (no silent fallback).
+  const verified: Array<{ chain: "btc" | "evm"; blob: ChainBlob }> = [];
+  for (const chain of targets) {
+    const blob = file.chains[chain];
+    if (!blob) continue;
+    await validateChainBlob(chain, blob);
+    verified.push({ chain, blob });
+  }
+
+  // Join by label across the verified blobs.
+  const byLabel = new Map<string, ListedContact>();
+  for (const { chain, blob } of verified) {
+    for (const entry of blob.entries) {
+      if (args.label && entry.label !== args.label) continue;
+      const existing = byLabel.get(entry.label);
+      const meta = file.metadata[entry.label];
+      const earlierAddedAt =
+        existing && existing.addedAt < entry.addedAt
+          ? existing.addedAt
+          : entry.addedAt;
+      const newAddresses = {
+        ...(existing?.addresses ?? {}),
+        [chain]: entry.address,
+      };
+      byLabel.set(entry.label, {
+        label: entry.label,
+        addresses: newAddresses,
+        ...(meta?.notes !== undefined ? { notes: meta.notes } : {}),
+        ...(meta?.tags !== undefined ? { tags: meta.tags } : {}),
+        addedAt: earlierAddedAt,
+      });
+    }
+  }
+
+  const contacts = Array.from(byLabel.values()).sort((a, b) =>
+    a.label < b.label ? -1 : a.label > b.label ? 1 : 0,
+  );
+  return { contacts };
+}
+
+export async function verifyContacts(
+  args: VerifyContactsArgs,
+): Promise<{ results: VerifyResult[] }> {
+  let file: ContactsFile;
+  try {
+    file = readContactsStrict();
+  } catch {
+    // Even strict read can't parse → return one synthetic row per
+    // requested chain saying CONTACTS_TAMPERED.
+    const chains: Array<"btc" | "evm"> = args.chain
+      ? (rejectIfNotV1(args.chain), [args.chain as "btc" | "evm"])
+      : ["btc", "evm"];
+    return {
+      results: chains.map((c) => ({
+        chain: c,
+        ok: false,
+        reason: ContactsError.Tampered,
+      })),
+    };
+  }
+
+  const targets: Array<"btc" | "evm"> = args.chain
+    ? (rejectIfNotV1(args.chain), [args.chain as "btc" | "evm"])
+    : ["btc", "evm"];
+  const results: VerifyResult[] = [];
+  for (const chain of targets) {
+    const blob = file.chains[chain];
+    if (!blob) {
+      results.push({ chain, ok: false, reason: "no entries on this chain" });
+      continue;
+    }
+    try {
+      await validateChainBlob(chain, blob);
+      results.push({
+        chain,
+        ok: true,
+        anchorAddress: blob.anchorAddress,
+        version: blob.version,
+        entryCount: blob.entries.length,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Surface the matching CONTACTS_* error code.
+      const code = msg.split(":")[0];
+      results.push({ chain, ok: false, reason: code });
+    }
+  }
+  return { results };
+}
+
+// ---------- exposed for resolver ----------
+
+/**
+ * Internal-only "do we have any verified entries on this chain right
+ * now?" probe. Used by the resolver's reverse-lookup decoration —
+ * silently skips reverse lookup if the file is tampered (the literal
+ * address still flows through unchanged), surfaces a warning instead.
+ *
+ * Returns `null` when storage / verification fails; returns the
+ * verified blob otherwise.
+ */
+export async function tryReadVerifiedBlob(
+  chain: "btc" | "evm",
+): Promise<ChainBlob | null> {
+  let file: ContactsFile;
+  try {
+    file = readContactsStrict();
+  } catch {
+    return null;
+  }
+  const blob = file.chains[chain];
+  if (!blob) return null;
+  try {
+    await validateChainBlob(chain, blob);
+    return blob;
+  } catch {
+    return null;
+  }
+}
+
+export { emptyContactsFile };

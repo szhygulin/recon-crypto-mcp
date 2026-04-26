@@ -198,15 +198,27 @@ describe("H3: pre-sign check uses pinned Aave V3 Pool address", () => {
 });
 
 // ====================================================================
-// M1 — WalletConnect required methods are the narrow eth_* set only.
+// M1 — WalletConnect required methods scope. Address-book v1.0
+// (path-C decision) added `personal_sign` to enable EIP-191 signing
+// of the contacts blob. `eth_signTypedData_v4` remains EXCLUDED
+// because we have no current tool that needs typed-data and it's the
+// canonical Permit2 / off-chain-order phishing surface. The full
+// trade-off is documented at REQUIRED_NAMESPACES in walletconnect.ts.
 // ====================================================================
-describe("M1: REQUIRED_NAMESPACES scopes away blind-sign methods", () => {
-  it("does not request personal_sign or eth_signTypedData_v4", async () => {
-    const { REQUIRED_NAMESPACES } = await import("../src/signing/walletconnect.js");
+describe("M1: REQUIRED_NAMESPACES scope", () => {
+  it("includes eth_sendTransaction + personal_sign; excludes typed-data", async () => {
+    const { REQUIRED_NAMESPACES } = await import(
+      "../src/signing/walletconnect.js"
+    );
     const methods = REQUIRED_NAMESPACES.eip155.methods;
-    expect(methods).not.toContain("personal_sign");
-    expect(methods).not.toContain("eth_signTypedData_v4");
     expect(methods).toContain("eth_sendTransaction");
+    // personal_sign is needed by the address-book signer (issue:
+    // address-book v1.0). Hardwired domain prefix in the contacts
+    // signer is the per-call defense.
+    expect(methods).toContain("personal_sign");
+    // Typed-data REMAINS excluded — no current tool needs it.
+    expect(methods).not.toContain("eth_signTypedData_v4");
+    expect(methods).not.toContain("eth_signTypedData");
   });
 });
 

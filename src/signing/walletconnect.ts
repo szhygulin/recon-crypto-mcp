@@ -71,13 +71,27 @@ function tightenWcStoragePerms(root: string): void {
 const DEFAULT_PROJECT_ID = "";
 
 /**
- * EVM namespace requested when proposing a session. We deliberately omit
- * `personal_sign` and `eth_signTypedData_v4` — no tool in this server produces
- * either, so requesting them would be an over-broad capability grant. Blind
- * typed-data signing is the canonical Permit2 / off-chain-order phishing
- * surface; scoping the session away from it means a compromised process can't
- * issue those requests against a live pairing without reconnecting (which the
- * user would see prompted on their device).
+ * EVM namespace requested when proposing a session.
+ *
+ * `personal_sign` is included because the address book (`add_contact` /
+ * `verify_contacts`) needs an EIP-191 signature over the contacts blob
+ * with the user's paired Ledger key — the only way to give the file
+ * tamper-evidence on EVM. The trade-off is documented in detail in
+ * `SECURITY.md` ("Address book — EVM signing trade-off"): once
+ * `personal_sign` is in the session scope, ANY code path with access
+ * to the live `c.request(...)` can call it. We mitigate at the code
+ * boundary by hardwiring the `VaultPilot-contact-v1:` domain prefix
+ * inside `src/signers/contacts/evm.ts` and rejecting raw / undomained
+ * `personal_sign` requests at the contacts-signer layer — but a
+ * compromised MCP can still bypass our signer and issue a raw
+ * `personal_sign` directly via the WC client. The Ledger device
+ * shows the message text on-screen for `personal_sign`, which is
+ * the user-side defense.
+ *
+ * `eth_signTypedData_v4` remains EXCLUDED — typed-data is the
+ * Permit2 / off-chain-order phishing surface and we have no current
+ * tool that needs it. Adding it would require a separate decision
+ * with its own SECURITY.md addendum.
  */
 export const REQUIRED_NAMESPACES = {
   eip155: {
@@ -85,6 +99,7 @@ export const REQUIRED_NAMESPACES = {
       "eth_sendTransaction",
       "eth_signTransaction",
       "eth_chainId",
+      "personal_sign",
     ],
     chains: Object.values(CHAIN_IDS).map((id) => `eip155:${id}`),
     events: ["accountsChanged", "chainChanged"],
@@ -857,6 +872,66 @@ export async function requestSendTransaction(
     );
   });
   return hash;
+}
+
+/**
+ * Send an `eth_personal_sign` request via the active WC session. Used
+ * by the address-book contacts module to obtain an EIP-191 signature
+ * over the canonicalized contacts blob with the user's paired Ledger
+ * EVM key. Domain-prefixed messages should be hardwired by the caller
+ * — see `src/signers/contacts/evm.ts` for the contacts-specific wrap.
+ *
+ * Wire format per WalletConnect spec: `params: [<message-hex>, <address>]`
+ * where message-hex is the 0x-prefixed UTF-8 bytes of the message.
+ * Returns the 65-byte (r || s || v) signature as 0x-prefixed hex.
+ */
+export async function requestPersonalSign(args: {
+  /** UTF-8 message string. Will be hex-encoded for the wire. */
+  message: string;
+  /** EVM address that should sign — must be in the active session. */
+  from: `0x${string}`;
+}): Promise<`0x${string}`> {
+  const c = await getSignClient();
+  if (!currentSession) {
+    throw new WalletConnectSessionUnavailableError(
+      "No active WalletConnect session. Pair Ledger Live first via `pair_ledger_live` or `vaultpilot-mcp-setup`.",
+    );
+  }
+  const liveness = await probeSessionLiveness(c, currentSession.topic);
+  if (liveness !== "alive") {
+    peerUnreachable = true;
+    throw new WalletConnectSessionUnavailableError(deadSessionMessage());
+  }
+  peerUnreachable = false;
+
+  // EIP-191 personal_sign: Ledger Live is locked to the active
+  // session's chains list; eip155:1 is always present. Pin to mainnet
+  // since the message itself is chain-agnostic but the WC request
+  // requires a chainId.
+  const messageHex = `0x${Buffer.from(args.message, "utf8").toString("hex")}`;
+  const sigHex = (await Promise.race([
+    c.request({
+      topic: currentSession.topic,
+      chainId: `eip155:${CHAIN_IDS.ethereum}`,
+      request: {
+        method: "personal_sign",
+        params: [messageHex, args.from],
+      },
+    }) as Promise<`0x${string}`>,
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new WalletConnectRequestTimeoutError(
+              `WalletConnect personal_sign did not complete within ${WC_SEND_REQUEST_TIMEOUT_MS / 1000}s. ` +
+                `Open WalletConnect in Ledger Live and retry. The contacts file was NOT modified.`,
+            ),
+          ),
+        WC_SEND_REQUEST_TIMEOUT_MS,
+      ),
+    ),
+  ])) as `0x${string}`;
+  return sigHex;
 }
 
 export async function disconnect(): Promise<void> {

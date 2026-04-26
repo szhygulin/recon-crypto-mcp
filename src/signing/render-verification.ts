@@ -159,7 +159,9 @@ function formatDecoder(v: TxVerification): string {
 }
 
 export function renderVerificationBlock(
-  tx: Pick<UnsignedTx, "chain" | "to" | "value" | "data"> & { verification: TxVerification },
+  tx: Pick<UnsignedTx, "chain" | "to" | "value" | "data" | "recipient"> & {
+    verification: TxVerification;
+  },
 ): string {
   const v = tx.verification;
   const chainId = CHAIN_IDS[tx.chain];
@@ -168,11 +170,12 @@ export function renderVerificationBlock(
   // narrow terminals). Keep only the byte length as sizing context. When the
   // decode is "source: none", show a short hex preview so the user has *some*
   // local signal before opening the decoder URL.
+  const recipientSuffix = formatRecipientSuffix(tx.recipient);
   const dataLine =
     v.humanDecode.source === "none"
-      ? `  chainId=${chainId} ${tx.chain}  to=${tx.to}  value=${tx.value} wei  data=${truncateHex(tx.data, true)}`
-      : `  chainId=${chainId} ${tx.chain}  to=${tx.to}  value=${tx.value} wei  (${dataByteLen(tx.data)} calldata bytes)`;
-  return [
+      ? `  chainId=${chainId} ${tx.chain}  to=${tx.to}${recipientSuffix}  value=${tx.value} wei  data=${truncateHex(tx.data, true)}`
+      : `  chainId=${chainId} ${tx.chain}  to=${tx.to}${recipientSuffix}  value=${tx.value} wei  (${dataByteLen(tx.data)} calldata bytes)`;
+  const lines = [
     "VERIFY BEFORE SIGNING — check the decoded call below matches what you",
     "asked for, and REJECT on Ledger if it doesn't.",
     formatDecoder(v),
@@ -180,7 +183,55 @@ export function renderVerificationBlock(
     ...formatArgs(v),
     dataLine,
     `  Hash: ${v.payloadHash}  (short ${v.payloadHashShort}, echoed at send time)`,
-  ].join("\n");
+  ];
+  for (const w of tx.recipient?.warnings ?? []) {
+    lines.push(`  ⚠ ${w}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * BTC variant of `formatRecipientSuffix` — same logic, different
+ * union type (UnsignedBitcoinTx.recipient ≠ UnsignedTx.recipient at
+ * the type level even though their shape matches).
+ */
+function formatRecipientSuffixBtc(
+  r: UnsignedBitcoinTx["recipient"] | undefined,
+): string {
+  if (!r) return "";
+  if (r.source === "contact" && r.label) return ` (contact: ${r.label} — verified)`;
+  if (r.source === "literal" && r.label) return ` (also saved as: ${r.label})`;
+  if (r.source === "literal" && (r.warnings?.length ?? 0) > 0) {
+    return " (unknown — verify on-device)";
+  }
+  return "";
+}
+
+/**
+ * Render the source-specific suffix that decorates the recipient line.
+ * Address-book v1.0. Returns "" when there's no recipient metadata
+ * (legacy tx envelopes, prepares without label resolution).
+ */
+function formatRecipientSuffix(
+  r: UnsignedTx["recipient"] | undefined,
+): string {
+  if (!r) return "";
+  if (r.source === "contact" && r.label) {
+    return ` (contact: ${r.label} — verified)`;
+  }
+  if (r.source === "ens" && r.label) {
+    return ` (ENS, also saved as: ${r.label})`;
+  }
+  if (r.source === "ens") {
+    return " (resolved via ENS)";
+  }
+  if (r.source === "literal" && r.label) {
+    return ` (also saved as: ${r.label})`;
+  }
+  if (r.source === "literal" && (r.warnings?.length ?? 0) > 0) {
+    return " (unknown — verify on-device)";
+  }
+  return "";
 }
 
 /**
@@ -955,11 +1006,26 @@ export function renderBitcoinVerificationBlock(tx: UnsignedBitcoinTx): string {
   lines.push(
     "The Ledger Bitcoin app clear-signs every output. Confirm on-device:",
   );
+  // Address-book recipient label decoration: when the user's `args.to`
+  // resolved through the contact/ENS/reverse-lookup pipeline, the
+  // primary recipient output gets the matching suffix (`(contact: Mom
+  // — verified)` etc.). Change outputs keep the `(your wallet)`
+  // marker. Non-recipient outputs (custom multi-output sends if/when
+  // we add them) stay bare.
+  const recipientSuffixBtc = formatRecipientSuffixBtc(tx.recipient);
   for (let i = 0; i < tx.decoded.outputs.length; i++) {
     const o = tx.decoded.outputs[i];
     const tag = o.isChange ? "Change" : `Output ${i + 1}`;
-    const labelSuffix = o.isChange ? " (your wallet)" : "";
+    const isRecipient = !o.isChange;
+    const labelSuffix = o.isChange
+      ? " (your wallet)"
+      : isRecipient
+      ? recipientSuffixBtc
+      : "";
     lines.push(`  • ${tag}: ${o.amountBtc} BTC → ${o.address}${labelSuffix}`);
+  }
+  for (const w of tx.recipient?.warnings ?? []) {
+    lines.push(`  ⚠ ${w}`);
   }
   lines.push(
     `  • Fee:      ${tx.decoded.feeBtc} BTC (~${tx.decoded.feeRateSatPerVb} sat/vB)`,
