@@ -630,20 +630,32 @@ export function compressPubkey(pubkey: Buffer): Buffer {
  */
 export async function signBtcPsbtOnLedger(args: {
   psbtBase64: string;
-  expectedFrom: string;
-  path: string;
+  /**
+   * One descriptor per UNIQUE source address contributing inputs to
+   * the PSBT. Single-source sends pass a one-element array; multi-
+   * source consolidation (issue #264) passes one entry per source. The
+   * signer registers one `knownAddressDerivations` entry per source so
+   * the SDK can populate `bip32Derivation` on every input. Each
+   * source's address is re-derived against the live device for the
+   * proof-of-identity guard — N sources → N device round-trips before
+   * the sign prompt.
+   */
+  sources: Array<{
+    address: string;
+    path: string;
+  }>;
   accountPath: string;
   addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
   /**
    * BIP-32 chain=1 change-output derivation (issue #254). When set, the
-   * signer adds a second `knownAddressDerivations` entry so the SDK
-   * populates the change output's bip32Derivation, which the Ledger BTC
-   * app uses to recognize the address as same-account change and skip
-   * the "unusual change path" warning. The pairings cache is the source
-   * of truth — we trust it to point at a real device-derivable address;
-   * if the cache is stale the device's own derivation check (run inside
-   * the BTC app at sign time) will refuse before the user sees a wrong
-   * address.
+   * signer adds an additional `knownAddressDerivations` entry so the
+   * SDK populates the change output's bip32Derivation, which the
+   * Ledger BTC app uses to recognize the address as same-account
+   * change and skip the "unusual change path" warning. The pairings
+   * cache is the source of truth — we trust it to point at a real
+   * device-derivable address; if the cache is stale the device's own
+   * derivation check (run inside the BTC app at sign time) will refuse
+   * before the user sees a wrong address.
    */
   change?: {
     address: string;
@@ -651,6 +663,11 @@ export async function signBtcPsbtOnLedger(args: {
     publicKey: string;
   };
 }): Promise<{ rawTxHex: string }> {
+  if (args.sources.length === 0) {
+    throw new Error(
+      "signBtcPsbtOnLedger: `sources` must list at least one source descriptor.",
+    );
+  }
   return withBtcUsbLock(async () => {
     const { app, transport, rawTransport } = await openLedger();
     try {
@@ -665,43 +682,44 @@ export async function signBtcPsbtOnLedger(args: {
             `Open the Bitcoin app on your device and retry.`,
         );
       }
-      // Re-derive + validate the source address. If the device produces
-      // a different address for the same path the pairing cache
-      // registered, refuse to sign — something is wrong (different seed,
-      // different app, planted pairing). Don't blind-sign through it.
-      const derived = await app.getWalletPublicKey(args.path, {
-        format: args.addressFormat,
-      });
-      if (derived.bitcoinAddress !== args.expectedFrom) {
-        throw new Error(
-          `Ledger derived ${derived.bitcoinAddress} at ${args.path}, but the prepared tx ` +
-            `lists ${args.expectedFrom} as the source. The device may have a different seed ` +
-            `loaded, the Bitcoin app version may have changed the derivation, or the cached ` +
-            `pairing is stale. Re-pair via \`pair_ledger_btc\` and retry.`,
+
+      // Build knownAddressDerivations. The SDK keys the map by the
+      // witness-program payload extracted from each scriptPubKey —
+      // bytes 2..22 (hash160 of pubkey) for P2WPKH, bytes 2..34
+      // (tweaked x-only key) for P2TR. Mirrors @ledgerhq/psbtv2
+      // `extractHashFromScriptPubKey`, which is what
+      // `populateMissingBip32Derivations` looks up against. Issue #206.
+      //
+      // One entry per unique source (issue #264 multi-source) plus an
+      // optional change entry (issue #254).
+      const known = new Map<string, { pubkey: Buffer; path: number[] }>();
+
+      // Per-source: re-derive against device + register. Refuse to
+      // sign if the device produces a different address for any
+      // source's path — proof-of-identity guard mirroring the prior
+      // single-source behavior, just iterated.
+      for (const src of args.sources) {
+        const derived = await app.getWalletPublicKey(src.path, {
+          format: args.addressFormat,
+        });
+        if (derived.bitcoinAddress !== src.address) {
+          throw new Error(
+            `Ledger derived ${derived.bitcoinAddress} at ${src.path}, but the prepared tx ` +
+              `lists ${src.address} as a source. The device may have a different seed loaded, ` +
+              `the Bitcoin app version may have changed the derivation, or the cached pairing ` +
+              `is stale. Re-pair via \`pair_ledger_btc\` and retry.`,
+          );
+        }
+        const sourceScript = bitcoinjs.address.toOutputScript(
+          src.address,
+          bitcoinjs.networks.bitcoin,
         );
+        known.set(extractWitnessProgramHex(sourceScript), {
+          pubkey: compressPubkey(Buffer.from(derived.publicKey, "hex")),
+          path: pathStringToNumbers(src.path),
+        });
       }
 
-      // Build the knownAddressDerivations map. The SDK keys the map by
-      // the witness-program payload extracted from each scriptPubKey —
-      // bytes 2..22 (hash160 of pubkey) for P2WPKH, bytes 2..34 (tweaked
-      // x-only key) for P2TR. Mirrors @ledgerhq/psbtv2
-      // `extractHashFromScriptPubKey`, which is what
-      // `populateMissingBip32Derivations` looks up against. Issue #206:
-      // an earlier sha256(scriptPubKey) key never matched, so the
-      // library left the PSBT without bip32Derivation and the Ledger
-      // BTC app v2.x rejected with 0x6a80 before any UI.
-      //
-      // Two entries today: the source (input + same-address-as-recipient
-      // edge case) and the BIP-32 chain=1 change output (issue #254).
-      const known = new Map<string, { pubkey: Buffer; path: number[] }>();
-      const sourceScript = bitcoinjs.address.toOutputScript(
-        args.expectedFrom,
-        bitcoinjs.networks.bitcoin,
-      );
-      known.set(extractWitnessProgramHex(sourceScript), {
-        pubkey: compressPubkey(Buffer.from(derived.publicKey, "hex")),
-        path: pathStringToNumbers(args.path),
-      });
       if (args.change) {
         const changeScript = bitcoinjs.address.toOutputScript(
           args.change.address,

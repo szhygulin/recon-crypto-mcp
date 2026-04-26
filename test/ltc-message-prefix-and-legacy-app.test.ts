@@ -298,8 +298,8 @@ describe("issue #240 — legacy createPaymentTransaction fallback", () => {
     );
     const result = await signLtcPsbtOnLedger({
       psbtBase64: buildPsbtB64(),
-      expectedFrom: LTC_SEGWIT_ADDR,
-      path: "84'/2'/0'/0/0",
+      sources: [{ address: LTC_SEGWIT_ADDR, path: "84'/2'/0'/0/0" }],
+      inputSources: [LTC_SEGWIT_ADDR],
       accountPath: "84'/2'/0'",
       addressFormat: "bech32",
     });
@@ -332,8 +332,8 @@ describe("issue #240 — legacy createPaymentTransaction fallback", () => {
     await expect(
       signLtcPsbtOnLedger({
         psbtBase64: buildPsbtB64(),
-        expectedFrom: LTC_SEGWIT_ADDR,
-        path: "84'/2'/0'/0/0",
+        sources: [{ address: LTC_SEGWIT_ADDR, path: "84'/2'/0'/0/0" }],
+        inputSources: [LTC_SEGWIT_ADDR],
         accountPath: "84'/2'/0'",
         addressFormat: "bech32",
       }),
@@ -351,8 +351,8 @@ describe("issue #240 — legacy createPaymentTransaction fallback", () => {
     );
     const result = await signLtcPsbtOnLedger({
       psbtBase64: buildPsbtB64(),
-      expectedFrom: LTC_SEGWIT_ADDR,
-      path: "84'/2'/0'/0/0",
+      sources: [{ address: LTC_SEGWIT_ADDR, path: "84'/2'/0'/0/0" }],
+      inputSources: [LTC_SEGWIT_ADDR],
       accountPath: "84'/2'/0'",
       addressFormat: "bech32",
     });

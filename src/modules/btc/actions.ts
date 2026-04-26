@@ -19,15 +19,28 @@ import { BTC_DECIMALS, SATS_PER_BTC } from "../../config/btc.js";
  * registered with the in-memory tx-store. The Ledger BTC app consumes
  * the PSBT bytes at signing time via `signPsbtBuffer`.
  *
+ * Multi-source consolidation (issue #264). `wallet` accepts either a
+ * single address or an array of paired source addresses; UTXOs from
+ * every listed source are fetched in parallel, merged into one
+ * coin-selection pool, and assembled into a single multi-input PSBT
+ * with one output (plus change). Phase 1 scope keeps all sources within
+ * the SAME Ledger account (same accountIndex + addressType) — mixed-
+ * type sends (segwit + taproot in one tx) are protocol-supported but
+ * out of scope here. The wallet-policy descriptor `wpkh(@0/**)` /
+ * `tr(@0/**)` Ledger registers at pairing time covers every chain=0/1
+ * descendant under the account, so multi-derivation PSBTs sign
+ * natively without any per-tx policy ceremony.
+ *
  * Change derivation (issue #254). Change goes to the BIP-44 internal
- * chain (`<purpose>'/0'/<account>'/1/<idx>`), looked up from the
- * pairings cache (`pair_ledger_btc` derives the first 20 chain=1
- * addresses per account during the gap-limit scan). The change leaf's
- * `path` and compressed `publicKey` are threaded onto the unsigned tx
- * envelope so the signer can register the change output in
- * `signPsbtBuffer.knownAddressDerivations` — the Ledger BTC app then
- * recognizes it as a same-account change output, labels it "Change"
- * on-screen, and skips the previous "unusual change path" warning.
+ * chain (`<purpose>'/0'/<account>'/1/<idx>`) of the source account,
+ * looked up from the pairings cache (`pair_ledger_btc` derives the
+ * first 20 chain=1 addresses per account during the gap-limit scan).
+ * The change leaf's `path` and compressed `publicKey` are threaded
+ * onto the unsigned tx envelope so the signer can register the change
+ * output in `signPsbtBuffer.knownAddressDerivations` — the Ledger BTC
+ * app then recognizes it as a same-account change output, labels it
+ * "Change" on-screen, and skips the previous "unusual change path"
+ * warning.
  *
  * For now the lowest available `addressIndex` (= 0) is used. Address
  * rotation across multiple sends in one session is out of scope for
@@ -99,7 +112,6 @@ function accountPathFromLeaf(leafPath: string): string {
         `(<purpose>'/0'/<account>'/<change>/<index>).`,
     );
   }
-  // Drop last 2 segments (change + index) → keep purpose'/coin'/account'.
   return parts.slice(0, -2).join("/");
 }
 
@@ -111,12 +123,7 @@ function roughVbytes(inputCount: number, outputCount: number): number {
 /**
  * Pick the chain=1 (BIP-32 internal/change) entry from the pairings
  * cache that matches the source's (accountIndex, addressType). Lowest
- * `addressIndex` wins. Returns null when none is cached — caller
- * surfaces a re-pair instruction (the gap-limit scan in
- * `pair_ledger_btc` skips chain=1 when chain=0 has zero history, so
- * fresh wallets need a re-pair after their first received tx).
- *
- * Issue #254.
+ * `addressIndex` wins. Returns null when none is cached. Issue #254.
  */
 function pickChangeEntry(
   paired: ReturnType<typeof getPairedBtcByAddress>,
@@ -137,7 +144,6 @@ function pickChangeEntry(
   return { address: c.address, path: c.path, publicKey: c.publicKey };
 }
 
-/** Format sats as a BTC decimal string (8-decimal padding, trailing-zero strip). */
 function satsToBtcString(sats: bigint): string {
   const negative = sats < 0n;
   const abs = negative ? -sats : sats;
@@ -148,11 +154,6 @@ function satsToBtcString(sats: bigint): string {
   return negative ? `-${body}` : body;
 }
 
-/**
- * Parse a human BTC amount ("0.001") or "max" to sats.
- *   - "max" returns null; the caller resolves it after coin-selection
- *     (because "max" depends on the fee, which depends on input count).
- */
 function parseBtcAmountToSats(amount: string): bigint | null {
   if (amount === "max") return null;
   if (!/^\d+(\.\d{1,8})?$/.test(amount)) {
@@ -167,84 +168,118 @@ function parseBtcAmountToSats(amount: string): bigint | null {
 }
 
 export interface BuildBitcoinNativeSendArgs {
-  /** Paired BTC source address. Must be in `UserConfig.pairings.bitcoin`. */
-  wallet: string;
+  /**
+   * Paired BTC source address(es). String for single-source;
+   * `string[]` (1-20 entries) for multi-input consolidation. All
+   * addresses must be in `UserConfig.pairings.bitcoin` and share the
+   * same accountIndex + addressType. Issue #264.
+   */
+  wallet: string | string[];
   /** Recipient. Any of the four mainnet address types. */
   to: string;
   /** Decimal BTC string ("0.001"), or "max" for full-balance-minus-fee. */
   amount: string;
   /**
    * Fee rate in sat/vB. Optional — when omitted, uses the indexer's
-   * `halfHourFee` recommendation (~3-block target). Override for
-   * congestion-priority sends or low-fee draining.
+   * `halfHourFee` recommendation (~3-block target).
    */
   feeRateSatPerVb?: number;
   /**
    * BIP-125 RBF. Default true → sequence `0xFFFFFFFD` (replaceable).
-   * Pass false → `0xFFFFFFFE` (final, not replaceable). RBF lets the
-   * user fee-bump a stuck tx via a follow-up `prepare_btc_rbf_bump`
-   * (PR4+).
    */
   rbf?: boolean;
-  /**
-   * Override the fee-cap guard. The cap is `max(10 × feeRate × vbytes,
-   * 2% of total output value)`; legitimate priority sends through
-   * heavy congestion can exceed it. Default false.
-   */
+  /** Override the fee-cap guard. Default false. */
   allowHighFee?: boolean;
+}
+
+/**
+ * Normalize the `wallet` arg to an ordered, deduplicated list of source
+ * addresses. The first entry becomes the "primary" source surfaced as
+ * `tx.from` for backwards compat.
+ */
+function normalizeWallets(arg: string | string[]): string[] {
+  const list = Array.isArray(arg) ? arg : [arg];
+  if (list.length === 0) {
+    throw new Error(
+      "`wallet` must be a paired Bitcoin address or a non-empty array of paired addresses.",
+    );
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const w of list) {
+    if (!seen.has(w)) {
+      seen.add(w);
+      out.push(w);
+    }
+  }
+  return out;
 }
 
 export async function buildBitcoinNativeSend(
   args: BuildBitcoinNativeSendArgs,
 ): Promise<UnsignedBitcoinTx> {
-  // 1. Validate source + destination format.
-  assertBitcoinAddress(args.wallet);
-  assertBitcoinAddress(args.to);
+  const wallets = normalizeWallets(args.wallet);
 
-  // 2. Resolve the paired entry for the source. Without it we don't know
-  //    the BIP-44 purpose / address type / leaf path, so we can't tell
-  //    Ledger which account is signing.
-  const paired = getPairedBtcByAddress(args.wallet);
-  if (!paired) {
-    throw new Error(
-      `Bitcoin address ${args.wallet} is not paired. Run \`pair_ledger_btc\` ` +
-        `to register the four standard address types (legacy/p2sh-segwit/segwit/taproot) ` +
-        `for an account, then pass any of those addresses as \`wallet\`.`,
-    );
+  // 1. Validate every source address format + resolve every paired
+  //    entry. Reject mixed accountIndex / addressType up-front.
+  assertBitcoinAddress(args.to);
+  const pairedList = wallets.map((w) => {
+    assertBitcoinAddress(w);
+    const paired = getPairedBtcByAddress(w);
+    if (!paired) {
+      throw new Error(
+        `Bitcoin address ${w} is not paired. Run \`pair_ledger_btc\` to register ` +
+          `the four standard address types (legacy/p2sh-segwit/segwit/taproot) for ` +
+          `an account, then pass any of those addresses as \`wallet\`.`,
+      );
+    }
+    return paired;
+  });
+
+  const primary = pairedList[0];
+  for (let i = 1; i < pairedList.length; i++) {
+    const p = pairedList[i];
+    if (p.addressType !== primary.addressType) {
+      throw new Error(
+        `Mixed source-address types in one send are not supported in Phase 1 ` +
+          `(${pairedList[0].address} is ${primary.addressType}, ${p.address} is ` +
+          `${p.addressType}). Group sources by type — segwit-only or taproot-only ` +
+          `— and run separate sends.`,
+      );
+    }
+    if (p.accountIndex !== primary.accountIndex) {
+      throw new Error(
+        `Cross-account multi-source sends are not supported (${pairedList[0].address} ` +
+          `is accountIndex=${primary.accountIndex}, ${p.address} is ` +
+          `accountIndex=${p.accountIndex}). Each Ledger account signs under its own ` +
+          `wallet policy — pull from one account at a time.`,
+      );
+    }
   }
-  // Phase 1 send-side scope: native segwit + taproot only. Legacy /
-  // P2SH-wrapped sends require `nonWitnessUtxo` (full prev-tx hex) on
-  // every input, which is a separate code path. Reads work for all
-  // four types — only sends are restricted.
-  if (paired.addressType !== "segwit" && paired.addressType !== "taproot") {
+
+  // Phase 1 send-side scope: native segwit + taproot only.
+  if (primary.addressType !== "segwit" && primary.addressType !== "taproot") {
     throw new Error(
-      `Bitcoin sends from ${paired.addressType} (${paired.path}) addresses are not ` +
+      `Bitcoin sends from ${primary.addressType} (${primary.path}) addresses are not ` +
         `supported in Phase 1 — only native segwit (bc1q...) and taproot (bc1p...). ` +
         `Move funds to your paired segwit or taproot address first.`,
     );
   }
 
-  // Resolve the change address (BIP-32 chain=1) from the pairings
-  // cache. Same accountIndex + addressType as the source; lowest
-  // available addressIndex. `pair_ledger_btc` walks both chains and
-  // caches them — if the user paired before any chain=0 history, the
-  // change-chain walk was skipped (no UTXOs → no spends → no change
-  // can exist anyway). Once they have UTXOs to send, re-pairing
-  // populates chain=1 entries. Issue #254.
-  const changeEntry = pickChangeEntry(paired);
+  const changeEntry = pickChangeEntry(primary);
   if (!changeEntry) {
     throw new Error(
-      `No paired chain=1 (change) address found for ${args.wallet}'s account ` +
-        `(${paired.addressType}, accountIndex=${paired.accountIndex}). The pairings cache ` +
+      `No paired chain=1 (change) address found for ${primary.address}'s account ` +
+        `(${primary.addressType}, accountIndex=${primary.accountIndex}). The pairings cache ` +
         `was likely populated when the wallet had no on-chain history (the gap-limit scan ` +
         `skips the change-chain walk in that case). Re-run \`pair_ledger_btc({ accountIndex: ` +
-        `${paired.accountIndex} })\` now that this address has UTXOs and retry.`,
+        `${primary.accountIndex} })\` now that this address has UTXOs and retry.`,
     );
   }
 
   const indexer = getBitcoinIndexer();
 
-  // 3. Resolve fee rate.
+  // 2. Resolve fee rate.
   let feeRate: number;
   if (args.feeRateSatPerVb !== undefined) {
     feeRate = args.feeRateSatPerVb;
@@ -259,32 +294,38 @@ export async function buildBitcoinNativeSend(
     );
   }
 
-  // 4. Fetch UTXOs.
-  const utxos = await indexer.getUtxos(args.wallet);
-  if (utxos.length === 0) {
+  // 3. Fan out UTXO fetches across all sources in parallel; tag each
+  //    UTXO with its source so coin-selection's output preserves the
+  //    per-input mapping for PSBT building + the LTC legacy fallback.
+  const utxosBySource = await Promise.all(
+    wallets.map(async (w) => ({
+      address: w,
+      utxos: await indexer.getUtxos(w),
+    })),
+  );
+  const totalUtxoCount = utxosBySource.reduce((n, e) => n + e.utxos.length, 0);
+  if (totalUtxoCount === 0) {
     throw new Error(
-      `No UTXOs at ${args.wallet} — the wallet has zero spendable balance. ` +
-        `Verify with \`get_btc_balance\` and confirm at least one tx has confirmed ` +
-        `(unconfirmed mempool UTXOs are eligible for selection but very-young ones ` +
-        `may be rejected by the relay).`,
+      `No UTXOs across the ${wallets.length === 1 ? "source" : `${wallets.length} sources`} ` +
+        `(${wallets.join(", ")}). Verify with \`get_btc_balance\` and confirm at least one ` +
+        `tx has confirmed (unconfirmed mempool UTXOs are eligible for selection but very-young ` +
+        `ones may be rejected by the relay).`,
     );
   }
 
-  // 5. Resolve "max" → fee-aware amount, or convert decimal-BTC → sats.
-  const csUtxos: CoinSelectInput[] = utxos.map((u) => ({
-    txid: u.txid,
-    vout: u.vout,
-    value: u.value,
-  }));
+  type TaggedUtxo = CoinSelectInput & { sourceAddress: string };
+  const csUtxos: TaggedUtxo[] = utxosBySource.flatMap((src) =>
+    src.utxos.map<TaggedUtxo>((u) => ({
+      txid: u.txid,
+      vout: u.vout,
+      value: u.value,
+      sourceAddress: src.address,
+    })),
+  );
+
+  // 4. Resolve "max" → fee-aware amount, or convert decimal-BTC → sats.
   let amountSats: bigint;
   if (args.amount === "max") {
-    // For max: assume all UTXOs are inputs, single output, no change.
-    // coinselect's internal vbyte estimate can differ from ours by 1-2
-    // bytes (taproot signatures land slightly under our P2WPKH estimate;
-    // segwit signatures match closely). Add a small headroom so the
-    // exact-fit branch coinselect picks still leaves room — without it,
-    // a 1-byte estimator drift turns a feasible "max" into an
-    // INSUFFICIENT-FUNDS error.
     const totalSats = csUtxos.reduce((sum, u) => sum + u.value, 0);
     const vbytes = roughVbytes(csUtxos.length, 1);
     const feeMax = Math.ceil(feeRate * vbytes) + Math.ceil(feeRate * 5);
@@ -309,8 +350,7 @@ export async function buildBitcoinNativeSend(
     );
   }
 
-  // 6. Coin-selection. Change goes to the BIP-44 internal-chain address
-  //    we resolved above (issue #254).
+  // 5. Coin-selection over the merged pool.
   const selection = selectInputs({
     utxos: csUtxos,
     outputs: [{ address: args.to, value: Number(amountSats) }],
@@ -319,22 +359,46 @@ export async function buildBitcoinNativeSend(
     ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
   });
 
-  // 7. Fetch full prev-tx hex for every UNIQUE input txid. Required by
-  //    Ledger BTC app 2.x's segwit-fee-inflation defense — see file
-  //    docstring + issue #213. Dedup by txid so a multi-vout-from-the-
-  //    same-prev-tx selection only fans out once. Parallel fan-out so
-  //    the wall-time stays bounded even with many distinct prev txs.
+  // Map selected inputs back to their source via (txid, vout) — that
+  // pair uniquely identifies a pool entry within a single send.
+  const utxoSourceByKey = new Map<string, string>();
+  for (const u of csUtxos) {
+    utxoSourceByKey.set(`${u.txid}:${u.vout}`, u.sourceAddress);
+  }
+  const inputSources: string[] = selection.inputs.map((i) => {
+    const src = utxoSourceByKey.get(`${i.txid}:${i.vout}`);
+    if (!src) {
+      throw new Error(
+        `Internal error: selected input ${i.txid}:${i.vout} not found in source-tagged pool.`,
+      );
+    }
+    return src;
+  });
+
+  // 6. Fetch full prev-tx hex for every UNIQUE input txid (issue #213).
   const uniqueTxids = [...new Set(selection.inputs.map((i) => i.txid))];
   const prevTxHexEntries = await Promise.all(
     uniqueTxids.map(async (txid) => [txid, await indexer.getTxHex(txid)] as const),
   );
   const prevTxHexByTxid = new Map(prevTxHexEntries);
 
-  // 8. Build PSBT.
+  // 7. Build PSBT. Each input gets ITS source's scriptPubKey.
+  const sourceScriptByAddr = new Map<string, Buffer>();
+  for (const w of wallets) {
+    sourceScriptByAddr.set(w, bitcoinjs.address.toOutputScript(w, NETWORK));
+  }
+
   const psbt = new bitcoinjs.Psbt({ network: NETWORK });
   const sequence = args.rbf === false ? 0xfffffffe : 0xfffffffd;
-  const sourceScript = bitcoinjs.address.toOutputScript(args.wallet, NETWORK);
-  for (const input of selection.inputs) {
+  for (let i = 0; i < selection.inputs.length; i++) {
+    const input = selection.inputs[i];
+    const srcAddr = inputSources[i];
+    const sourceScript = sourceScriptByAddr.get(srcAddr);
+    if (!sourceScript) {
+      throw new Error(
+        `Internal error: missing source script for ${srcAddr} (input ${input.txid}:${input.vout}).`,
+      );
+    }
     const prevTxHex = prevTxHexByTxid.get(input.txid);
     if (!prevTxHex) {
       throw new Error(
@@ -346,10 +410,6 @@ export async function buildBitcoinNativeSend(
       hash: input.txid,
       index: input.vout,
       sequence,
-      // `witnessUtxo` (script + value) feeds the segwit sighash;
-      // `nonWitnessUtxo` (full prev-tx) is what Ledger BTC app 2.x
-      // uses to cryptographically verify the input amount. Both are
-      // required — see file docstring.
       witnessUtxo: { script: sourceScript, value: input.value },
       nonWitnessUtxo: Buffer.from(prevTxHex, "hex"),
     });
@@ -363,13 +423,7 @@ export async function buildBitcoinNativeSend(
   }
   const psbtBase64 = psbt.toBase64();
 
-  // 9. Decoded-output projection for the verification block. Each
-  //    output gets a sats + BTC-decimal string + isChange flag. The
-  //    Ledger walks every entry on-screen — this projection is what
-  //    `render-verification.ts` mirrors for the user to cross-check.
-  //    For the change output (BIP-32 chain=1) we surface its full leaf
-  //    path so the user — and the second-LLM verifier — can see the
-  //    derivation that backs the on-screen "Change" label.
+  // 8. Decoded-output projection for the verification block.
   const decodedOutputs = selection.outputs.map((o) => {
     const isChange = o.isChange;
     const address = o.address ?? changeEntry.address;
@@ -382,17 +436,53 @@ export async function buildBitcoinNativeSend(
     };
   });
 
-  const accountPath = accountPathFromLeaf(paired.path);
+  // 9. Per-source breakdown — sats pulled from each source + how many
+  //    inputs that source contributed. Sources whose UTXOs coinselect
+  //    didn't pick are dropped (no zero-line rows in the verification).
+  const sourceTotals = new Map<string, { sats: bigint; count: number }>();
+  for (const w of wallets) {
+    sourceTotals.set(w, { sats: 0n, count: 0 });
+  }
+  for (let i = 0; i < selection.inputs.length; i++) {
+    const acc = sourceTotals.get(inputSources[i]);
+    if (!acc) continue;
+    acc.sats += BigInt(selection.inputs[i].value);
+    acc.count += 1;
+  }
+  const decodedSources = wallets
+    .map((w) => {
+      const t = sourceTotals.get(w) ?? { sats: 0n, count: 0 };
+      return {
+        address: w,
+        pulledSats: t.sats.toString(),
+        pulledBtc: satsToBtcString(t.sats),
+        inputCount: t.count,
+      };
+    })
+    .filter((s) => s.inputCount > 0);
+
+  const sources = wallets.map((addr, idx) => ({
+    address: addr,
+    path: pairedList[idx].path,
+    publicKey: pairedList[idx].publicKey,
+  }));
+
+  const accountPath = accountPathFromLeaf(primary.path);
   const vsize = roughVbytes(selection.inputs.length, selection.outputs.length);
-  const description = `Send ${satsToBtcString(amountSats)} BTC to ${args.to}`;
+  const description =
+    wallets.length === 1
+      ? `Send ${satsToBtcString(amountSats)} BTC to ${args.to}`
+      : `Consolidate ${satsToBtcString(amountSats)} BTC from ${wallets.length} addresses to ${args.to}`;
 
   const tx: Omit<UnsignedBitcoinTx, "handle" | "fingerprint"> = {
     chain: "bitcoin",
     action: "native_send",
-    from: args.wallet,
+    from: wallets[0],
+    sources,
+    inputSources,
     psbtBase64,
     accountPath,
-    addressFormat: ADDRESS_FORMAT_BY_TYPE[paired.addressType],
+    addressFormat: ADDRESS_FORMAT_BY_TYPE[primary.addressType],
     change: {
       address: changeEntry.address,
       path: changeEntry.path,
@@ -402,12 +492,13 @@ export async function buildBitcoinNativeSend(
     decoded: {
       functionName: "bitcoin.native_send",
       args: {
-        from: args.wallet,
+        from: wallets.join(","),
         to: args.to,
         amount: satsToBtcString(amountSats),
         feeRate: `${feeRate} sat/vB`,
       },
       outputs: decodedOutputs,
+      sources: decodedSources,
       feeSats: selection.fee.toString(),
       feeBtc: satsToBtcString(BigInt(selection.fee)),
       feeRateSatPerVb: feeRate,
@@ -425,21 +516,6 @@ export function _isSendableAddressType(
   return type === "p2wpkh" || type === "p2tr";
 }
 
-/**
- * Sign a UTF-8 message with the paired Bitcoin address using the
- * Bitcoin Signed Message format (BIP-137). The Ledger BTC app prompts
- * the user to confirm the message text on-device before producing the
- * signature — same clear-sign UX as send-side flows.
- *
- * Taproot is refused (BIP-322 not yet exposed by Ledger). Legacy /
- * P2SH-wrapped / native segwit all return base64-encoded compact
- * signatures with header bytes that match the address-type convention
- * Sparrow / Electrum / Bitcoin Core's `verifymessage` accept.
- *
- * The returned `format: "BIP-137"` field tells the verifier which scheme
- * to use; useful for cross-wallet verification flows where the verifier
- * needs to know whether to expect BIP-137 or BIP-322.
- */
 export interface SignBitcoinMessageArgs {
   wallet: string;
   message: string;
@@ -453,6 +529,12 @@ export interface SignedBitcoinMessage {
   addressType: PairedBtcAddressType;
 }
 
+/**
+ * Sign a UTF-8 message with the paired Bitcoin address using the
+ * Bitcoin Signed Message format (BIP-137). The Ledger BTC app prompts
+ * the user to confirm the message text on-device before producing the
+ * signature.
+ */
 export async function signBitcoinMessage(
   args: SignBitcoinMessageArgs,
 ): Promise<SignedBitcoinMessage> {

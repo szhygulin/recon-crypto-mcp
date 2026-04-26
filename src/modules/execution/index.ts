@@ -1867,18 +1867,23 @@ async function sendBitcoinTransaction(args: SendTransactionArgs): Promise<{
   chain: "bitcoin";
 }> {
   const tx = consumeBitcoinHandle(args.handle);
-  const paired = getPairedBtcByAddress(tx.from);
-  if (!paired) {
-    throw new Error(
-      `Bitcoin source ${tx.from} is no longer in the pairing cache. The cache may have ` +
-        `been cleared since prepare_btc_send. Re-pair via \`pair_ledger_btc\` and re-run ` +
-        `prepare_btc_send to get a fresh handle.`,
-    );
+  // Validate every source in the envelope is still paired. The signer
+  // re-derives each source against the device for the proof-of-identity
+  // guard, but we want the clear "cache cleared since prepare" error
+  // surfaced before the USB transport opens.
+  for (const src of tx.sources) {
+    const paired = getPairedBtcByAddress(src.address);
+    if (!paired) {
+      throw new Error(
+        `Bitcoin source ${src.address} is no longer in the pairing cache. The cache ` +
+          `may have been cleared since prepare_btc_send. Re-pair via \`pair_ledger_btc\` ` +
+          `and re-run prepare_btc_send to get a fresh handle.`,
+      );
+    }
   }
   const { rawTxHex } = await signBtcPsbtOnLedger({
     psbtBase64: tx.psbtBase64,
-    expectedFrom: tx.from,
-    path: paired.path,
+    sources: tx.sources.map((s) => ({ address: s.address, path: s.path })),
     accountPath: tx.accountPath,
     addressFormat: tx.addressFormat,
     ...(tx.change ? { change: tx.change } : {}),
@@ -1901,17 +1906,19 @@ async function sendLitecoinTransaction(args: SendTransactionArgs): Promise<{
   chain: "litecoin";
 }> {
   const tx = consumeLitecoinHandle(args.handle);
-  const paired = getPairedLtcByAddress(tx.from);
-  if (!paired) {
-    throw new Error(
-      `Litecoin source ${tx.from} is no longer in the pairing cache. Re-pair via ` +
-        `\`pair_ledger_ltc\` and re-run prepare_litecoin_native_send for a fresh handle.`,
-    );
+  for (const src of tx.sources) {
+    const paired = getPairedLtcByAddress(src.address);
+    if (!paired) {
+      throw new Error(
+        `Litecoin source ${src.address} is no longer in the pairing cache. Re-pair via ` +
+          `\`pair_ledger_ltc\` and re-run prepare_litecoin_native_send for a fresh handle.`,
+      );
+    }
   }
   const { rawTxHex } = await signLtcPsbtOnLedger({
     psbtBase64: tx.psbtBase64,
-    expectedFrom: tx.from,
-    path: paired.path,
+    sources: tx.sources.map((s) => ({ address: s.address, path: s.path })),
+    inputSources: tx.inputSources,
     accountPath: tx.accountPath,
     addressFormat: tx.addressFormat,
     ...(tx.change ? { change: tx.change } : {}),

@@ -1139,12 +1139,19 @@ export const rescanBitcoinAccountInput = z.object({
 });
 
 export const prepareBitcoinNativeSendInput = z.object({
-  wallet: bitcoinAddressSchema.describe(
-    "Paired Bitcoin source address. Must already be in `pairings.bitcoin` " +
-      "(call `pair_ledger_btc` first). Phase 1 sends only support native " +
-      "segwit (`bc1q...`) and taproot (`bc1p...`) source addresses; legacy " +
-      "(`1...`) and P2SH-wrapped (`3...`) sends are deferred."
-  ),
+  wallet: z
+    .union([bitcoinAddressSchema, z.array(bitcoinAddressSchema).min(1).max(20)])
+    .describe(
+      "One paired Bitcoin source address (string), OR an array of 1-20 paired " +
+        "source addresses for multi-input consolidation (issue #264). All " +
+        "addresses must belong to the SAME Ledger account (same accountIndex + " +
+        "addressType) — Phase 1 mixed-type sends (segwit + taproot in one tx) " +
+        "are out of scope. UTXOs are fetched in parallel for every listed " +
+        "source and merged into one coin-selection pool. \"max\" sweeps every " +
+        "UTXO from every listed wallet into a single output. Phase 1 sends only " +
+        "support native segwit (`bc1q...`) and taproot (`bc1p...`) sources; " +
+        "legacy (`1...`) and P2SH-wrapped (`3...`) sends are deferred."
+    ),
   to: bitcoinAddressSchema.describe(
     "Bitcoin recipient address. Any of the four mainnet types is accepted as " +
       "a destination — the restriction is only on the source side."
@@ -1289,12 +1296,17 @@ export const getLitecoinBalanceInput = z.object({
 });
 
 export const prepareLitecoinNativeSendInput = z.object({
-  wallet: litecoinAddressSchema.describe(
-    "Paired Litecoin source address. Must already be in `pairings.litecoin` " +
-      "(call `pair_ledger_ltc` first). Initial release sends only support " +
-      "native segwit (`ltc1q...`) and taproot (`ltc1p...`) source addresses; " +
-      "legacy (`L...`) and P2SH-wrapped (`M.../3...`) sends are deferred."
-  ),
+  wallet: z
+    .union([litecoinAddressSchema, z.array(litecoinAddressSchema).min(1).max(20)])
+    .describe(
+      "One paired Litecoin source address (string), OR an array of 1-20 paired " +
+        "source addresses for multi-input consolidation (issue #264). All " +
+        "addresses must belong to the SAME Ledger account (same accountIndex + " +
+        "addressType). UTXOs are fetched in parallel and merged into one " +
+        "coin-selection pool. Initial release sends only support native segwit " +
+        "(`ltc1q...`) and taproot (`ltc1p...`) source addresses; legacy " +
+        "(`L...`) and P2SH-wrapped (`M.../3...`) sends are deferred."
+    ),
   to: litecoinAddressSchema.describe(
     "Litecoin recipient address. L/M/ltc1q/ltc1p accepted. Legacy 3-prefix " +
       "P2SH is rejected on send (it's read-supported only) — ask the recipient " +
