@@ -246,6 +246,23 @@ async function configureOneInch(p: Prompt): Promise<string | undefined> {
   return answer || undefined;
 }
 
+async function configureSafe(p: Prompt): Promise<string | undefined> {
+  console.log("\n--- Safe (optional — enables Safe / Gnosis Safe multisig tools) ---");
+  console.log("Required for `get_safe_positions` and the propose/execute Safe tools.");
+  console.log("The modern `*.safe.global` Transaction Service authenticates every request,");
+  console.log("so portfolio reads against a Safe are gated on this key. Skip if you don't");
+  console.log("use Safe.");
+  console.log("Create a free key at https://developer.safe.global/.");
+  const existing = readUserConfig()?.safeApiKey;
+  const answer = await p.ask(
+    existing
+      ? "Safe API key [press enter to keep existing]: "
+      : "Safe API key (or blank to skip): "
+  );
+  if (!answer && existing) return existing;
+  return answer || undefined;
+}
+
 async function validateTronApiKey(apiKey: string): Promise<void> {
   // USDT-TRC20 address — well-known, always returns 200 on a healthy grid.
   const url = "https://api.trongrid.io/v1/accounts/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
@@ -500,6 +517,7 @@ function summarizeConfig(cfg: UserConfig): void {
   }
   console.log(`  Etherscan API key:   ${cfg.etherscanApiKey ? "set" : "not set"}`);
   console.log(`  1inch API key:       ${cfg.oneInchApiKey ? "set" : "not set"}`);
+  console.log(`  Safe API key:        ${cfg.safeApiKey ? "set" : "not set"}`);
   console.log(`  TronGrid API key:    ${cfg.tronApiKey ? "set" : "not set"}`);
   console.log(
     `  Solana RPC URL:      ${
@@ -527,6 +545,7 @@ async function editSectionMenu(p: Prompt): Promise<void> {
     { label: "RPC provider / API key", action: "rpc" as const },
     { label: "Etherscan API key", action: "etherscan" as const },
     { label: "1inch API key", action: "oneinch" as const },
+    { label: "Safe API key", action: "safe" as const },
     { label: "TronGrid API key", action: "tron" as const },
     { label: "Solana RPC URL", action: "solana" as const },
     { label: "WalletConnect project ID", action: "wc" as const },
@@ -555,6 +574,11 @@ async function editSectionMenu(p: Prompt): Promise<void> {
       case "oneinch": {
         const k = await configureOneInch(p);
         if (k !== undefined) patchUserConfig({ oneInchApiKey: k });
+        break;
+      }
+      case "safe": {
+        const k = await configureSafe(p);
+        if (k !== undefined) patchUserConfig({ safeApiKey: k });
         break;
       }
       case "tron": {
@@ -597,6 +621,11 @@ async function runFullWizard(p: Prompt): Promise<void> {
   const oneInchApiKey = await configureOneInch(p);
   if (oneInchApiKey !== undefined) {
     patchUserConfig({ oneInchApiKey });
+  }
+
+  const safeApiKey = await configureSafe(p);
+  if (safeApiKey !== undefined) {
+    patchUserConfig({ safeApiKey });
   }
 
   const tronApiKey = await configureTron(p);
