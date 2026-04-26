@@ -47,6 +47,15 @@ export type HistoryItemType =
   | "internal"
   | "program_interaction";
 
+export type SuspectedPoisoning = {
+  reasons: Array<
+    | "zero_amount_transfer"
+    | "vanity_suffix_lookalike"
+    | "self_suffix_lookalike"
+  >;
+  mimics?: string;
+};
+
 interface HistoryItemBase {
   type: HistoryItemType;
   hash: string;
@@ -54,6 +63,7 @@ interface HistoryItemBase {
   from: string;
   to: string;
   status: "success" | "failed";
+  suspectedPoisoning?: SuspectedPoisoning;
 }
 
 export interface ExternalHistoryItem extends HistoryItemBase {

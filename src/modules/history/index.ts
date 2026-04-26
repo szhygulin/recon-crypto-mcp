@@ -17,6 +17,7 @@ import type {
   HistoryItem,
   HistoryResponse,
 } from "./schemas.js";
+import { annotateSuspectedPoisoning } from "./poisoning.js";
 
 /**
  * Entry point for `get_transaction_history`. Dispatches to the EVM or TRON
@@ -216,6 +217,9 @@ export async function getTransactionHistory(
   } else {
     priceCoverage = "none";
   }
+
+  // Run after pricing so `valueUsd` is available to the dust check.
+  annotateSuspectedPoisoning(items, wallet);
 
   const response: HistoryResponse = {
     chain,
