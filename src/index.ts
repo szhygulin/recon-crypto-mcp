@@ -51,6 +51,9 @@ import {
   getProtocolRiskScoreInput,
 } from "./modules/security/schemas.js";
 
+import { compareYields } from "./modules/yields/index.js";
+import { compareYieldsInput } from "./modules/yields/schemas.js";
+
 import {
   getStakingPositions,
   getStakingRewards,
@@ -1440,7 +1443,7 @@ async function main() {
     handler((a) => checkPermissionRisksHandler(a))
   );
 
-  registerTool(server, 
+  registerTool(server,
     "get_protocol_risk_score",
     {
       description:
@@ -1448,6 +1451,19 @@ async function main() {
       inputSchema: getProtocolRiskScoreInput.shape,
     },
     handler((a) => getProtocolRiskScoreHandler(a))
+  );
+
+  registerTool(server,
+    "compare_yields",
+    {
+      description:
+        "READ-ONLY — return a ranked table of supply-side yield opportunities for a given asset across every integrated lending / staking protocol. v1 covers Aave V3 (5 EVM chains), Compound V3 (5 EVM chains, multi-market per chain), and Lido stETH (Ethereum only). Other protocols (Morpho Blue, MarginFi, Kamino, Marinade, Jito, EigenLayer, Solana native-stake) appear in the response's `unavailable[]` list with a coverage-gap reason — they need their wallet-less market readers split out from existing wallet-aware readers; tracked as follow-up work. " +
+        "Output per row: `protocol`, `chain`, `market` (free-form: 'cUSDCv3' for Compound, the asset symbol for Aave, 'stETH' for Lido), `supplyApr` (current, fractional 0.0481 = 4.81%), `supplyApy` (continuously-compounded), `tvl` (USD, may be null when the upstream doesn't expose it cheaply), `riskScore` (0-100 from `get_protocol_risk_score`, may be null), `notes` (pause flags, frozen reserves, etc.). Rows are sorted by `supplyApr` descending; null APR sinks. " +
+        "Filters: `chains` (default = all EVM mainnets + Solana); `minTvlUsd` (rows with `tvl: null` are NOT filtered — no data ≠ tiny market); `riskCeiling` (only show protocols at LEAST this safe; rows with `riskScore: null` are NOT filtered). Empty result returns `emptyResultReason` explaining whether nothing matched at all vs. everything filtered out. " +
+        "AGENT BEHAVIOR: this tool surfaces data; it does NOT pick. Surface the comparison verbatim. Do NOT pick a 'best' option for the user — they decide. The plan's positioning is explicit: 'Here are current supply rates' is right; 'I recommend depositing in X' is OUT.",
+      inputSchema: compareYieldsInput.shape,
+    },
+    handler((a) => compareYields(a as Parameters<typeof compareYields>[0]))
   );
 
   // ---- Module 3: Staking ----
