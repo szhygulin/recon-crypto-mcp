@@ -5,6 +5,12 @@ import { join } from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  isDemoMode,
+  isSigningTool,
+  getDemoFixture,
+  demoSigningRefusalMessage,
+} from "./demo/index.js";
 
 import {
   getLendingPositions,
@@ -630,6 +636,62 @@ function txHandler<T>(toolName: string, fn: (args: T) => Promise<UnsignedTx> | U
 }
 
 /**
+ * Demo-mode-aware wrapper around `server.registerTool`. When
+ * `VAULTPILOT_DEMO=true` is set in the environment AT REQUEST TIME (not
+ * at startup), every tool call is intercepted before reaching its real
+ * handler:
+ *
+ *   - signing tools (prepare_*, send_transaction, pair_ledger_*, etc.)
+ *     refuse with a structured demo-mode error (`isSigningTool` decides);
+ *   - read tools return a deterministic fixture from `DEMO_FIXTURES`,
+ *     or — for tools without a fixture — a `_demoFixture: "not-implemented"`
+ *     payload so the user sees what's covered.
+ *
+ * When the env var is unset, this function is a transparent pass-through
+ * to the real `server.registerTool` — zero runtime cost on the hot path.
+ *
+ * Single point of demo enforcement so adding a new tool only requires
+ * (a) registering it through `registerTool(server, ...)` like every
+ * other tool and optionally (b) adding a fixture entry. The signing-vs-
+ * read classification is pattern-based so new prepare_* / pair_ledger_*
+ * tools are gated automatically.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function registerTool(
+  server: InstanceType<typeof McpServer>,
+  name: string,
+  // `opts` mirrors the shape `server.registerTool` accepts (description +
+  // optional zod inputSchema); the SDK's parameter type is overloaded and
+  // doesn't infer cleanly through a generic wrapper, so we cast through
+  // `any` at the delegation point. Call-site type-safety is preserved by
+  // the SDK's own validation of the registered schema.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  opts: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  realHandler: (args: any) => Promise<{ content: unknown[]; isError?: boolean }> | { content: unknown[]; isError?: boolean },
+): ReturnType<InstanceType<typeof McpServer>["registerTool"]> {
+  // Pre-build the demo handler at registration time; it's only invoked
+  // when `isDemoMode()` is true at request time, but allocating it once
+  // up front keeps the request-path branch trivial.
+  const demoHandler = handler<unknown, unknown>(
+    (args: unknown) => {
+      if (isSigningTool(name)) {
+        throw new Error(demoSigningRefusalMessage(name));
+      }
+      return getDemoFixture(name, args);
+    },
+    { toolName: name },
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const dispatch = async (args: any) => {
+    if (isDemoMode()) return demoHandler(args);
+    return realHandler(args);
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return server.registerTool(name, opts, dispatch as any);
+}
+
+/**
  * Handler wrapper for `get_vaultpilot_config_status`. Tacks on the
  * setup-skill missing-notice (once per session) AFTER the standard handler
  * has emitted the preflight notice and JSON result. This is the canonical
@@ -1197,7 +1259,7 @@ async function main() {
   );
 
   // ---- Module 1: Positions ----
-  server.registerTool(
+  registerTool(server, 
     "get_lending_positions",
     {
       description:
@@ -1207,7 +1269,7 @@ async function main() {
     handler(getLendingPositions)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_lp_positions",
     {
       description:
@@ -1217,7 +1279,7 @@ async function main() {
     handler(getLpPositions)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_health_alerts",
     {
       description:
@@ -1227,7 +1289,7 @@ async function main() {
     handler(getHealthAlerts)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "simulate_position_change",
     {
       description:
@@ -1238,7 +1300,7 @@ async function main() {
   );
 
   // ---- Module 2: Security ----
-  server.registerTool(
+  registerTool(server, 
     "check_contract_security",
     {
       description:
@@ -1248,7 +1310,7 @@ async function main() {
     handler((a) => checkContractSecurityHandler(a))
   );
 
-  server.registerTool(
+  registerTool(server, 
     "check_permission_risks",
     {
       description:
@@ -1258,7 +1320,7 @@ async function main() {
     handler((a) => checkPermissionRisksHandler(a))
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_protocol_risk_score",
     {
       description:
@@ -1269,7 +1331,7 @@ async function main() {
   );
 
   // ---- Module 3: Staking ----
-  server.registerTool(
+  registerTool(server, 
     "get_staking_positions",
     {
       description:
@@ -1279,7 +1341,7 @@ async function main() {
     handler(getStakingPositions)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_staking_rewards",
     {
       description:
@@ -1289,7 +1351,7 @@ async function main() {
     handler(getStakingRewards)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "estimate_staking_yield",
     {
       description:
@@ -1300,7 +1362,7 @@ async function main() {
   );
 
   // ---- Module 4: Portfolio ----
-  server.registerTool(
+  registerTool(server, 
     "get_portfolio_summary",
     {
       description:
@@ -1310,7 +1372,7 @@ async function main() {
     handler(getPortfolioSummary)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_portfolio_diff",
     {
       description:
@@ -1320,7 +1382,7 @@ async function main() {
     handler(getPortfolioDiff)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_transaction_history",
     {
       description:
@@ -1331,7 +1393,7 @@ async function main() {
   );
 
   // ---- Module 5: Swap/Bridge (LiFi) ----
-  server.registerTool(
+  registerTool(server, 
     "get_swap_quote",
     {
       description:
@@ -1343,7 +1405,7 @@ async function main() {
     handler(getSwapQuote)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_swap",
     {
       description:
@@ -1356,7 +1418,7 @@ async function main() {
     txHandler("prepare_swap", prepareSwap)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_uniswap_swap",
     {
       description:
@@ -1375,7 +1437,7 @@ async function main() {
   );
 
   // ---- Module 6: Execution (Ledger Live) ----
-  server.registerTool(
+  registerTool(server, 
     "pair_ledger_live",
     {
       description:
@@ -1385,7 +1447,7 @@ async function main() {
     handler(pairLedgerLive)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "pair_ledger_tron",
     {
       description:
@@ -1395,7 +1457,7 @@ async function main() {
     handler(pairLedgerTron)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "pair_ledger_solana",
     {
       description:
@@ -1405,7 +1467,7 @@ async function main() {
     handler(pairLedgerSolana)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "pair_ledger_btc",
     {
       description:
@@ -1420,7 +1482,7 @@ async function main() {
     handler(pairLedgerBitcoin)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_solana_native_send",
     {
       description:
@@ -1430,7 +1492,7 @@ async function main() {
     handler(prepareSolanaNativeSend)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_solana_spl_send",
     {
       description:
@@ -1440,7 +1502,7 @@ async function main() {
     handler(prepareSolanaSplSend)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_solana_nonce_init",
     {
       description:
@@ -1459,7 +1521,7 @@ async function main() {
     handler(prepareSolanaNonceInit)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_solana_nonce_close",
     {
       description:
@@ -1474,7 +1536,7 @@ async function main() {
     handler(prepareSolanaNonceClose)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_solana_swap_quote",
     {
       description:
@@ -1490,7 +1552,7 @@ async function main() {
     handler(getSolanaSwapQuote)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_solana_swap",
     {
       description:
@@ -1510,7 +1572,7 @@ async function main() {
     handler(prepareSolanaSwap)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_marginfi_init",
     {
       description:
@@ -1536,7 +1598,7 @@ async function main() {
     handler(prepareMarginfiInit)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_marginfi_supply",
     {
       description:
@@ -1552,7 +1614,7 @@ async function main() {
     handler(prepareMarginfiSupply)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_marginfi_withdraw",
     {
       description:
@@ -1567,7 +1629,7 @@ async function main() {
     handler(prepareMarginfiWithdraw)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_marginfi_borrow",
     {
       description:
@@ -1582,7 +1644,7 @@ async function main() {
     handler(prepareMarginfiBorrow)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_marginfi_repay",
     {
       description:
@@ -1595,7 +1657,7 @@ async function main() {
     handler(prepareMarginfiRepay)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_marinade_stake",
     {
       description:
@@ -1612,7 +1674,7 @@ async function main() {
     handler(prepareMarinadeStake)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_jito_stake",
     {
       description:
@@ -1635,7 +1697,7 @@ async function main() {
     handler(prepareJitoStake)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_marinade_unstake_immediate",
     {
       description:
@@ -1651,7 +1713,7 @@ async function main() {
     handler(prepareMarinadeUnstakeImmediate)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_native_stake_delegate",
     {
       description:
@@ -1669,7 +1731,7 @@ async function main() {
     handler(prepareNativeStakeDelegate)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_native_stake_deactivate",
     {
       description:
@@ -1685,7 +1747,7 @@ async function main() {
     handler(prepareNativeStakeDeactivate)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_native_stake_withdraw",
     {
       description:
@@ -1700,7 +1762,7 @@ async function main() {
     handler(prepareNativeStakeWithdraw)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_solana_lifi_swap",
     {
       description:
@@ -1722,7 +1784,7 @@ async function main() {
     handler(prepareSolanaLifiSwap)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_kamino_init_user",
     {
       description:
@@ -1739,7 +1801,7 @@ async function main() {
     handler(prepareKaminoInitUser)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_kamino_supply",
     {
       description:
@@ -1756,7 +1818,7 @@ async function main() {
     handler(prepareKaminoSupply)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_kamino_borrow",
     {
       description:
@@ -1771,7 +1833,7 @@ async function main() {
     handler(prepareKaminoBorrow)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_kamino_withdraw",
     {
       description:
@@ -1785,7 +1847,7 @@ async function main() {
     handler(prepareKaminoWithdraw)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_kamino_repay",
     {
       description:
@@ -1799,7 +1861,7 @@ async function main() {
     handler(prepareKaminoRepay)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_kamino_positions",
     {
       description:
@@ -1816,7 +1878,7 @@ async function main() {
   );
 
   // ---- Module: Bitcoin (Phase 1 — read-only) ----
-  server.registerTool(
+  registerTool(server, 
     "get_btc_balance",
     {
       description:
@@ -1831,7 +1893,7 @@ async function main() {
     handler(getBitcoinBalance)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_btc_balances",
     {
       description:
@@ -1844,7 +1906,7 @@ async function main() {
     handler(getBitcoinBalances)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_btc_fee_estimates",
     {
       description:
@@ -1859,7 +1921,7 @@ async function main() {
     handler(getBitcoinFeeEstimates)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "rescan_btc_account",
     {
       description:
@@ -1885,7 +1947,7 @@ async function main() {
     handler(rescanBitcoinAccount)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_btc_account_balance",
     {
       description:
@@ -1907,7 +1969,7 @@ async function main() {
     handler(getBitcoinAccountBalance)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_btc_block_tip",
     {
       description:
@@ -1926,7 +1988,7 @@ async function main() {
     handler(getBitcoinBlockTip)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_btc_tx_history",
     {
       description:
@@ -1940,7 +2002,7 @@ async function main() {
     handler(getBitcoinTxHistory)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_btc_send",
     {
       description:
@@ -1959,7 +2021,7 @@ async function main() {
     handler(prepareBitcoinNativeSend, { toolName: "prepare_btc_send" })
   );
 
-  server.registerTool(
+  registerTool(server, 
     "sign_message_btc",
     {
       description:
@@ -1977,7 +2039,7 @@ async function main() {
     handler(signBtcMessage, { toolName: "sign_message_btc" })
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_tron_lifi_swap",
     {
       description:
@@ -2004,7 +2066,7 @@ async function main() {
     handler(prepareTronLifiSwap, { toolName: "prepare_tron_lifi_swap" })
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_solana_setup_status",
     {
       description:
@@ -2021,7 +2083,7 @@ async function main() {
     handler(getSolanaSetupStatus)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_vaultpilot_config_status",
     {
       description:
@@ -2040,7 +2102,7 @@ async function main() {
     configStatusHandler(getVaultPilotConfigStatus),
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_ledger_device_info",
     {
       description:
@@ -2060,7 +2122,7 @@ async function main() {
     handler(getLedgerDeviceInfo)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_marginfi_positions",
     {
       description:
@@ -2076,7 +2138,7 @@ async function main() {
     handler(getMarginfiPositions)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_solana_staking_positions",
     {
       description:
@@ -2094,7 +2156,7 @@ async function main() {
     handler(getSolanaStakingPositions)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_marginfi_diagnostics",
     {
       description:
@@ -2112,7 +2174,7 @@ async function main() {
     handler(getMarginfiDiagnostics)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_ledger_status",
     {
       description:
@@ -2135,7 +2197,7 @@ async function main() {
     handler(getLedgerStatus)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_aave_supply",
     {
       description:
@@ -2145,7 +2207,7 @@ async function main() {
     txHandler("prepare_aave_supply", prepareAaveSupply)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_aave_withdraw",
     {
       description:
@@ -2155,7 +2217,7 @@ async function main() {
     txHandler("prepare_aave_withdraw", prepareAaveWithdraw)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_aave_borrow",
     {
       description:
@@ -2165,7 +2227,7 @@ async function main() {
     txHandler("prepare_aave_borrow", prepareAaveBorrow)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_aave_repay",
     {
       description:
@@ -2175,7 +2237,7 @@ async function main() {
     txHandler("prepare_aave_repay", prepareAaveRepay)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_lido_stake",
     {
       description:
@@ -2185,7 +2247,7 @@ async function main() {
     txHandler("prepare_lido_stake", prepareLidoStake)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_lido_unstake",
     {
       description:
@@ -2195,7 +2257,7 @@ async function main() {
     txHandler("prepare_lido_unstake", prepareLidoUnstake)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_eigenlayer_deposit",
     {
       description:
@@ -2205,7 +2267,7 @@ async function main() {
     txHandler("prepare_eigenlayer_deposit", prepareEigenLayerDeposit)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "preview_send",
     {
       description:
@@ -2225,7 +2287,7 @@ async function main() {
     previewSendHandler(previewSend),
   );
 
-  server.registerTool(
+  registerTool(server, 
     "preview_solana_send",
     {
       description:
@@ -2247,7 +2309,7 @@ async function main() {
     previewSolanaSendHandler(previewSolanaSend),
   );
 
-  server.registerTool(
+  registerTool(server, 
     "send_transaction",
     {
       description:
@@ -2261,7 +2323,7 @@ async function main() {
     sendTransactionHandler(sendTransaction)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_transaction_status",
     {
       description:
@@ -2271,7 +2333,7 @@ async function main() {
     handler(getTransactionStatus)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_tx_verification",
     {
       description:
@@ -2281,7 +2343,7 @@ async function main() {
     handler(getTxVerification)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_verification_artifact",
     {
       description:
@@ -2301,7 +2363,7 @@ async function main() {
     handler(getVerificationArtifact)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "verify_tx_decode",
     {
       description:
@@ -2323,7 +2385,7 @@ async function main() {
     handler(verifyTxDecode)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "simulate_transaction",
     {
       description:
@@ -2342,7 +2404,7 @@ async function main() {
   );
 
   // ---- Module 7: Balances & ENS ----
-  server.registerTool(
+  registerTool(server, 
     "get_token_balance",
     {
       description:
@@ -2352,7 +2414,7 @@ async function main() {
     handler(getTokenBalance)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_token_price",
     {
       description:
@@ -2362,7 +2424,7 @@ async function main() {
     handler(getTokenPriceTool)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_token_metadata",
     {
       description:
@@ -2372,7 +2434,7 @@ async function main() {
     handler(getTokenMetadata)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "resolve_ens_name",
     {
       description:
@@ -2382,7 +2444,7 @@ async function main() {
     handler(resolveName)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "reverse_resolve_ens",
     {
       description:
@@ -2392,7 +2454,7 @@ async function main() {
     handler(reverseResolve)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_tron_staking",
     {
       description:
@@ -2402,7 +2464,7 @@ async function main() {
     handler((args: { address: string }) => getTronStaking(args.address))
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_tron_native_send",
     {
       description:
@@ -2412,7 +2474,7 @@ async function main() {
     handler(buildTronNativeSend, { toolName: "prepare_tron_native_send" })
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_tron_token_send",
     {
       description:
@@ -2422,7 +2484,7 @@ async function main() {
     handler(buildTronTokenSend, { toolName: "prepare_tron_token_send" })
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_tron_trc20_approve",
     {
       description:
@@ -2434,7 +2496,7 @@ async function main() {
     handler(buildTronTrc20Approve, { toolName: "prepare_tron_trc20_approve" })
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_tron_claim_rewards",
     {
       description:
@@ -2444,7 +2506,7 @@ async function main() {
     handler(buildTronClaimRewards, { toolName: "prepare_tron_claim_rewards" })
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_tron_freeze",
     {
       description:
@@ -2454,7 +2516,7 @@ async function main() {
     handler(buildTronFreeze, { toolName: "prepare_tron_freeze" })
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_tron_unfreeze",
     {
       description:
@@ -2464,7 +2526,7 @@ async function main() {
     handler(buildTronUnfreeze, { toolName: "prepare_tron_unfreeze" })
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_tron_withdraw_expire_unfreeze",
     {
       description:
@@ -2474,7 +2536,7 @@ async function main() {
     handler(buildTronWithdrawExpireUnfreeze, { toolName: "prepare_tron_withdraw_expire_unfreeze" })
   );
 
-  server.registerTool(
+  registerTool(server, 
     "list_tron_witnesses",
     {
       description:
@@ -2486,7 +2548,7 @@ async function main() {
     )
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_tron_vote",
     {
       description:
@@ -2496,7 +2558,7 @@ async function main() {
     handler(buildTronVote, { toolName: "prepare_tron_vote" })
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_native_send",
     {
       description:
@@ -2506,7 +2568,7 @@ async function main() {
     txHandler("prepare_native_send", prepareNativeSend)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_weth_unwrap",
     {
       description:
@@ -2516,7 +2578,7 @@ async function main() {
     txHandler("prepare_weth_unwrap", prepareWethUnwrap)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_token_send",
     {
       description:
@@ -2527,7 +2589,7 @@ async function main() {
   );
 
   // ---- Module 8: Compound V3 ----
-  server.registerTool(
+  registerTool(server, 
     "get_compound_positions",
     {
       description:
@@ -2537,7 +2599,7 @@ async function main() {
     handler(getCompoundPositions)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_compound_market_info",
     {
       description:
@@ -2547,7 +2609,7 @@ async function main() {
     handler(getCompoundMarketInfo)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "get_market_incident_status",
     {
       description:
@@ -2557,7 +2619,7 @@ async function main() {
     handler(getMarketIncidentStatus)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_compound_supply",
     {
       description:
@@ -2567,7 +2629,7 @@ async function main() {
     txHandler("prepare_compound_supply", buildCompoundSupply)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_compound_withdraw",
     {
       description:
@@ -2577,7 +2639,7 @@ async function main() {
     txHandler("prepare_compound_withdraw", buildCompoundWithdraw)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_compound_borrow",
     {
       description:
@@ -2587,7 +2649,7 @@ async function main() {
     txHandler("prepare_compound_borrow", buildCompoundBorrow)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_compound_repay",
     {
       description:
@@ -2598,7 +2660,7 @@ async function main() {
   );
 
   // ---- Module 9: Morpho Blue ----
-  server.registerTool(
+  registerTool(server, 
     "get_morpho_positions",
     {
       description:
@@ -2608,7 +2670,7 @@ async function main() {
     handler(getMorphoPositions)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_morpho_supply",
     {
       description:
@@ -2618,7 +2680,7 @@ async function main() {
     txHandler("prepare_morpho_supply", buildMorphoSupply)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_morpho_withdraw",
     {
       description:
@@ -2628,7 +2690,7 @@ async function main() {
     txHandler("prepare_morpho_withdraw", buildMorphoWithdraw)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_morpho_borrow",
     {
       description:
@@ -2638,7 +2700,7 @@ async function main() {
     txHandler("prepare_morpho_borrow", buildMorphoBorrow)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_morpho_repay",
     {
       description:
@@ -2648,7 +2710,7 @@ async function main() {
     txHandler("prepare_morpho_repay", buildMorphoRepay)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_morpho_supply_collateral",
     {
       description:
@@ -2658,7 +2720,7 @@ async function main() {
     txHandler("prepare_morpho_supply_collateral", buildMorphoSupplyCollateral)
   );
 
-  server.registerTool(
+  registerTool(server, 
     "prepare_morpho_withdraw_collateral",
     {
       description:
@@ -2669,7 +2731,7 @@ async function main() {
   );
 
   // ---- Module 10: Capability requests (agent → maintainers) ----
-  server.registerTool(
+  registerTool(server, 
     "request_capability",
     {
       description:

@@ -674,6 +674,21 @@ async function offerSkillInstall(p: Prompt): Promise<void> {
 }
 
 async function main() {
+  // Demo mode is a try-before-install switch — the server runs against
+  // fixture data and never touches a real Ledger or RPC. Running the
+  // setup wizard while VAULTPILOT_DEMO is active would write real config
+  // (Ledger pairing state, API keys, indexer URLs) to disk and silently
+  // create a misleading mismatch between what the user sees in chat
+  // (fixture data) and what's actually configured. Refuse with a clear
+  // message instead.
+  const { assertNotDemoForSetup } = await import("./demo/index.js");
+  try {
+    assertNotDemoForSetup();
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+
   console.log("VaultPilot MCP — interactive setup\n");
   console.log(`Config path: ${getConfigPath()}`);
 
