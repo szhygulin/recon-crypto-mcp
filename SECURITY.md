@@ -137,6 +137,24 @@ Limits worth naming:
 - Does not catch a coordinated attack that simultaneously compromises both LLM providers (significantly harder than compromising one).
 - Does not replace the normal `VERIFY-BEFORE-SIGNING` block — it is an additional tool for skeptical users on high-value or unfamiliar-contract flows.
 
+## Address book (`contacts.json`)
+
+Contact labels are stored locally per chain at `~/.vaultpilot-mcp/contacts.json` and signed with the user's paired Ledger key on that chain (BIP-137 for BTC, EIP-191 for EVM in v1.0; ed25519 for Solana, TIP-191 for TRON in v1.5) over a JCS-canonicalized full-list blob that includes a monotonic version counter and the fixed domain tag `VaultPilot-contact-v1:`. The signing primitives are not exposed as MCP tools; only the high-level `add_contact` / `remove_contact` / `list_contacts` / `verify_contacts` surface, and each one hardwires the domain tag.
+
+**Anchor re-derivation.** The anchor address per chain is captured into in-memory state on session start; subsequent reads compare disk-resident anchor to the in-memory value and refuse on mismatch (`CONTACTS_ANCHOR_MISMATCH`). An attacker swapping the contacts file *and* the pairing cache still fails because `pair_ledger_*` re-derives the address from the device.
+
+**Version rollback.** An in-memory high-water mark per chain rejects any read whose `version` is less than the highest seen this session (`CONTACTS_VERSION_ROLLBACK`).
+
+**Resolver scope.** `prepare_*` flows resolve labels through `resolveRecipient`. **Abort-on-tamper is scoped to the label-resolution path only:**
+
+- Input was a label requiring contacts → tampered contacts → abort hard with `CONTACTS_TAMPERED`. Any send risks routing to the attacker's substituted address.
+- Input was a literal address → tampered contacts → send proceeds; verification block surfaces `⚠ contacts file failed verification — recipient label not checked`.
+- Input was an ENS name → tampered contacts → ENS resolves independently; reverse-decoration silently skipped with the same warning.
+
+**EVM signing trade-off (path C).** EVM contacts blob signing requires `personal_sign` over the canonicalized message. v1.0 enables `personal_sign` in the WC namespace at `REQUIRED_NAMESPACES.eip155.methods`. Once it's in the session scope, **any code path with access to the live `c.request(...)` can issue a `personal_sign`** — not just `src/signers/contacts/evm.ts`. We mitigate at the contacts-signer layer by hardwiring the `VaultPilot-contact-v1:` domain prefix, but a compromised MCP can still bypass our signer and call `personal_sign` directly. The user-side defense is the Ledger Live message-display screen: the device shows the message text on-screen for `personal_sign`, and the `VaultPilot-contact-v1:` prefix is unique enough that a phishing payload would have to either masquerade as a contacts blob (visible to the user) or sign under a different prefix (also visible). `eth_signTypedData_v4` remains intentionally excluded from the namespace.
+
+**Honest limits.** The address book is a UX + tamper-evidence layer; the Ledger device screen remains the canonical recipient check, and a coordinated MCP+agent compromise can still bypass label resolution entirely. A first-run rollback before any session has read the file is undetectable. Encryption-at-rest is not provided in v1; the file is local and `0o600`, but anyone with read access to the home directory can enumerate contacts. Free-form metadata (notes, tags) is stored unsigned alongside signed entries — tampering with notes will not redirect funds, but may show misleading context. Taproot (`bc1p…`) BTC contacts and Solana / TRON contacts are unsupported in v1.0.
+
 ## Reporting a vulnerability
 
 If you believe you've found a security issue, please open a GitHub security advisory at <https://github.com/szhygulin/vaultpilot-mcp/security/advisories/new> rather than a public issue. Include a reproduction, the affected version, and your assessment of the impact. I'll aim to acknowledge within a few days.

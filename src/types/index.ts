@@ -1207,6 +1207,23 @@ export interface UnsignedTx {
    * sites are updated.
    */
   verification?: TxVerification;
+  /**
+   * Address-book resolution metadata — populated by `resolveRecipient`
+   * when the user's `to` arg matched a contact label, ENS, or a literal
+   * address that reverse-decorated to a saved label. Threaded through to
+   * the verification renderer so the user sees `to: 0xAbC… (contact: Mom
+   * — verified)` instead of just the raw hex. Absent for prepares that
+   * don't take a recipient (e.g. swap, lending). Issue: address-book
+   * v1.0.
+   */
+  recipient?: {
+    /** Saved label, if any (resolved-from or reverse-decorated). */
+    label?: string;
+    /** How the address was resolved. */
+    source: "literal" | "contact" | "ens" | "unknown";
+    /** Non-fatal warnings (e.g. "contacts file failed verification — recipient label not checked"). */
+    warnings?: string[];
+  };
 }
 
 /** Shape of ~/.vaultpilot-mcp/config.json. */
@@ -1353,6 +1370,16 @@ export interface UnsignedBitcoinTx {
    * address + amount per output).
    */
   fingerprint?: `0x${string}`;
+  /**
+   * Address-book recipient metadata — see `UnsignedTx.recipient`.
+   * Populated when `args.to` matched a contact label (or reverse-
+   * decorated to a saved one). Threaded into the verification block.
+   */
+  recipient?: {
+    label?: string;
+    source: "literal" | "contact" | "ens" | "unknown";
+    warnings?: string[];
+  };
 }
 
 /**

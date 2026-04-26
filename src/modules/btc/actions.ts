@@ -220,9 +220,19 @@ export async function buildBitcoinNativeSend(
 ): Promise<UnsignedBitcoinTx> {
   const wallets = normalizeWallets(args.wallet);
 
+  // Address-book resolution. `args.to` may be a label like "Mom"; we
+  // resolve via `resolveRecipient` which strict-aborts on contacts
+  // tamper (label-resolution path) or proceeds with a warning when
+  // the input was a literal address. The resolved address replaces
+  // the user-supplied `to` for the rest of the flow; the resolved
+  // label flows into `tx.recipient` for the verification block.
+  const { resolveRecipient } = await import("../../contacts/resolver.js");
+  const resolved = await resolveRecipient(args.to, "bitcoin");
+  const resolvedTo = resolved.address;
+
   // 1. Validate every source address format + resolve every paired
   //    entry. Reject mixed accountIndex / addressType up-front.
-  assertBitcoinAddress(args.to);
+  assertBitcoinAddress(resolvedTo);
   const pairedList = wallets.map((w) => {
     assertBitcoinAddress(w);
     const paired = getPairedBtcByAddress(w);
@@ -353,7 +363,7 @@ export async function buildBitcoinNativeSend(
   // 5. Coin-selection over the merged pool.
   const selection = selectInputs({
     utxos: csUtxos,
-    outputs: [{ address: args.to, value: Number(amountSats) }],
+    outputs: [{ address: resolvedTo, value: Number(amountSats) }],
     feeRate,
     changeAddress: changeEntry.address,
     ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
@@ -469,10 +479,13 @@ export async function buildBitcoinNativeSend(
 
   const accountPath = accountPathFromLeaf(primary.path);
   const vsize = roughVbytes(selection.inputs.length, selection.outputs.length);
+  const recipientDisplay = resolved.label
+    ? `${resolved.label} (${resolvedTo})`
+    : resolvedTo;
   const description =
     wallets.length === 1
-      ? `Send ${satsToBtcString(amountSats)} BTC to ${args.to}`
-      : `Consolidate ${satsToBtcString(amountSats)} BTC from ${wallets.length} addresses to ${args.to}`;
+      ? `Send ${satsToBtcString(amountSats)} BTC to ${recipientDisplay}`
+      : `Consolidate ${satsToBtcString(amountSats)} BTC from ${wallets.length} addresses to ${recipientDisplay}`;
 
   const tx: Omit<UnsignedBitcoinTx, "handle" | "fingerprint"> = {
     chain: "bitcoin",
@@ -489,11 +502,17 @@ export async function buildBitcoinNativeSend(
       publicKey: changeEntry.publicKey,
     },
     description,
+    recipient: {
+      ...(resolved.label ? { label: resolved.label } : {}),
+      source: resolved.source,
+      ...(resolved.warnings.length > 0 ? { warnings: resolved.warnings } : {}),
+    },
     decoded: {
       functionName: "bitcoin.native_send",
       args: {
         from: wallets.join(","),
-        to: args.to,
+        to: resolvedTo,
+        ...(resolved.label ? { recipientLabel: resolved.label } : {}),
         amount: satsToBtcString(amountSats),
         feeRate: `${feeRate} sat/vB`,
       },

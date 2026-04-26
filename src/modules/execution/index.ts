@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { encodeFunctionData, formatUnits, isAddress, parseEther, parseUnits } from "viem";
 import qrcodeTerminal from "qrcode-terminal";
+import { resolveRecipient } from "../../contacts/resolver.js";
 import {
   initiatePairing,
   requestSendTransaction,
@@ -2200,16 +2201,37 @@ function assertRecipient(addr: string): `0x${string}` {
 export async function prepareNativeSend(args: PrepareNativeSendArgs): Promise<UnsignedTx> {
   const wallet = args.wallet as `0x${string}`;
   const chain = args.chain as SupportedChain;
-  const to = assertRecipient(args.to);
+  // Address-book resolution: `args.to` may be a label, an ENS name,
+  // or a literal address. Strict-aborts on contacts-tamper if the
+  // user passed a label (label-resolution is the phishing-redirect
+  // path; tamper there is unsafe). Literal addresses + ENS still
+  // proceed with a warning when contacts are tampered.
+  const resolved = await resolveRecipient(args.to, chain);
+  const to = assertRecipient(resolved.address);
   const value = parseEther(args.amount);
+  const display = resolved.label
+    ? `${resolved.label} (${to})`
+    : to;
   return enrichTx({
     chain,
     to,
     data: "0x",
     value: value.toString(),
     from: wallet,
-    description: `Send ${args.amount} native coin to ${to} on ${chain}`,
-    decoded: { functionName: "transfer", args: { to, amount: args.amount } },
+    description: `Send ${args.amount} native coin to ${display} on ${chain}`,
+    decoded: {
+      functionName: "transfer",
+      args: {
+        to,
+        ...(resolved.label ? { recipientLabel: resolved.label } : {}),
+        amount: args.amount,
+      },
+    },
+    recipient: {
+      ...(resolved.label ? { label: resolved.label } : {}),
+      source: resolved.source,
+      ...(resolved.warnings.length > 0 ? { warnings: resolved.warnings } : {}),
+    },
   });
 }
 
@@ -2227,7 +2249,9 @@ export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<Unsi
   const wallet = args.wallet as `0x${string}`;
   const chain = args.chain as SupportedChain;
   const token = args.token as `0x${string}`;
-  const to = assertRecipient(args.to);
+  // Address-book resolution — same shape as prepareNativeSend.
+  const resolved = await resolveRecipient(args.to, chain);
+  const to = assertRecipient(resolved.address);
   const meta = await resolveTokenMeta(chain, token);
 
   let amountWei: bigint;
@@ -2245,6 +2269,9 @@ export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<Unsi
     amountWei = parseUnits(args.amount, meta.decimals);
   }
 
+  const recipientDisplay = resolved.label
+    ? `${resolved.label} (${to})`
+    : to;
   return enrichTx({
     chain,
     to: token,
@@ -2255,10 +2282,20 @@ export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<Unsi
     }),
     value: "0",
     from: wallet,
-    description: `Send ${displayAmount} ${meta.symbol} to ${to} on ${chain}`,
+    description: `Send ${displayAmount} ${meta.symbol} to ${recipientDisplay} on ${chain}`,
     decoded: {
       functionName: "transfer",
-      args: { to, amount: displayAmount, symbol: meta.symbol },
+      args: {
+        to,
+        ...(resolved.label ? { recipientLabel: resolved.label } : {}),
+        amount: displayAmount,
+        symbol: meta.symbol,
+      },
+    },
+    recipient: {
+      ...(resolved.label ? { label: resolved.label } : {}),
+      source: resolved.source,
+      ...(resolved.warnings.length > 0 ? { warnings: resolved.warnings } : {}),
     },
   });
 }
