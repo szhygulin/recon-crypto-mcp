@@ -1366,6 +1366,7 @@ async function main() {
         "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out (`amount` = target toToken output, e.g. \"I want 100 USDC out\"). " +
         "Source chain is always EVM. Destination can be any EVM chain, Solana, or TRON. For non-EVM destinations pass `toChain: \"solana\"` / `\"tron\"` + an explicit `toAddress` in the destination chain's format; the user signs an EVM tx and the bridge protocol delivers tokens to the destination after confirmation. The destination-side decimals cross-check is dropped for non-EVM destinations (we can't read SPL/TRC-20 via EVM RPC); LiFi's reported decimals are the source of truth there. Exact-out is not supported for cross-chain-to-non-EVM. For Solana-source swaps and bridges use `prepare_solana_lifi_swap`. TRON-source LiFi is not yet wired. " +
         "DECODING DEFENSE: every cross-chain bridge calldata is parsed into its `BridgeData` tuple and the encoded `destinationChainId` + `receiver` are cross-checked against what the user requested — refuses on mismatch. Catches a compromised MCP that returns calldata routing to a different chain or recipient than the prepare receipt advertises. " +
+        "INTERMEDIATE-CHAIN BRIDGES: NEAR Intents (notably for ETH→TRON USDT routes) settles on NEAR and releases on the final chain via an off-chain relayer, so its on-chain `destinationChainId` is NEAR's pseudo-id (1885080386571452) rather than the user's requested chain. The defense allows this ONLY for an explicit hardcoded (bridge name, intermediate chain ID) pair held as a source-code constant — not loaded from env / config / LiFi response — so a compromised aggregator can't claim arbitrary chains as 'intermediate'. Receiver-side checks (non-EVM sentinel, etc.) still apply unchanged. " +
         "The returned tx can be sent via `send_transaction`.",
       inputSchema: prepareSwapInput.shape,
     },
@@ -2103,7 +2104,10 @@ async function main() {
         "(TU3ymitEKCWQFtASkEeHaPb8NfZcJtCHLt) and the owner_address is the user's wallet, " +
         "(3) decodes the inner ABI calldata's BridgeData tuple and cross-checks " +
         "destinationChainId + receiver against the user's request — refuses on any " +
-        "mismatch. TRC-20 source flows REQUIRE a prior approve to the LiFi Diamond — call " +
+        "mismatch. NEAR Intents routes (intermediate-chain settlement on NEAR's pseudo-chain " +
+        "1885080386571452) are allowlisted via a hardcoded source-code constant so a hostile " +
+        "aggregator cannot fabricate 'intermediate-chain' encodings; receiver-side checks still " +
+        "apply unchanged. TRC-20 source flows REQUIRE a prior approve to the LiFi Diamond — call " +
         "`prepare_tron_trc20_approve` first with `spender: \"TU3ymitEKCWQFtASkEeHaPb8NfZcJtCHLt\"` " +
         "and the amount you intend to swap; insufficient allowance reverts the swap on-chain. " +
         "BLIND-SIGN on Ledger (LiFi Diamond not in TRON app's clear-sign allowlist) — " +
