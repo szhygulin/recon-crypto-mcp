@@ -25,6 +25,9 @@ import {
   simulatePositionChangeInput,
 } from "./modules/positions/schemas.js";
 
+import { getSafePositions } from "./modules/safe/index.js";
+import { getSafePositionsInput } from "./modules/safe/schemas.js";
+
 import {
   checkContractSecurityHandler,
   checkPermissionRisksHandler,
@@ -1311,7 +1314,7 @@ async function main() {
     handler(getHealthAlerts)
   );
 
-  registerTool(server, 
+  registerTool(server,
     "simulate_position_change",
     {
       description:
@@ -1319,6 +1322,16 @@ async function main() {
       inputSchema: simulatePositionChangeInput.shape,
     },
     handler(simulatePositionChange)
+  );
+
+  registerTool(server,
+    "get_safe_positions",
+    {
+      description:
+        "Fetch Safe (Gnosis Safe) multisig accounts for an EVM owner address and/or by Safe address. Returns per-Safe threshold, owners, contract version, native balance, pending and recently-executed transactions, and risk notes (single-signer threshold, all-required threshold, Safe Modules, Safe Guards). Pass `signerAddress` to discover every Safe the wallet is an owner on, OR `safeAddress` to look up one Safe directly (or both — results are unioned and deduped). `chains` defaults to `[\"ethereum\"]`; pass an explicit array to query other supported EVM chains. Requires SAFE_API_KEY (https://developer.safe.global/) — Safe Transaction Service authenticates every request. ERC-20 balances are NOT enumerated here; pair with `get_token_balance` per token or `get_portfolio_summary` against the Safe address.",
+      inputSchema: getSafePositionsInput.shape,
+    },
+    handler(getSafePositions)
   );
 
   // ---- Module 2: Security ----
