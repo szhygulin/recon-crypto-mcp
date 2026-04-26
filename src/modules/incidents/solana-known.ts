@@ -121,3 +121,57 @@ export const KNOWN_PYTH_FEEDS: readonly SolanaKnownPythFeed[] = [
  */
 export const KNOWN_SOLANA_INCIDENTS: readonly SolanaIncidentRecord[] = [
 ] as const;
+
+/**
+ * Squads V4 multisig program — the on-chain governance program many Solana
+ * protocols use for upgrade-authority custody. Verified against the SDK's
+ * generated types: `@sqds/multisig` v2.1.4 ships
+ * `lib/generated/index.d.ts` with `export declare const PROGRAM_ADDRESS = "SQDS4ep65T..."`.
+ *
+ * NOT to be confused with the older `SMPLecH...` address some external
+ * docs reference — the `rnd` scope-probe before the `pending_squads_upgrade`
+ * implementation found that address was wrong (issue #251 comment).
+ */
+export const SQUADS_V4_PROGRAM_ID = "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf";
+
+/**
+ * Solana's BPF Loader Upgradeable program — the loader responsible for
+ * `Upgrade`, `SetAuthority`, `Close`, `ExtendProgram`, etc. instructions
+ * against any upgradeable program. Cross-checked against
+ * `@kamino-finance/klend-sdk`'s `utils/seeds.ts` which interacts with this
+ * loader for protocol-program-derived addresses.
+ *
+ * The `1e` (one + e) at index 17 is intentional Solana convention for
+ * loader-style program IDs ending in all-1 padding.
+ */
+export const BPF_LOADER_UPGRADEABLE_PROGRAM_ID =
+  "BPFLoaderUpgradeab1e11111111111111111111111";
+
+/**
+ * Programs known to be governed by a Squads V4 multisig, with the
+ * specific multisig PDA that holds upgrade authority.
+ *
+ * Empty by default — populating this map requires per-protocol governance
+ * verification (does Marinade actually use Squads V4? Jito? Kamino?
+ * MarginFi? Drift?). The `@sqds/multisig` SDK does NOT expose a
+ * `programId → multisigPda` map; that information lives in protocol
+ * documentation and on-chain state. The `pending_squads_upgrade` signal
+ * relies on this list — when it's empty, the signal returns
+ * `available: true` with `scannedMultisigs: 0` and a `note` explaining
+ * that the vendor list is empty pending curation.
+ *
+ * Editing policy: every entry must cite the source for the multisig PDA
+ * (protocol blog post, on-chain `getProgramAccount(programDataAddress)`
+ * showing `upgradeAuthority` matches a Squads vault PDA, governance
+ * forum vote, etc.). Mirrors `KNOWN_SOLANA_INCIDENTS` policy —
+ * source-or-no-merge.
+ */
+export interface SquadsGovernedProgram {
+  programId: string;
+  protocol: string;
+  multisigPda: string;
+  source: string;
+}
+
+export const KNOWN_SQUADS_GOVERNED_PROGRAMS: readonly SquadsGovernedProgram[] = [
+] as const;

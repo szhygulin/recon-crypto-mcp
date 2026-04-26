@@ -13,15 +13,19 @@
  * Program-layer signals (protocol="solana-protocols"):
  *   - recent_program_upgrade    (any monitored program upgraded in last 24h)
  *   - token_freeze_event        (any user SPL account in `frozen` state)
+ *   - token_extension_change    (Token-2022 mint gained extensions vs cached
+ *                                snapshot; flagged severity by extension class)
  *   - oracle_staleness          (Pyth feed publish_time > 60s old)
- *   - known_exploit             (program in vendored exploit list)
+ *   - known_exploit             (program in vendored exploit list +
+ *                                optional SOLANA_INCIDENT_FEED_URL hybrid)
+ *   - pending_squads_upgrade    (any pre-execution Squads V4 vault tx
+ *                                targeting BPFLoaderUpgradeable for a
+ *                                program in KNOWN_SQUADS_GOVERNED_PROGRAMS;
+ *                                conservative-default flags any loader ix)
  *
- * Deferred (v2 follow-up issues filed separately):
- *   - rpc_divergence            (needs 2nd RPC config — out of v1 scope)
- *   - pending_squads_upgrade    (Squads program scan — non-trivial)
- *   - token_extension_change    (Token-2022 extension diff — needs cached snapshots)
- *   - oracle_price_anomaly      (needs rolling 24h history)
- *   - runtime exploit feed      (SOLANA_INCIDENT_FEED_URL hybrid mode)
+ * Deferred (separate v2 follow-up issues):
+ *   - rpc_divergence            (needs 2nd RPC config — issue #248 family)
+ *   - oracle_price_anomaly      (needs rolling 24h history — issue #255)
  */
 import { PublicKey } from "@solana/web3.js";
 import { getSolanaConnection } from "../solana/rpc.js";
@@ -31,6 +35,19 @@ import {
   KNOWN_SOLANA_INCIDENTS,
 } from "./solana-known.js";
 import { getSolanaIncidentFeed } from "./solana-feed.js";
+import { scanSquadsPendingUpgrades } from "./squads-pending.js";
+import { KNOWN_SQUADS_GOVERNED_PROGRAMS } from "./solana-known.js";
+import {
+  getExtensionTypes,
+  getMint,
+  TOKEN_2022_PROGRAM_ID,
+} from "@solana/spl-token";
+import {
+  loadSnapshots,
+  saveSnapshots,
+  type MintSnapshotStore,
+} from "./token2022-snapshots.js";
+import { diffExtensions, rollupDiffs } from "./token-extension-diff.js";
 
 export interface SolanaChainIncidentStatus {
   protocol: "solana";
@@ -475,6 +492,104 @@ export async function getSolanaProgramLayerSignals(
     }
   }
 
+  // token_extension_change — issue #252. For each Token-2022 mint the
+  // user holds, compare current extensions against a cached snapshot.
+  // First-run is non-flagging (we just baseline). Severity per extension
+  // is from `token-extension-diff.ts`. Snapshots persist via the
+  // `token2022-snapshots.json` store so the diff survives restarts.
+  if (!walletArg) {
+    signals.push({
+      name: "token_extension_change",
+      available: false,
+      reason:
+        "requires `wallet` arg — Token-2022 extension diff is per-wallet (we only inspect mints the user holds)",
+    });
+  } else {
+    try {
+      const owner = new PublicKey(walletArg);
+      const t22Accounts = await conn.getTokenAccountsByOwner(
+        owner,
+        { programId: TOKEN_2022_PROGRAM_ID },
+        "confirmed",
+      );
+      // Extract unique mint pubkeys from each token account (mint at bytes 0..32).
+      const uniqueMints = new Set<string>();
+      for (const a of t22Accounts.value) {
+        const data = a.account.data;
+        if (data.length >= 32) {
+          uniqueMints.add(new PublicKey(data.subarray(0, 32)).toBase58());
+        }
+      }
+      const store: MintSnapshotStore = loadSnapshots();
+      const diffs = [];
+      const mintErrors: Array<{ mint: string; error: string }> = [];
+      for (const mintBase58 of uniqueMints) {
+        try {
+          const mintPubkey = new PublicKey(mintBase58);
+          const mintInfo = await getMint(
+            conn,
+            mintPubkey,
+            "confirmed",
+            TOKEN_2022_PROGRAM_ID,
+          );
+          const currentExts = getExtensionTypes(mintInfo.tlvData);
+          const snapshot = store[mintBase58];
+          const diff = diffExtensions(
+            mintBase58,
+            currentExts,
+            snapshot?.extensions,
+          );
+          diffs.push(diff);
+          // Persist current observation. We update on every call —
+          // `firstObservation` covers the cold-start case so we don't
+          // false-positive after a baseline write.
+          store[mintBase58] = {
+            extensions: currentExts as number[],
+            snappedAt: new Date().toISOString(),
+          };
+        } catch (err) {
+          mintErrors.push({
+            mint: mintBase58,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      // Save baseline + updated snapshots (atomic). Best-effort: a write
+      // failure surfaces as a warn in the signal detail rather than
+      // failing the whole rollup.
+      let snapshotWriteError: string | undefined;
+      try {
+        saveSnapshots(store);
+      } catch (err) {
+        snapshotWriteError = err instanceof Error ? err.message : String(err);
+      }
+      const rollup = rollupDiffs(diffs);
+      signals.push({
+        name: "token_extension_change",
+        available: true,
+        flagged: rollup.flagged,
+        detail: {
+          wallet: walletArg,
+          uniqueMintsScanned: uniqueMints.size,
+          firstObservationCount: rollup.firstObservationCount,
+          changedMints: rollup.changedMints,
+          baselinedMints: rollup.baselinedMints,
+          mintErrors,
+          ...(snapshotWriteError ? { snapshotWriteError } : {}),
+          note: rollup.firstObservationCount > 0
+            ? "First-observation entries are baseline-only — no diff possible until next call. Subsequent calls will flag newly-enabled extensions."
+            : undefined,
+        },
+      });
+    } catch (err) {
+      signals.push({
+        name: "token_extension_change",
+        available: false,
+        reason: `RPC error scanning Token-2022 accounts: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
   // oracle_staleness — Pyth feed publish_time check. Pyth account layout
   // is non-trivial; v1 reads accounts and pulls publish_time from a
   // well-known offset (208) in the price-update account. If layout
@@ -581,6 +696,43 @@ export async function getSolanaProgramLayerSignals(
         : {}),
     },
   });
+
+  // pending_squads_upgrade — issue #251. Scan curated
+  // KNOWN_SQUADS_GOVERNED_PROGRAMS for pre-execution proposals targeting
+  // BPFLoaderUpgradeable. Conservative-default: any loader-targeting
+  // pending tx is flagged regardless of which loader ix variant. The
+  // vendor list is empty by default — when empty, surface
+  // available:true with a `note` so the agent knows the signal is
+  // installed but unscoped, NOT silently green.
+  try {
+    const squadsResult = await scanSquadsPendingUpgrades(
+      conn,
+      KNOWN_SQUADS_GOVERNED_PROGRAMS,
+    );
+    signals.push({
+      name: "pending_squads_upgrade",
+      available: true,
+      flagged: squadsResult.pendingUpgrades.length > 0,
+      detail: {
+        scannedMultisigs: squadsResult.scannedMultisigs,
+        scannedPrograms: squadsResult.scannedPrograms,
+        pendingUpgrades: squadsResult.pendingUpgrades,
+        scanErrors: squadsResult.errors,
+        ...(squadsResult.scannedMultisigs === 0
+          ? {
+              note:
+                "KNOWN_SQUADS_GOVERNED_PROGRAMS is empty — per-protocol governance verification (which programs use Squads V4 for upgrade authority) is the curation step. Add entries via PR with a source citation per the policy in solana-known.ts.",
+            }
+          : {}),
+      },
+    });
+  } catch (err) {
+    signals.push({
+      name: "pending_squads_upgrade",
+      available: false,
+      reason: `Squads scan error: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
 
   return {
     protocol: "solana-protocols",
