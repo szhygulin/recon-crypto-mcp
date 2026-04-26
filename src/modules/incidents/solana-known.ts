@@ -23,6 +23,25 @@ export interface SolanaKnownPythFeed {
   feedAddress: string;
   symbol: string;
   source: string;
+  /**
+   * Anomaly threshold for the `oracle_price_anomaly` signal (#255).
+   * If the current Pyth price deviates from the rolling 24h median
+   * by more than this fraction (0.05 = 5%), the feed is flagged.
+   *
+   * Calibration rationale:
+   *   - Stables (USDC/USD, USDT/USD): 0.01 (1%). A real depeg is
+   *     rare-but-historic (USDC March 2023 depegged to $0.88 = 12%);
+   *     1% is comfortably below the depeg signal AND well above
+   *     normal stable-price noise (intra-day vol on healthy stables
+   *     is ≤0.1%).
+   *   - Volatile assets (SOL/USD, ETH/USD, BTC/USD): 0.05 (5%) per
+   *     the issue's default. A 5% move in <30s is unusual enough to
+   *     be worth surfacing; smaller moves are routine intra-day vol.
+   *
+   * Override path: per-feed value here. Future v2 can add a runtime
+   * override via env var or user-config.
+   */
+  anomalyThresholdPct: number;
 }
 
 export interface SolanaIncidentRecord {
@@ -90,16 +109,19 @@ export const KNOWN_PYTH_FEEDS: readonly SolanaKnownPythFeed[] = [
     feedAddress: "H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG",
     symbol: "SOL/USD",
     source: "https://pyth.network/price-feeds/crypto-sol-usd",
+    anomalyThresholdPct: 0.05,
   },
   {
     feedAddress: "Gnt27xtC473ZT2Mw5u8wZ68Z3gULkSTb5DuxJy7eJotD",
     symbol: "USDC/USD",
     source: "https://pyth.network/price-feeds/crypto-usdc-usd",
+    anomalyThresholdPct: 0.01,
   },
   {
     feedAddress: "3vxLXJqLqF3JG5TCbYycbKWRBbCJQLxQmBGCkyqEEefL",
     symbol: "USDT/USD",
     source: "https://pyth.network/price-feeds/crypto-usdt-usd",
+    anomalyThresholdPct: 0.01,
   },
 ] as const;
 
