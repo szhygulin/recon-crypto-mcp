@@ -16,31 +16,20 @@ import { LTC_DECIMALS, LITOSHIS_PER_LTC } from "../../config/litecoin.js";
  * Same PSBT v0 / coin-selection / fee-cap pattern; only network params
  * and chain identifiers differ.
  *
+ * Multi-source consolidation (issue #264). `wallet` accepts either a
+ * single address or an array of paired source addresses; mirrors BTC's
+ * fan-out + merged coin-selection. Phase 1 scope keeps all sources
+ * within the SAME Ledger account (same accountIndex + addressType).
+ *
  * bitcoinjs-lib does not ship a Litecoin network preset, so we
  * construct one inline (mainnet only). pubKeyHash 0x30 (L-prefix),
  * scriptHash 0x32 (M-prefix; modern Litecoin P2SH version), bech32
- * HRP `ltc`. The xpub/xprv version bytes match BTC's `0x0488B21E` /
- * `0x0488ADE4` — Litecoin Core uses the standard BIP-32 versions
- * (Ltub/Ltpv exist in some third-party wallets but Core does not
- * emit them).
+ * HRP `ltc`.
  *
- * Legacy 3-prefix (0x05) Litecoin P2SH addresses are READ-side only:
- * `assertLitecoinAddress` accepts them, but the SEND path rejects
- * them because bitcoinjs-lib's `address.toOutputScript` validates the
- * version byte against the configured `scriptHash` and we only carry
- * one `scriptHash` per network object. Recipients on 3-prefix P2SH
- * are vanishingly rare on Litecoin (the M-prefix migration completed
- * years ago); when one shows up, we surface a clear error pointing
- * the user to ask the recipient for an M-prefix address.
- *
- * Change derivation mirrors BTC's (issue #254): the change output goes
- * to a BIP-44 internal-chain (`/1/<idx>`) address looked up from the
- * pairings cache, and the change leaf's `path` + `publicKey` are
- * threaded onto the unsigned tx so the signer can register the change
- * in `signPsbtBuffer.knownAddressDerivations` (and, on the legacy
- * `createPaymentTransaction` fallback path, populate `changePath`).
- * Same RBF default (`0xFFFFFFFD`). Same nonWitnessUtxo requirement on
- * every input (Ledger BTC/LTC app 2.x — issue #213).
+ * Legacy 3-prefix (0x05) Litecoin P2SH addresses are READ-side only.
+ * Change derivation mirrors BTC's (issue #254). Same RBF default
+ * (`0xFFFFFFFD`). Same nonWitnessUtxo requirement on every input
+ * (Ledger BTC/LTC app 2.x — issue #213).
  */
 
 const requireCjs = createRequire(import.meta.url);
@@ -61,28 +50,20 @@ const bitcoinjs = requireCjs("bitcoinjs-lib") as {
   };
 };
 
-/**
- * Litecoin mainnet network params, in the bitcoinjs-lib `Network`
- * shape. Since bitcoinjs-lib doesn't ship a Litecoin preset we define
- * it here.
- */
 const LITECOIN_NETWORK = {
   messagePrefix: "\x19Litecoin Signed Message:\n",
   bech32: "ltc",
   bip32: {
-    public: 0x0488b21e, // xpub — Litecoin Core convention
-    private: 0x0488ade4, // xprv
+    public: 0x0488b21e,
+    private: 0x0488ade4,
   },
-  pubKeyHash: 0x30, // L-prefix
-  scriptHash: 0x32, // M-prefix (modern); legacy 3-prefix not supported on send
+  pubKeyHash: 0x30,
+  scriptHash: 0x32,
   wif: 0xb0,
 };
 
 const NETWORK = LITECOIN_NETWORK;
 
-/**
- * Map BIP-32-purpose-to-our-paired-type.
- */
 const ADDRESS_FORMAT_BY_TYPE: Record<
   PairedLtcAddressType,
   UnsignedLitecoinTx["addressFormat"]
@@ -93,9 +74,6 @@ const ADDRESS_FORMAT_BY_TYPE: Record<
   taproot: "bech32m",
 };
 
-/**
- * Account-level path derivation from leaf path.
- */
 function accountPathFromLeaf(leafPath: string): string {
   const parts = leafPath.split("/");
   if (parts.length < 5) {
@@ -111,12 +89,6 @@ function roughVbytes(inputCount: number, outputCount: number): number {
   return 10 + inputCount * 68 + outputCount * 31;
 }
 
-/**
- * Pick the chain=1 (BIP-32 internal/change) entry from the LTC pairings
- * cache that matches the source's (accountIndex, addressType). Mirror
- * of `pickChangeEntry` in btc/actions.ts. Returns null when none is
- * cached. Issue #254.
- */
 function pickChangeEntry(
   paired: ReturnType<typeof getPairedLtcByAddress>,
 ): { address: string; path: string; publicKey: string } | null {
@@ -160,27 +132,44 @@ function parseLtcAmountToLitoshis(amount: string): bigint | null {
 }
 
 export interface BuildLitecoinNativeSendArgs {
-  /** Paired LTC source address. Must be in `UserConfig.pairings.litecoin`. */
-  wallet: string;
-  /** Recipient. L/M/ltc1q/ltc1p — 3-prefix legacy P2SH not supported on send. */
+  /**
+   * Paired LTC source address(es). String for single-source; `string[]`
+   * (1-20 entries) for multi-input consolidation. All addresses must
+   * be in `UserConfig.pairings.litecoin` and share the same accountIndex
+   * + addressType. Issue #264.
+   */
+  wallet: string | string[];
   to: string;
-  /** Decimal LTC string ("0.001"), or "max" for full-balance-minus-fee. */
   amount: string;
-  /** Fee rate in litoshi/vB. Default: indexer's halfHourFee recommendation. */
   feeRateSatPerVb?: number;
-  /** BIP-125 RBF. Default true. */
   rbf?: boolean;
-  /** Override the fee-cap guard. Default false. */
   allowHighFee?: boolean;
+}
+
+function normalizeWallets(arg: string | string[]): string[] {
+  const list = Array.isArray(arg) ? arg : [arg];
+  if (list.length === 0) {
+    throw new Error(
+      "`wallet` must be a paired Litecoin address or a non-empty array of paired addresses.",
+    );
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const w of list) {
+    if (!seen.has(w)) {
+      seen.add(w);
+      out.push(w);
+    }
+  }
+  return out;
 }
 
 export async function buildLitecoinNativeSend(
   args: BuildLitecoinNativeSendArgs,
 ): Promise<UnsignedLitecoinTx> {
-  // 1. Validate source + destination format.
-  assertLitecoinAddress(args.wallet);
+  const wallets = normalizeWallets(args.wallet);
+
   const toType = assertLitecoinAddress(args.to);
-  // Reject 3-prefix legacy P2SH on send-side — see file docstring.
   if (toType === "p2sh" && args.to.startsWith("3")) {
     throw new Error(
       `Sending to legacy 3-prefix Litecoin P2SH addresses (${args.to}) is not supported. ` +
@@ -188,45 +177,56 @@ export async function buildLitecoinNativeSend(
         `recipient for their modern M-prefix address, or send via Litecoin Core directly.`,
     );
   }
+  const pairedList = wallets.map((w) => {
+    assertLitecoinAddress(w);
+    const paired = getPairedLtcByAddress(w);
+    if (!paired) {
+      throw new Error(
+        `Litecoin address ${w} is not paired. Run \`pair_ledger_ltc\` to register ` +
+          `the four standard address types and retry with one of the resulting addresses.`,
+      );
+    }
+    return paired;
+  });
 
-  // 2. Resolve the paired entry for the source.
-  const paired = getPairedLtcByAddress(args.wallet);
-  if (!paired) {
-    throw new Error(
-      `Litecoin address ${args.wallet} is not paired. Run \`pair_ledger_ltc\` ` +
-        `to register the four standard address types (legacy/p2sh-segwit/segwit/taproot) ` +
-        `for an account, then pass any of those addresses as \`wallet\`.`,
-    );
+  const primary = pairedList[0];
+  for (let i = 1; i < pairedList.length; i++) {
+    const p = pairedList[i];
+    if (p.addressType !== primary.addressType) {
+      throw new Error(
+        `Mixed source-address types in one Litecoin send are not supported in Phase 1 ` +
+          `(${pairedList[0].address} is ${primary.addressType}, ${p.address} is ` +
+          `${p.addressType}). Group sources by type and run separate sends.`,
+      );
+    }
+    if (p.accountIndex !== primary.accountIndex) {
+      throw new Error(
+        `Cross-account multi-source Litecoin sends are not supported (${pairedList[0].address} ` +
+          `is accountIndex=${primary.accountIndex}, ${p.address} is ` +
+          `accountIndex=${p.accountIndex}). Pull from one account at a time.`,
+      );
+    }
   }
-  // Phase 1 send-side scope: native segwit + taproot only — same scope
-  // discipline as BTC. (Note: Litecoin Core has not activated Taproot
-  // on mainnet, so taproot sends will derive correctly but recipients
-  // can't spend until activation. Native segwit is the recommended
-  // path.)
-  if (paired.addressType !== "segwit" && paired.addressType !== "taproot") {
+
+  if (primary.addressType !== "segwit" && primary.addressType !== "taproot") {
     throw new Error(
-      `Litecoin sends from ${paired.addressType} (${paired.path}) addresses are not ` +
+      `Litecoin sends from ${primary.addressType} (${primary.path}) addresses are not ` +
         `supported in Phase 1 — only native segwit (ltc1q...) and taproot (ltc1p...). ` +
         `Move funds to your paired segwit address first.`,
     );
   }
 
-  // Resolve the BIP-32 chain=1 change address from the pairings cache.
-  // Symmetric with the BTC builder. Issue #254.
-  const changeEntry = pickChangeEntry(paired);
+  const changeEntry = pickChangeEntry(primary);
   if (!changeEntry) {
     throw new Error(
-      `No paired chain=1 (change) address found for ${args.wallet}'s account ` +
-        `(${paired.addressType}, accountIndex=${paired.accountIndex}). The pairings cache ` +
-        `was likely populated when the wallet had no on-chain history (the gap-limit scan ` +
-        `skips the change-chain walk in that case). Re-run \`pair_ledger_ltc({ accountIndex: ` +
-        `${paired.accountIndex} })\` now that this address has UTXOs and retry.`,
+      `No paired chain=1 (change) address found for ${primary.address}'s account ` +
+        `(${primary.addressType}, accountIndex=${primary.accountIndex}). Re-run ` +
+        `\`pair_ledger_ltc({ accountIndex: ${primary.accountIndex} })\` and retry.`,
     );
   }
 
   const indexer = getLitecoinIndexer();
 
-  // 3. Resolve fee rate.
   let feeRate: number;
   if (args.feeRateSatPerVb !== undefined) {
     feeRate = args.feeRateSatPerVb;
@@ -241,22 +241,31 @@ export async function buildLitecoinNativeSend(
     );
   }
 
-  // 4. Fetch UTXOs.
-  const utxos = await indexer.getUtxos(args.wallet);
-  if (utxos.length === 0) {
+  const utxosBySource = await Promise.all(
+    wallets.map(async (w) => ({
+      address: w,
+      utxos: await indexer.getUtxos(w),
+    })),
+  );
+  const totalUtxoCount = utxosBySource.reduce((n, e) => n + e.utxos.length, 0);
+  if (totalUtxoCount === 0) {
     throw new Error(
-      `No UTXOs at ${args.wallet} — the wallet has zero spendable balance. ` +
-        `Verify with \`get_token_balance\` (chain:"litecoin") and confirm at least one ` +
-        `tx has confirmed.`,
+      `No UTXOs across the ${wallets.length === 1 ? "source" : `${wallets.length} sources`} ` +
+        `(${wallets.join(", ")}). Verify with \`get_token_balance\` (chain:"litecoin") and ` +
+        `confirm at least one tx has confirmed.`,
     );
   }
 
-  // 5. Resolve "max" → fee-aware amount, or convert decimal-LTC → litoshis.
-  const csUtxos: CoinSelectInput[] = utxos.map((u) => ({
-    txid: u.txid,
-    vout: u.vout,
-    value: u.value,
-  }));
+  type TaggedUtxo = CoinSelectInput & { sourceAddress: string };
+  const csUtxos: TaggedUtxo[] = utxosBySource.flatMap((src) =>
+    src.utxos.map<TaggedUtxo>((u) => ({
+      txid: u.txid,
+      vout: u.vout,
+      value: u.value,
+      sourceAddress: src.address,
+    })),
+  );
+
   let amountSats: bigint;
   if (args.amount === "max") {
     const totalSats = csUtxos.reduce((sum, u) => sum + u.value, 0);
@@ -283,8 +292,6 @@ export async function buildLitecoinNativeSend(
     );
   }
 
-  // 6. Coin-selection. Change goes to the BIP-44 chain=1 address from
-  //    the pairings cache (issue #254).
   const selection = selectInputs({
     utxos: csUtxos,
     outputs: [{ address: args.to, value: Number(amountSats) }],
@@ -293,18 +300,42 @@ export async function buildLitecoinNativeSend(
     ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
   });
 
-  // 7. Fetch full prev-tx hex for every UNIQUE input txid (issue #213).
+  const utxoSourceByKey = new Map<string, string>();
+  for (const u of csUtxos) {
+    utxoSourceByKey.set(`${u.txid}:${u.vout}`, u.sourceAddress);
+  }
+  const inputSources: string[] = selection.inputs.map((i) => {
+    const src = utxoSourceByKey.get(`${i.txid}:${i.vout}`);
+    if (!src) {
+      throw new Error(
+        `Internal error: selected input ${i.txid}:${i.vout} not found in source-tagged pool.`,
+      );
+    }
+    return src;
+  });
+
   const uniqueTxids = [...new Set(selection.inputs.map((i) => i.txid))];
   const prevTxHexEntries = await Promise.all(
     uniqueTxids.map(async (txid) => [txid, await indexer.getTxHex(txid)] as const),
   );
   const prevTxHexByTxid = new Map(prevTxHexEntries);
 
-  // 8. Build PSBT.
+  const sourceScriptByAddr = new Map<string, Buffer>();
+  for (const w of wallets) {
+    sourceScriptByAddr.set(w, bitcoinjs.address.toOutputScript(w, NETWORK));
+  }
+
   const psbt = new bitcoinjs.Psbt({ network: NETWORK });
   const sequence = args.rbf === false ? 0xfffffffe : 0xfffffffd;
-  const sourceScript = bitcoinjs.address.toOutputScript(args.wallet, NETWORK);
-  for (const input of selection.inputs) {
+  for (let i = 0; i < selection.inputs.length; i++) {
+    const input = selection.inputs[i];
+    const srcAddr = inputSources[i];
+    const sourceScript = sourceScriptByAddr.get(srcAddr);
+    if (!sourceScript) {
+      throw new Error(
+        `Internal error: missing source script for ${srcAddr} (input ${input.txid}:${input.vout}).`,
+      );
+    }
     const prevTxHex = prevTxHexByTxid.get(input.txid);
     if (!prevTxHex) {
       throw new Error(
@@ -341,17 +372,50 @@ export async function buildLitecoinNativeSend(
     };
   });
 
-  const accountPath = accountPathFromLeaf(paired.path);
+  const sourceTotals = new Map<string, { sats: bigint; count: number }>();
+  for (const w of wallets) {
+    sourceTotals.set(w, { sats: 0n, count: 0 });
+  }
+  for (let i = 0; i < selection.inputs.length; i++) {
+    const acc = sourceTotals.get(inputSources[i]);
+    if (!acc) continue;
+    acc.sats += BigInt(selection.inputs[i].value);
+    acc.count += 1;
+  }
+  const decodedSources = wallets
+    .map((w) => {
+      const t = sourceTotals.get(w) ?? { sats: 0n, count: 0 };
+      return {
+        address: w,
+        pulledSats: t.sats.toString(),
+        pulledLtc: litoshisToLtcString(t.sats),
+        inputCount: t.count,
+      };
+    })
+    .filter((s) => s.inputCount > 0);
+
+  const sources = wallets.map((addr, idx) => ({
+    address: addr,
+    path: pairedList[idx].path,
+    publicKey: pairedList[idx].publicKey,
+  }));
+
+  const accountPath = accountPathFromLeaf(primary.path);
   const vsize = roughVbytes(selection.inputs.length, selection.outputs.length);
-  const description = `Send ${litoshisToLtcString(amountSats)} LTC to ${args.to}`;
+  const description =
+    wallets.length === 1
+      ? `Send ${litoshisToLtcString(amountSats)} LTC to ${args.to}`
+      : `Consolidate ${litoshisToLtcString(amountSats)} LTC from ${wallets.length} addresses to ${args.to}`;
 
   const tx: Omit<UnsignedLitecoinTx, "handle" | "fingerprint"> = {
     chain: "litecoin",
     action: "native_send",
-    from: args.wallet,
+    from: wallets[0],
+    sources,
+    inputSources,
     psbtBase64,
     accountPath,
-    addressFormat: ADDRESS_FORMAT_BY_TYPE[paired.addressType],
+    addressFormat: ADDRESS_FORMAT_BY_TYPE[primary.addressType],
     change: {
       address: changeEntry.address,
       path: changeEntry.path,
@@ -361,12 +425,13 @@ export async function buildLitecoinNativeSend(
     decoded: {
       functionName: "litecoin.native_send",
       args: {
-        from: args.wallet,
+        from: wallets.join(","),
         to: args.to,
         amount: litoshisToLtcString(amountSats),
         feeRate: `${feeRate} litoshi/vB`,
       },
       outputs: decodedOutputs,
+      sources: decodedSources,
       feeSats: selection.fee.toString(),
       feeLtc: litoshisToLtcString(BigInt(selection.fee)),
       feeRateSatPerVb: feeRate,
@@ -384,11 +449,6 @@ export function _isSendableAddressType(
   return type === "p2wpkh" || type === "p2tr";
 }
 
-/**
- * Sign a UTF-8 message with the paired Litecoin address using the
- * Litecoin Signed Message format (BIP-137 with Litecoin's message
- * prefix). Mirrors BTC's signBitcoinMessage.
- */
 export interface SignLitecoinMessageArgs {
   wallet: string;
   message: string;
@@ -402,6 +462,11 @@ export interface SignedLitecoinMessage {
   addressType: PairedLtcAddressType;
 }
 
+/**
+ * Sign a UTF-8 message with the paired Litecoin address using the
+ * Litecoin Signed Message format (BIP-137 with Litecoin's message
+ * prefix).
+ */
 export async function signLitecoinMessage(
   args: SignLitecoinMessageArgs,
 ): Promise<SignedLitecoinMessage> {

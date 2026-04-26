@@ -674,8 +674,24 @@ export function compressPubkey(pubkey: Buffer): Buffer {
  */
 export async function signLtcPsbtOnLedger(args: {
   psbtBase64: string;
-  expectedFrom: string;
-  path: string;
+  /**
+   * One descriptor per UNIQUE source address contributing inputs to the
+   * PSBT. Single-source sends pass a one-element array; multi-source
+   * consolidation (issue #264) passes one entry per source.
+   */
+  sources: Array<{
+    address: string;
+    path: string;
+  }>;
+  /**
+   * Per-PSBT-input source address (issue #264) — `inputSources[i]`
+   * names which entry in `sources` provided the i-th PSBT input. The
+   * legacy `createPaymentTransaction` fallback uses this to populate
+   * `associatedKeysets` with the per-input path; the modern
+   * `signPsbtBuffer` path keys off witness-program lookup and ignores
+   * it.
+   */
+  inputSources: string[];
   accountPath: string;
   addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
   /**
@@ -688,6 +704,11 @@ export async function signLtcPsbtOnLedger(args: {
     publicKey: string;
   };
 }): Promise<{ rawTxHex: string }> {
+  if (args.sources.length === 0) {
+    throw new Error(
+      "signLtcPsbtOnLedger: `sources` must list at least one source descriptor.",
+    );
+  }
   return withLtcUsbLock(async () => {
     const { app, transport, rawTransport } = await openLedger();
     try {
@@ -702,43 +723,36 @@ export async function signLtcPsbtOnLedger(args: {
             `Open the Litecoin app on your device and retry.`,
         );
       }
-      // Re-derive + validate the source address. If the device produces
-      // a different address for the same path the pairing cache
-      // registered, refuse to sign — something is wrong (different seed,
-      // different app, planted pairing). Don't blind-sign through it.
-      const derived = await app.getWalletPublicKey(args.path, {
-        format: args.addressFormat,
-      });
-      if (derived.bitcoinAddress !== args.expectedFrom) {
-        throw new Error(
-          `Ledger derived ${derived.bitcoinAddress} at ${args.path}, but the prepared tx ` +
-            `lists ${args.expectedFrom} as the source. The device may have a different seed ` +
-            `loaded, the Litecoin app version may have changed the derivation, or the cached ` +
-            `pairing is stale. Re-pair via \`pair_ledger_ltc\` and retry.`,
+
+      // Build knownAddressDerivations — one entry per unique source
+      // (issue #264 multi-source) plus an optional change entry
+      // (issue #254). Each source's address is re-derived against the
+      // live device for the proof-of-identity guard; if any source's
+      // path produces a different address, refuse to sign.
+      const known = new Map<string, { pubkey: Buffer; path: number[] }>();
+
+      for (const src of args.sources) {
+        const derived = await app.getWalletPublicKey(src.path, {
+          format: args.addressFormat,
+        });
+        if (derived.bitcoinAddress !== src.address) {
+          throw new Error(
+            `Ledger derived ${derived.bitcoinAddress} at ${src.path}, but the prepared tx ` +
+              `lists ${src.address} as a source. The device may have a different seed loaded, ` +
+              `the Litecoin app version may have changed the derivation, or the cached pairing ` +
+              `is stale. Re-pair via \`pair_ledger_ltc\` and retry.`,
+          );
+        }
+        const sourceScript = bitcoinjs.address.toOutputScript(
+          src.address,
+          LITECOIN_NETWORK,
         );
+        known.set(extractWitnessProgramHex(sourceScript), {
+          pubkey: compressPubkey(Buffer.from(derived.publicKey, "hex")),
+          path: pathStringToNumbers(src.path),
+        });
       }
 
-      // Build the knownAddressDerivations map. The SDK keys the map by
-      // the witness-program payload extracted from each scriptPubKey —
-      // bytes 2..22 (hash160 of pubkey) for P2WPKH, bytes 2..34 (tweaked
-      // x-only key) for P2TR. Mirrors @ledgerhq/psbtv2
-      // `extractHashFromScriptPubKey`, which is what
-      // `populateMissingBip32Derivations` looks up against. Issue #206:
-      // an earlier sha256(scriptPubKey) key never matched, so the
-      // library left the PSBT without bip32Derivation and the Ledger
-      // Litecoin app v2.x rejected with 0x6a80 before any UI.
-      //
-      // Two entries today: the source (input + same-address-as-recipient
-      // edge case) and the BIP-32 chain=1 change output (issue #254).
-      const known = new Map<string, { pubkey: Buffer; path: number[] }>();
-      const sourceScript = bitcoinjs.address.toOutputScript(
-        args.expectedFrom,
-        LITECOIN_NETWORK,
-      );
-      known.set(extractWitnessProgramHex(sourceScript), {
-        pubkey: compressPubkey(Buffer.from(derived.publicKey, "hex")),
-        path: pathStringToNumbers(args.path),
-      });
       if (args.change) {
         const changeScript = bitcoinjs.address.toOutputScript(
           args.change.address,
@@ -767,14 +781,11 @@ export async function signLtcPsbtOnLedger(args: {
         }
         return { rawTxHex: result.tx };
       } catch (err) {
-        // Issue #240: the Ledger Litecoin app at v2.4.11 still exposes the
-        // LEGACY signing API (`createPaymentTransaction`); the modern
-        // `signPsbtBuffer` path the BTC app uses isn't implemented and
-        // hw-app-btc raises this exact string when it detects the legacy
-        // surface. Fall back to the legacy API rebuilt from the PSBT.
-        // The error message is stable across hw-app-btc 10.x versions
-        // and is the cleanest signal we have without a separate getApp
-        // capability probe.
+        // Issue #240: the Ledger Litecoin app at v2.4.11 still exposes
+        // the LEGACY signing API (`createPaymentTransaction`); the
+        // modern `signPsbtBuffer` path the BTC app uses isn't
+        // implemented and hw-app-btc raises this exact string when it
+        // detects the legacy surface.
         const msg = err instanceof Error ? err.message : String(err);
         if (
           msg.includes("signPsbtBuffer is not supported with the legacy Bitcoin app")
@@ -836,30 +847,29 @@ function additionalsForAddressFormat(
  *   - Each PSBT input has `nonWitnessUtxo` populated (issue #213's fix
  *     made that mandatory) — we feed that hex into `app.splitTransaction`
  *     to get the legacy-API `Transaction` object.
- *   - The `associatedKeysets` array carries one path per input. Phase 1
- *     LTC sends are single-source-address, so every input shares
- *     `args.path`.
+ *   - The `associatedKeysets` array carries one path per input. For
+ *     multi-source consolidation (issue #264) different inputs can come
+ *     from different source paths; we map each PSBT input → its source
+ *     via `inputSources[i]` and look up the corresponding entry in
+ *     `sources[]` for the path.
  *   - `outputScriptHex` is constructed manually as varint(N) ||
  *     foreach( uint64LE(value) || varint(scriptLen) || script ) — the
  *     exact serialization the BTC tx format expects in the outputs
  *     section.
- *   - `changePath` is set when an output's address matches the source
- *     (Phase 1 LTC keeps change on the source address); the legacy API
- *     uses this to render the change output as "yours" on the device
- *     screen instead of as a second external recipient.
+ *   - `changePath` is set when an output's address matches the registered
+ *     change address (or, for legacy on-disk envelopes without `change`,
+ *     when an output script matches the primary source's script — same
+ *     same-address-as-source fallback we used pre-#254).
  *
  * Restricted to native segwit / taproot for now (matches the build-side
- * Phase 1 scope in `actions.ts`). Legacy / P2SH-wrapped sends are
- * rejected upstream, so we never reach here with `addressFormat` outside
- * the `bech32`/`bech32m` set in practice — but the `additionals` map
- * handles the four formats anyway in case future scope expands.
+ * Phase 1 scope in `actions.ts`).
  */
 async function signLtcPsbtViaLegacyApi(
   app: LtcLedgerApp,
   args: {
     psbtBase64: string;
-    expectedFrom: string;
-    path: string;
+    sources: Array<{ address: string; path: string }>;
+    inputSources: string[];
     accountPath: string;
     addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
     change?: { address: string; path: string; publicKey: string };
@@ -869,9 +879,18 @@ async function signLtcPsbtViaLegacyApi(
   if (psbt.data.inputs.length === 0) {
     throw new Error("Litecoin legacy-API fallback: PSBT has zero inputs.");
   }
+  if (args.inputSources.length !== psbt.data.inputs.length) {
+    throw new Error(
+      `Litecoin legacy-API fallback: inputSources length ${args.inputSources.length} ` +
+        `does not match PSBT input count ${psbt.data.inputs.length}.`,
+    );
+  }
   const additionals = additionalsForAddressFormat(args.addressFormat);
   const segwit =
     args.addressFormat === "bech32" || args.addressFormat === "bech32m";
+
+  const sourcePathByAddr = new Map<string, string>();
+  for (const s of args.sources) sourcePathByAddr.set(s.address, s.path);
 
   // Build the legacy-API input tuples from the PSBT.
   const inputs: Array<
@@ -882,6 +901,7 @@ async function signLtcPsbtViaLegacyApi(
       number | null,
     ]
   > = [];
+  const associatedKeysets: string[] = [];
   for (let i = 0; i < psbt.data.inputs.length; i++) {
     const inputData = psbt.data.inputs[i];
     if (!inputData.nonWitnessUtxo) {
@@ -895,27 +915,33 @@ async function signLtcPsbtViaLegacyApi(
     const prevTx = app.splitTransaction(prevHex, true, false, additionals);
     const txInput = psbt.txInputs[i];
     inputs.push([prevTx, txInput.index, null, txInput.sequence]);
+
+    const srcAddr = args.inputSources[i];
+    const srcPath = sourcePathByAddr.get(srcAddr);
+    if (!srcPath) {
+      throw new Error(
+        `Litecoin legacy-API fallback: input ${i} sources to ${srcAddr}, but no matching ` +
+          `entry exists in sources[]. The unsigned-tx envelope is malformed.`,
+      );
+    }
+    associatedKeysets.push(srcPath);
   }
 
   // Build outputScriptHex manually: varint(N) || (uint64LE(value) ||
-  // varint(scriptLen) || script) per output. The legacy API parses this
-  // verbatim into the tx's outputs section before signing.
+  // varint(scriptLen) || script) per output.
   const outChunks: Buffer[] = [encodeVarInt(psbt.txOutputs.length)];
   let changePath: string | undefined;
-  // Issue #254: detect change by matching the script either against the
-  // BIP-32 chain=1 change address (when supplied — modern path) or
-  // against the source script as a same-address-as-source fallback (so
-  // a legacy on-disk envelope without `change` still labels its change
-  // output to the device). Compare scripts byte-equal rather than
-  // addresses to handle the bech32/bech32m case where the same address
-  // renders identically on both sides.
-  const sourceScript = bitcoinjs.address.toOutputScript(
-    args.expectedFrom,
-    LITECOIN_NETWORK,
-  );
   const changeScript = args.change
     ? bitcoinjs.address.toOutputScript(args.change.address, LITECOIN_NETWORK)
     : null;
+  // Same-address-as-source fallback for envelopes without `change` set.
+  // Multi-source: we treat ANY of the listed source scripts as a
+  // potential change marker (the source scripts are equivalent for the
+  // legacy-API "your wallet" labeling). Single-source sends behave
+  // exactly as before.
+  const sourceScripts = args.sources.map((s) =>
+    bitcoinjs.address.toOutputScript(s.address, LITECOIN_NETWORK),
+  );
   for (const o of psbt.txOutputs) {
     const value = Buffer.alloc(8);
     value.writeBigUInt64LE(BigInt(o.value), 0);
@@ -924,15 +950,18 @@ async function signLtcPsbtViaLegacyApi(
     outChunks.push(o.script);
     if (changeScript && o.script.equals(changeScript)) {
       changePath = args.change!.path;
-    } else if (!changeScript && o.script.equals(sourceScript)) {
-      changePath = args.path;
+    } else if (!changeScript) {
+      const matchIdx = sourceScripts.findIndex((s) => o.script.equals(s));
+      if (matchIdx >= 0) {
+        changePath = args.sources[matchIdx].path;
+      }
     }
   }
   const outputScriptHex = Buffer.concat(outChunks).toString("hex");
 
   return app.createPaymentTransaction({
     inputs,
-    associatedKeysets: psbt.txInputs.map(() => args.path),
+    associatedKeysets,
     ...(changePath !== undefined ? { changePath } : {}),
     outputScriptHex,
     lockTime: psbt.locktime,

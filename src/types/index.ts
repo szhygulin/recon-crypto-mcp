@@ -1205,8 +1205,37 @@ export interface UnsignedBitcoinTx {
   chain: "bitcoin";
   /** Discriminator for the action — only native_send in Phase 1. */
   action: "native_send";
-  /** Base58/bech32 source address — must already be paired. */
+  /**
+   * Primary source address (the first entry in `sources` for multi-source
+   * sends, or the only source for single-source sends). Kept for
+   * backwards compat — handlers and the verification block treat this as
+   * the "from" label. Multi-source consumers should read `sources`.
+   */
   from: string;
+  /**
+   * All source addresses contributing UTXOs to this tx. One entry per
+   * unique source. Issue #264 — multi-input consolidation. For
+   * single-source sends this is a one-element array; the signer treats
+   * both shapes uniformly. All sources share `accountPath` +
+   * `addressFormat` (Phase 1 intra-account / uniform-type constraint).
+   */
+  sources: Array<{
+    address: string;
+    /** Full leaf path of the source address, e.g. `84'/0'/0'/0/N`. */
+    path: string;
+    /** Compressed (or uncompressed; signer compresses) public key hex. */
+    publicKey: string;
+  }>;
+  /**
+   * Per-PSBT-input source address — `inputSources[i]` names which entry
+   * in `sources` provided the i-th PSBT input. Used by the LTC legacy
+   * `createPaymentTransaction` fallback to populate `associatedKeysets`
+   * with the per-input path; the modern `signPsbtBuffer` path keys off
+   * the witness program in each input's `witnessUtxo` script and looks
+   * up the source via `knownAddressDerivations`. Length equals the PSBT
+   * input count, in PSBT input order.
+   */
+  inputSources: string[];
   /** Base64-encoded PSBT v0 bytes. The device's `signPsbtBuffer` consumes this. */
   psbtBase64: string;
   /**
@@ -1253,6 +1282,21 @@ export interface UnsignedBitcoinTx {
       /** Path of the change output (when isChange=true), e.g. `m/84'/0'/0'/1/0`. */
       changePath?: string;
     }>;
+    /**
+     * Per-source breakdown — one entry per unique source contributing a
+     * UTXO to this tx. Mirrors the verification-block "From: each source
+     * address with sats pulled" line (issue #264). Always populated;
+     * single-source sends produce a one-element array.
+     */
+    sources: Array<{
+      address: string;
+      /** Total sats pulled from this source across all selected inputs. */
+      pulledSats: string;
+      /** Same value as `pulledSats`, formatted as a BTC decimal string. */
+      pulledBtc: string;
+      /** How many of the PSBT's inputs come from this source. */
+      inputCount: number;
+    }>;
     feeSats: string;
     feeBtc: string;
     feeRateSatPerVb: number;
@@ -1283,6 +1327,14 @@ export interface UnsignedLitecoinTx {
   chain: "litecoin";
   action: "native_send";
   from: string;
+  /** See `UnsignedBitcoinTx.sources`. Issue #264. */
+  sources: Array<{
+    address: string;
+    path: string;
+    publicKey: string;
+  }>;
+  /** See `UnsignedBitcoinTx.inputSources`. Issue #264. */
+  inputSources: string[];
   psbtBase64: string;
   accountPath: string;
   addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
@@ -1302,6 +1354,13 @@ export interface UnsignedLitecoinTx {
       amountLtc: string;
       isChange: boolean;
       changePath?: string;
+    }>;
+    /** See `UnsignedBitcoinTx.decoded.sources`. Issue #264. */
+    sources: Array<{
+      address: string;
+      pulledSats: string;
+      pulledLtc: string;
+      inputCount: number;
     }>;
     feeSats: string;
     feeLtc: string;

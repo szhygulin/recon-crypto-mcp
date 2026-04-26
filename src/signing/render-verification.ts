@@ -948,7 +948,10 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
  */
 export function renderBitcoinVerificationBlock(tx: UnsignedBitcoinTx): string {
   const lines: string[] = [];
-  lines.push("VERIFY BEFORE SIGNING (Bitcoin — native send)");
+  const isMultiSource = tx.decoded.sources.length > 1;
+  lines.push(
+    `VERIFY BEFORE SIGNING (Bitcoin — ${isMultiSource ? "multi-source consolidation" : "native send"})`,
+  );
   lines.push(
     "The Ledger Bitcoin app clear-signs every output. Confirm on-device:",
   );
@@ -964,9 +967,22 @@ export function renderBitcoinVerificationBlock(tx: UnsignedBitcoinTx): string {
   lines.push(
     `  • RBF:      ${tx.decoded.rbfEligible ? "enabled — replaceable" : "disabled — final"}`,
   );
-  lines.push(
-    `  • From:     ${tx.from}  (BIP-32 account ${tx.accountPath})`,
-  );
+  // Per-source breakdown (issue #264). Single-source: one line that
+  // reproduces the prior "From:" output. Multi-source: one line per
+  // source plus the input count, so the user sees exactly which
+  // derivations are being drained and how much from each.
+  if (isMultiSource) {
+    lines.push(`  • From:     ${tx.decoded.sources.length} source addresses`);
+    for (const s of tx.decoded.sources) {
+      const inputsLabel = s.inputCount === 1 ? "1 input" : `${s.inputCount} inputs`;
+      lines.push(`      - ${s.address}: ${s.pulledBtc} BTC (${inputsLabel})`);
+    }
+    lines.push(`              (BIP-32 account ${tx.accountPath})`);
+  } else {
+    lines.push(
+      `  • From:     ${tx.from}  (BIP-32 account ${tx.accountPath})`,
+    );
+  }
   lines.push("");
   lines.push(
     "If ANY output address or amount on-device differs from the above → " +
@@ -1013,7 +1029,10 @@ export function renderBitcoinVerificationBlock(tx: UnsignedBitcoinTx): string {
  */
 export function renderLitecoinVerificationBlock(tx: UnsignedLitecoinTx): string {
   const lines: string[] = [];
-  lines.push("VERIFY BEFORE SIGNING (Litecoin — native send)");
+  const isMultiSource = tx.decoded.sources.length > 1;
+  lines.push(
+    `VERIFY BEFORE SIGNING (Litecoin — ${isMultiSource ? "multi-source consolidation" : "native send"})`,
+  );
   lines.push(
     "The Ledger Litecoin app clear-signs every output. Confirm on-device:",
   );
@@ -1029,9 +1048,18 @@ export function renderLitecoinVerificationBlock(tx: UnsignedLitecoinTx): string 
   lines.push(
     `  • RBF:      ${tx.decoded.rbfEligible ? "enabled — replaceable" : "disabled — final"}`,
   );
-  lines.push(
-    `  • From:     ${tx.from}  (BIP-32 account ${tx.accountPath})`,
-  );
+  if (isMultiSource) {
+    lines.push(`  • From:     ${tx.decoded.sources.length} source addresses`);
+    for (const s of tx.decoded.sources) {
+      const inputsLabel = s.inputCount === 1 ? "1 input" : `${s.inputCount} inputs`;
+      lines.push(`      - ${s.address}: ${s.pulledLtc} LTC (${inputsLabel})`);
+    }
+    lines.push(`              (BIP-32 account ${tx.accountPath})`);
+  } else {
+    lines.push(
+      `  • From:     ${tx.from}  (BIP-32 account ${tx.accountPath})`,
+    );
+  }
   lines.push("");
   lines.push(
     "If ANY output address or amount on-device differs from the above → " +
