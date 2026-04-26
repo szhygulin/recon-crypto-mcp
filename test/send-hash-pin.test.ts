@@ -5,7 +5,7 @@
  * calldata-integrity gap in blind-sign mode; before this change Ledger Live
  * picked nonce + fees at send time so the RLP hash was unpredictable.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import { keccak256, serializeTransaction } from "viem";
 
 describe("eip1559PreSignHash", () => {
@@ -482,6 +482,17 @@ describe("previewSendHandler — LEDGER BLIND-SIGN HASH gating", () => {
   // `previewSendHandler` returned function is pure (no module-level
   // state read/written), so cross-test contamination from upstream
   // tests in other files is impossible here.
+  //
+  // Pre-warm the import once per file via beforeAll so neither test
+  // pays the cold-load cost on first run. Earlier the FIRST test in
+  // this block paid that cost (no other test in the file imports
+  // src/index.js), which on contended CI workers occasionally spilled
+  // past the 5s default. beforeAll timeout bumped to 30s for the same
+  // contended-worker reason.
+  let previewSendHandler!: typeof import("../src/index.js")["previewSendHandler"];
+  beforeAll(async () => {
+    ({ previewSendHandler } = await import("../src/index.js"));
+  }, 30_000);
 
   // Live-test regression: on a 0.1 ETH self-send the user saw a
   // `LEDGER BLIND-SIGN HASH — RELAY VERBATIM TO USER` block even though
@@ -492,7 +503,6 @@ describe("previewSendHandler — LEDGER BLIND-SIGN HASH gating", () => {
   // previewSendHandler must suppress the block when result.clearSignOnly
   // is true.
   it("does NOT emit the LEDGER BLIND-SIGN HASH block when result.clearSignOnly is true", async () => {
-    const { previewSendHandler } = await import("../src/index.js");
     const fakePreview = async () => ({
       handle: "h",
       chain: "ethereum" as const,
@@ -521,7 +531,6 @@ describe("previewSendHandler — LEDGER BLIND-SIGN HASH gating", () => {
   });
 
   it("DOES emit the LEDGER BLIND-SIGN HASH block when clearSignOnly is absent (regression: swaps / DeFi path unchanged)", async () => {
-    const { previewSendHandler } = await import("../src/index.js");
     const fakePreview = async () => ({
       handle: "h",
       chain: "ethereum" as const,
