@@ -3168,6 +3168,34 @@ async function main() {
   );
   startOraclePoller();
 
+  // Transport dispatch — `claude-work/plan-hosted-mcp-endpoint.md` PR A.
+  //
+  // Default `stdio` (no behavior change for the npm-i-g use case).
+  // `VAULTPILOT_TRANSPORT=http` boots the placeholder HTTP server in
+  // src/hosted/server.ts. The HTTP path is scaffolding-only in this
+  // PR — auth + the MCP streamable-HTTP handler land in PR C; until
+  // then `POST /mcp` returns 501 with a structured envelope explaining
+  // which subsequent PR implements which piece.
+  //
+  // Why an env var rather than a CLI flag: matches the existing
+  // operator-supplied-secrets pattern (RPC URLs, API keys, etc. all
+  // come from env), and survives `pkg`-bundled binaries that don't
+  // pass argv reliably.
+  const transportMode = process.env.VAULTPILOT_TRANSPORT ?? "stdio";
+  if (transportMode === "http") {
+    const { startHostedServer } = await import("./hosted/server.js");
+    await startHostedServer();
+    return; // Don't connect stdio — the HTTP server holds the process open.
+  }
+  if (transportMode !== "stdio") {
+    // Unknown value: warn loudly + fall back to stdio. Better than
+    // crashing on a typo (`VAULTPILOT_TRANSPORT=stdo`) which would
+    // silently break the user's MCP-client integration.
+    process.stderr.write(
+      `[vaultpilot-mcp] WARNING: unknown VAULTPILOT_TRANSPORT="${transportMode}"; ` +
+        `falling back to stdio. Valid values: "stdio" (default), "http".\n`,
+    );
+  }
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
