@@ -4,15 +4,15 @@
  * `_increase_liquidity`, `_decrease_liquidity`, `_collect`, `_burn`, and
  * `_rebalance` follow in subsequent PRs.
  *
- * Architecture (Option C from the SDK scope-probe):
- *   - Slippage-aware Position math comes from `@uniswap/v3-sdk`'s
- *     `Position.fromAmounts` + `mintAmountsWithSlippage`. That code is
- *     bit-shifty Q64.96 sqrt-ratio math we don't want to reimplement.
- *   - Calldata for the NPM `mint(...)` call is encoded via viem's
- *     `encodeFunctionData` against `src/abis/uniswap-position-manager.ts`,
- *     keeping `@ethersproject/abi.Interface` out of our calldata path
- *     and the JSBI ↔ bigint conversion contained to the boundary
- *     between the SDK's Position output and the calldata args.
+ * The slippage-aware Position math (`maxLiquidityForAmounts`,
+ * `mintAmounts`, `mintAmountsWithSlippage`) is a pure-bigint port from
+ * `@uniswap/v3-sdk`, in `tick-math.ts` + `sqrt-price-math.ts` +
+ * `position-math.ts`. The original SDK was dropped from the dep tree —
+ * it transitively pulled in `@uniswap/swap-router-contracts`, which
+ * itself pulled in hardhat + mocha + sentry + solc + undici. Each came
+ * with its own CVE tail (Snyk failed PR #334 on the dep chain even
+ * though no path is reachable at runtime). Calldata is encoded via
+ * viem `encodeFunctionData` against `src/abis/uniswap-position-manager.ts`.
  */
 import { encodeFunctionData, parseUnits } from "viem";
 import { CONTRACTS } from "../../../config/contracts.js";
@@ -27,15 +27,8 @@ import {
 } from "../../shared/approval.js";
 import { resolveTokenPairMeta } from "../../shared/token-meta.js";
 import { parseSlippageBps } from "../preflight.js";
-import {
-  FeeAmount,
-  Percent,
-  Pool,
-  Position,
-  TICK_SPACINGS,
-  Token,
-  nearestUsableTick,
-} from "./sdk.js";
+import { TICK_SPACINGS, nearestUsableTick } from "./tick-math.js";
+import { mintAmountsWithSlippage, type PoolState } from "./position-math.js";
 import type { SupportedChain, UnsignedTx } from "../../../types/index.js";
 
 const SUPPORTED_FEE_TIERS = [100, 500, 3000, 10000] as const;
@@ -93,7 +86,7 @@ export async function buildUniswapMint(
   // 2. Validate fee tier + tick alignment. nearestUsableTick is a soft
   //    helper; we *reject* mis-aligned ticks rather than silently
   //    rounding so the caller never gets a surprise position bound.
-  const tickSpacing = TICK_SPACINGS[p.feeTier as FeeAmount];
+  const tickSpacing = TICK_SPACINGS[p.feeTier];
   if (!tickSpacing) {
     throw new Error(
       `Unsupported feeTier ${p.feeTier}. Allowed: ${SUPPORTED_FEE_TIERS.join(", ")}.`,
@@ -162,39 +155,29 @@ export async function buildUniswapMint(
   });
   const sqrtPriceX96 = (slot0 as readonly [bigint, number, ...unknown[]])[0];
   const currentTick = Number((slot0 as readonly [bigint, number, ...unknown[]])[1]);
-  const liquidity = poolLiquidity as bigint;
+  // poolLiquidity is read off-chain but the math here doesn't consume
+  // it (the SDK's `Pool` class carried it for swap simulation we don't
+  // do). Kept in the multicall above for future increase / decrease /
+  // rebalance flows that may need it.
+  void poolLiquidity;
 
-  // 4. Construct SDK Pool + Position. The SDK's bigints are JSBI; we
-  //    feed them strings (BigintIsh) and consume the returned amounts
-  //    via `.toString()` → native `BigInt(...)` at the boundary. The
-  //    `useFullPrecision: true` mirrors the Uniswap UI for maximum
-  //    liquidity-per-amount.
-  const chainId = await client.getChainId();
-  const tokenSdk0 = new Token(chainId, token0Addr, decimals0, symbol0);
-  const tokenSdk1 = new Token(chainId, token1Addr, decimals1, symbol1);
-  const pool = new Pool(
-    tokenSdk0,
-    tokenSdk1,
-    p.feeTier as FeeAmount,
-    sqrtPriceX96.toString(),
-    liquidity.toString(),
-    currentTick,
-  );
-  const position = Position.fromAmounts({
-    pool,
+  // 4. Slippage-bounded floors via the local Position math port.
+  //    `useFullPrecision: true` (inside the helper) mirrors the
+  //    Uniswap UI's mainstream choice for maximum liquidity-per-amount.
+  const poolState: PoolState = {
+    fee: p.feeTier,
+    sqrtRatioX96: sqrtPriceX96,
+    tickCurrent: currentTick,
+    tickSpacing,
+  };
+  const { amount0: amount0Min, amount1: amount1Min } = mintAmountsWithSlippage({
+    pool: poolState,
     tickLower: p.tickLower,
     tickUpper: p.tickUpper,
-    amount0: amount0Wei.toString(),
-    amount1: amount1Wei.toString(),
-    useFullPrecision: true,
+    amount0Desired: amount0Wei,
+    amount1Desired: amount1Wei,
+    slippageBps,
   });
-
-  // mintAmountsWithSlippage returns a slippage-bounded floor on each
-  // side. Pass the SDK a `Percent(numerator, denominator)` matching our
-  // bps: e.g. 50 bps → Percent(50, 10000).
-  const slippagePercent = new Percent(slippageBps, 10_000);
-  const { amount0: amount0Min, amount1: amount1Min } =
-    position.mintAmountsWithSlippage(slippagePercent);
 
   // 5. Encode mint() calldata via viem against our locally-pinned ABI.
   //    Recipient defaults to wallet; deadline is `now + deadlineSec`.
@@ -214,8 +197,8 @@ export async function buildUniswapMint(
         tickUpper: p.tickUpper,
         amount0Desired: amount0Wei,
         amount1Desired: amount1Wei,
-        amount0Min: BigInt(amount0Min.toString()),
-        amount1Min: BigInt(amount1Min.toString()),
+        amount0Min,
+        amount1Min,
         recipient,
         deadline,
       },
