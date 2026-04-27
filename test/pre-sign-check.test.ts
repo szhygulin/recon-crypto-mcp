@@ -165,6 +165,79 @@ describe("Pre-sign check: approve() spender allowlist", () => {
     ).rejects.toThrow(/token is not in our recognized set/);
   });
 
+  it("ACCEPTS approve(non-allowlisted-spender, 0) — the revoke pattern (issue #305)", async () => {
+    // prepare_revoke_approval emits approve(spender, 0) targeting whatever
+    // spender the user wants to revoke — Permit2, dead routers, deprecated
+    // contracts. Those spenders are NOT on the protocol allowlist (the user
+    // is revoking precisely because they want them off), so the allowlist
+    // check would block the cleanup. amount=0 cannot grant any authority,
+    // so the canonical phishing pattern doesn't apply — short-circuit.
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [PERMIT2 as `0x${string}`, 0n],
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: USDC_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "Revoke USDC allowance for Permit2",
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("ACCEPTS approve(arbitrary-attacker-address, 0) — even maximally suspicious revokes are safe", async () => {
+    // Defensive: revoke to a literally-attacker-controlled address still
+    // grants no authority (amount=0). The allowlist is for grants of
+    // authority; revokes are the inverse operation and have no analogous
+    // attack surface.
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [ATTACKER as `0x${string}`, 0n],
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: USDC_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "Revoke USDC allowance for ATTACKER (cleanup)",
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("STILL REJECTS approve(non-allowlisted-spender, 1) — only the exact-zero amount short-circuits", async () => {
+    // Belt-and-suspenders: confirm the carve-out is keyed on amount === 0n
+    // exactly, not on "amount that looks small". A 1-wei approval to an
+    // attacker still grants authority over 1 wei (and the attack surface
+    // typically isn't the size of the grant — it's that the grant exists
+    // at all, since wormholes / delegatecall paths can amplify it).
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [ATTACKER as `0x${string}`, 1n],
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: USDC_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "[malicious] dust approval",
+      })
+    ).rejects.toThrow(/spender is not in the protocol allowlist|phishing|prompt-injection/);
+  });
+
   it("rejects approve() aimed at a protocol contract (Aave Pool)", async () => {
     // Nonsensical: approve() on a non-ERC-20. A real ERC-20 approval would
     // hit the token, not the Pool; an agent pointing `to` at the Pool is off-rails.
