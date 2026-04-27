@@ -67,6 +67,24 @@ interface PsbtInputDataShape {
   partialSig?: Array<{ pubkey: Buffer; signature: Buffer }>;
   witnessUtxo?: { script: Buffer; value: number };
   nonWitnessUtxo?: Buffer;
+  tapInternalKey?: Buffer;
+  tapMerkleRoot?: Buffer;
+  tapLeafScript?: Array<{
+    leafVersion: number;
+    script: Buffer;
+    controlBlock: Buffer;
+  }>;
+  tapBip32Derivation?: Array<{
+    masterFingerprint: Buffer;
+    pubkey: Buffer;
+    path: string;
+    leafHashes: Buffer[];
+  }>;
+  tapScriptSig?: Array<{
+    pubkey: Buffer;
+    signature: Buffer;
+    leafHash: Buffer;
+  }>;
 }
 
 interface PsbtInstance {
@@ -84,6 +102,19 @@ interface PsbtInstance {
       masterFingerprint: Buffer;
       pubkey: Buffer;
       path: string;
+    }>;
+    tapInternalKey?: Buffer;
+    tapMerkleRoot?: Buffer;
+    tapLeafScript?: Array<{
+      leafVersion: number;
+      script: Buffer;
+      controlBlock: Buffer;
+    }>;
+    tapBip32Derivation?: Array<{
+      masterFingerprint: Buffer;
+      pubkey: Buffer;
+      path: string;
+      leafHashes: Buffer[];
     }>;
   }): unknown;
   addOutput(output: { address?: string; script?: Buffer; value: number }): unknown;
@@ -233,12 +264,161 @@ function formatPolicyKey(c: PairedBitcoinMultisigCosigner): string {
  * Build the descriptor template string for a P2WSH sortedmulti policy:
  * `wsh(sortedmulti(<M>,@0/**,@1/**,...,@{N-1}/**))`.
  */
-function buildSortedmultiDescriptor(
+function buildWshSortedmultiDescriptor(
   threshold: number,
   cosignerCount: number,
 ): string {
   const slots = Array.from({ length: cosignerCount }, (_, i) => `@${i}/**`).join(",");
   return `wsh(sortedmulti(${threshold},${slots}))`;
+}
+
+/**
+ * BIP-341 NUMS x-only public key. Defined as `lift_x(SHA256(G))` where
+ * G is the secp256k1 generator. Provably has no known private key —
+ * used as the taproot internal key when the wallet is script-path-only
+ * (no key-path spend allowed).
+ *
+ * Hex from BIP-341 specification; same point Sparrow / Specter /
+ * miniscript.fyi all use for "no key-path" taproot multi-sig.
+ */
+const NUMS_XONLY_HEX =
+  "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0";
+
+/**
+ * Construct a BIP-32 xpub-form serialization of the NUMS point. The
+ * Ledger wallet-policy parser only accepts xpubs in key info (raw
+ * x-only points are not in the documented grammar), so we wrap NUMS
+ * as a depth-0 xpub with a deterministic chaincode (all zeros) and
+ * even-Y compressed form (0x02 prefix).
+ *
+ * NOTE: this NUMS encoding is NOT verified against a live Ledger BTC
+ * app at the time of this PR — the documentation is silent on the
+ * precise NUMS form expected. Live testing is required before merging.
+ * If this encoding is rejected, the fix is local (rebuild the xpub
+ * with a different chaincode / parent fingerprint convention) and
+ * doesn't ripple through the rest of the multi-sig code.
+ */
+function buildNumsXpub(): string {
+  const xonly = Buffer.from(NUMS_XONLY_HEX, "hex");
+  // BIP-340 x-only points are conventionally even-Y; prefix with 0x02.
+  const compressedPubkey = Buffer.concat([Buffer.from([0x02]), xonly]);
+  // BIP-32 serialized public key: 78 bytes.
+  const buf = Buffer.alloc(78);
+  // Mainnet xpub version (0x0488B21E).
+  buf.writeUInt32BE(0x0488b21e, 0);
+  // Depth = 0 (master).
+  buf.writeUInt8(0, 4);
+  // Parent fingerprint = 0x00000000 (master has no parent).
+  buf.writeUInt32BE(0, 5);
+  // Child number = 0.
+  buf.writeUInt32BE(0, 9);
+  // Chain code: all zeros (no known precedent for non-zero NUMS chaincode).
+  // (offsets 13..44 already zeroed by Buffer.alloc)
+  // Public key at offset 45 (33 bytes).
+  compressedPubkey.copy(buf, 45);
+  // base58check encode.
+  return base58CheckEncode(buf);
+}
+
+const NUMS_XPUB = buildNumsXpub();
+
+/**
+ * Build the descriptor template string for a taproot sortedmulti_a
+ * policy: `tr(@0/**, sortedmulti_a(<M>, @1/**, @2/**, ..., @N/**))`.
+ *
+ * Slot @0 is the NUMS internal key (provably unspendable key-path).
+ * Slots @1..@N are the user cosigners. The Ledger BTC app's wallet
+ * policy parser accepts `tr(KP, TREE)` with `multi_a` / `sortedmulti_a`
+ * fragments inside `TREE` (verified against app-bitcoin-new/doc/wallet.md).
+ */
+function buildTrSortedmultiADescriptor(
+  threshold: number,
+  cosignerCount: number,
+): string {
+  const slots = Array.from(
+    { length: cosignerCount },
+    (_, i) => `@${i + 1}/**`,
+  ).join(",");
+  return `tr(@0/**,sortedmulti_a(${threshold},${slots}))`;
+}
+
+/** Build the per-cosigner key info string for the wallet policy. */
+function buildPolicyKeysForWallet(
+  scriptType: "wsh" | "tr",
+  cosigners: PairedBitcoinMultisigCosigner[],
+): string[] {
+  const cosignerKeys = cosigners.map(formatPolicyKey);
+  if (scriptType === "wsh") return cosignerKeys;
+  // tr: prepend NUMS as slot @0, cosigners shift to @1..@N.
+  return [`[00000000]${NUMS_XPUB}`, ...cosignerKeys];
+}
+
+/** Pick the descriptor builder for a given script type. */
+function buildDescriptorTemplate(
+  scriptType: "wsh" | "tr",
+  threshold: number,
+  cosignerCount: number,
+): string {
+  if (scriptType === "wsh") {
+    return buildWshSortedmultiDescriptor(threshold, cosignerCount);
+  }
+  return buildTrSortedmultiADescriptor(threshold, cosignerCount);
+}
+
+/** base58check encoder (BIP-32 xpub serialization). */
+function base58CheckEncode(payload: Buffer): string {
+  const crypto = requireCjs("node:crypto") as {
+    createHash(alg: string): { update(b: Buffer): { digest(): Buffer } };
+  };
+  const sha256 = (b: Buffer) => crypto.createHash("sha256").update(b).digest();
+  const checksum = sha256(sha256(payload)).subarray(0, 4);
+  const full = Buffer.concat([payload, checksum]);
+  return base58Encode(full);
+}
+
+/** Minimal base58 encoder (avoids pulling in another dep). */
+function base58Encode(buffer: Buffer): string {
+  const ALPHABET =
+    "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let intVal = 0n;
+  for (const byte of buffer) intVal = (intVal << 8n) + BigInt(byte);
+  let out = "";
+  while (intVal > 0n) {
+    const rem = intVal % 58n;
+    intVal /= 58n;
+    out = ALPHABET[Number(rem)] + out;
+  }
+  // Leading zero bytes → leading '1's.
+  for (const byte of buffer) {
+    if (byte === 0) out = "1" + out;
+    else break;
+  }
+  return out;
+}
+
+/**
+ * Min Ledger BTC app version that supports `sortedmulti_a` in wallet
+ * policies. Per LedgerHQ release notes, taproot policies landed in
+ * v2.1.0 and `sortedmulti_a` shortly after; v2.2.0 is the safe lower
+ * bound for the taproot multi-sig flows in this PR.
+ *
+ * NOT verified against a live device at this PR's time of writing —
+ * if the live app rejects on a 2.2.x version, raise this constant
+ * accordingly.
+ */
+const MIN_TR_APP_VERSION = "2.2.0";
+
+/** Compare app versions as `major.minor.patch` triples. Returns -1/0/1. */
+function compareSemver(a: string, b: string): number {
+  const parse = (s: string) => s.split(".").map((n) => parseInt(n, 10) || 0);
+  const av = parse(a);
+  const bv = parse(b);
+  for (let i = 0; i < 3; i++) {
+    const x = av[i] ?? 0;
+    const y = bv[i] ?? 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
 }
 
 // --- register_btc_multisig_wallet ----------------------------------------
@@ -251,7 +431,7 @@ export interface RegisterBitcoinMultisigWalletArgs {
     masterFingerprint: string;
     derivationPath: string;
   }>;
-  scriptType: "wsh";
+  scriptType: "wsh" | "tr";
 }
 
 export interface RegisterBitcoinMultisigWalletResult {
@@ -281,10 +461,11 @@ export async function registerBitcoinMultisigWallet(
         `wallet-policy names at ${MULTISIG_NAME_MAX_BYTES} bytes. Shorten it.`,
     );
   }
-  if (args.scriptType !== "wsh") {
+  if (args.scriptType !== "wsh" && args.scriptType !== "tr") {
     throw new Error(
-      `\`scriptType\` "${args.scriptType}" is out of scope — Phase 2 supports "wsh" only ` +
-        `(P2WSH native segwit). Taproot and P2SH-wrapped multi-sig are deferred.`,
+      `\`scriptType\` "${args.scriptType}" is not supported — accepted: "wsh" (P2WSH) ` +
+        `or "tr" (taproot script-path with NUMS internal key). P2SH-wrapped multi-sig ` +
+        `is out of scope.`,
     );
   }
   if (
@@ -364,6 +545,16 @@ export async function registerBitcoinMultisigWallet(
           `on the device and retry.`,
       );
     }
+    if (
+      args.scriptType === "tr" &&
+      compareSemver(appInfo.version, MIN_TR_APP_VERSION) < 0
+    ) {
+      throw new Error(
+        `Taproot multi-sig (\`scriptType: "tr"\`) requires Ledger BTC app ` +
+          `≥ ${MIN_TR_APP_VERSION}; the connected device has ${appInfo.version}. ` +
+          `Update the BTC app via Ledger Live before retrying.`,
+      );
+    }
     const ourFingerprint = (await app.getMasterFingerprint()).toLowerCase();
     const candidates = validatedCosigners.filter(
       (c) => c.masterFingerprint === ourFingerprint,
@@ -398,11 +589,12 @@ export async function registerBitcoinMultisigWallet(
     validatedCosigners[ourKeyIndex].isOurs = true;
 
     // 5. Construct + register the wallet policy.
-    const descriptorTemplate = buildSortedmultiDescriptor(
+    const descriptorTemplate = buildDescriptorTemplate(
+      args.scriptType,
       args.threshold,
       validatedCosigners.length,
     );
-    const policyKeys = validatedCosigners.map(formatPolicyKey);
+    const policyKeys = buildPolicyKeysForWallet(args.scriptType, validatedCosigners);
     const walletPolicy = buildWalletPolicy(args.name, descriptorTemplate, policyKeys);
     // The device walks every cosigner xpub fingerprint on-screen. The
     // user MUST verify each fingerprint matches what they expect (this
@@ -466,26 +658,38 @@ function ensurePsbtMatchesOurKey(
   const ourFpBuf = Buffer.from(ourFingerprint, "hex");
   for (let i = 0; i < psbt.data.inputs.length; i++) {
     const input = psbt.data.inputs[i];
-    const derivations = input.bip32Derivation ?? [];
-    const hasOurs = derivations.some(
-      (d) => d.masterFingerprint.equals(ourFpBuf),
-    );
+    // P2WSH inputs carry derivations in `bip32Derivation`; taproot
+    // script-path inputs carry them in `tapBip32Derivation`. Either is
+    // sufficient evidence that our key is among the signers.
+    const ecdsaDerivations = input.bip32Derivation ?? [];
+    const tapDerivations = input.tapBip32Derivation ?? [];
+    const hasOurs =
+      ecdsaDerivations.some((d) => d.masterFingerprint.equals(ourFpBuf)) ||
+      tapDerivations.some((d) => d.masterFingerprint.equals(ourFpBuf));
     if (!hasOurs) {
       throw new Error(
-        `PSBT input ${i} has no bip32_derivation entry for our master fingerprint ` +
-          `${ourFingerprint}. Either this PSBT belongs to a different wallet (refusing ` +
-          `to forward to the device) or the initiator built it without our xpub. ` +
-          `Verify the PSBT comes from a coordinator that knows about this Ledger.`,
+        `PSBT input ${i} has no bip32_derivation (ECDSA or taproot) entry for our ` +
+          `master fingerprint ${ourFingerprint}. Either this PSBT belongs to a ` +
+          `different wallet (refusing to forward to the device) or the initiator ` +
+          `built it without our xpub. Verify the PSBT comes from a coordinator ` +
+          `that knows about this Ledger.`,
       );
     }
   }
 }
 
 /**
- * Splice ledger-bitcoin's PartialSignature output into the PSBT's
- * input-level partialSig map. P2WSH multisig uses standard ECDSA
- * signatures (NOT taproot), so we drop `tapleafHash` and keep only
- * `{pubkey, signature}`.
+ * Splice ledger-bitcoin's PartialSignature output into the PSBT.
+ *
+ * Two paths:
+ *  - **P2WSH multi-sig** (no tapleafHash): standard ECDSA signature →
+ *    PSBT input's `partialSig` field.
+ *  - **Taproot script-path multi-sig** (tapleafHash present): Schnorr
+ *    signature → PSBT input's `tapScriptSig` field (BIP-371).
+ *
+ * Both update via bitcoinjs-lib's `psbt.updateInput`. The tap path
+ * uses the field name `tapScriptSig`, which bip174's converter accepts
+ * as `{pubkey, signature, leafHash}` triples.
  */
 function applyPartialSignatures(
   psbt: ReturnType<typeof bitcoinjs.Psbt.fromBase64>,
@@ -494,19 +698,33 @@ function applyPartialSignatures(
   let added = 0;
   for (const [inputIdx, partial] of sigs) {
     if (partial.tapleafHash !== undefined) {
-      // Taproot script-path signatures land in `tapScriptSig`, not
-      // `partialSig`. Out of scope for Phase 2 (`wsh` only); refusing
-      // here surfaces an unexpected device-side response shape rather
-      // than silently dropping it.
-      throw new Error(
-        `Ledger returned a taproot partial signature for input ${inputIdx}, but this ` +
-          `flow is P2WSH-only. The registered policy may not match the PSBT — refusing ` +
-          `to splice.`,
-      );
+      // Taproot script-path: splice into tapScriptSig.
+      (psbt as unknown as {
+        updateInput(
+          i: number,
+          update: {
+            tapScriptSig: Array<{
+              pubkey: Buffer;
+              signature: Buffer;
+              leafHash: Buffer;
+            }>;
+          },
+        ): unknown;
+      }).updateInput(inputIdx, {
+        tapScriptSig: [
+          {
+            pubkey: partial.pubkey,
+            signature: partial.signature,
+            leafHash: partial.tapleafHash,
+          },
+        ],
+      });
+    } else {
+      // P2WSH: standard ECDSA partialSig.
+      psbt.updateInput(inputIdx, {
+        partialSig: [{ pubkey: partial.pubkey, signature: partial.signature }],
+      });
     }
-    psbt.updateInput(inputIdx, {
-      partialSig: [{ pubkey: partial.pubkey, signature: partial.signature }],
-    });
     added += 1;
   }
   return added;
@@ -515,13 +733,21 @@ function applyPartialSignatures(
 /**
  * For each input, count how many distinct signatures are present (post-
  * splice). Used to derive `signaturesPresent` and `fullySigned`.
+ * Counts both ECDSA `partialSig` (P2WSH path) and Schnorr `tapScriptSig`
+ * (taproot script-path) entries.
  */
 function minSignatureCount(
   psbt: ReturnType<typeof bitcoinjs.Psbt.fromBase64>,
 ): number {
   let min = Number.POSITIVE_INFINITY;
   for (const input of psbt.data.inputs) {
-    const count = input.partialSig?.length ?? 0;
+    const inputWithTap = input as {
+      partialSig?: Array<unknown>;
+      tapScriptSig?: Array<unknown>;
+    };
+    const ecdsaCount = inputWithTap.partialSig?.length ?? 0;
+    const schnorrCount = inputWithTap.tapScriptSig?.length ?? 0;
+    const count = ecdsaCount + schnorrCount;
     if (count < min) min = count;
   }
   return Number.isFinite(min) ? min : 0;
@@ -565,7 +791,10 @@ export async function signBitcoinMultisigPsbt(
   }
 
   // 3. Re-build the wallet policy from the persisted descriptor + keys.
-  const policyKeys = wallet.cosigners.map(formatPolicyKey);
+  //    For taproot wallets, the policy keys array prepends the NUMS
+  //    internal key — must match what was passed to registerWallet so
+  //    the device's HMAC verifies.
+  const policyKeys = buildPolicyKeysForWallet(wallet.scriptType, wallet.cosigners);
   const walletPolicy = buildWalletPolicy(
     wallet.name,
     wallet.descriptor,
@@ -706,8 +935,32 @@ function p2wshMultisigInputVbytes(threshold: number, totalSigners: number): numb
   return 41 + Math.ceil((6 + 74 * threshold + 34 * totalSigners) / 4);
 }
 
-/** P2WSH output vbytes: 8 value + 1 len + 34 script = 43 bytes. */
-const P2WSH_OUTPUT_VBYTES = 43;
+/**
+ * Taproot script-path multisig (`tr(<NUMS>, sortedmulti_a(M, ..., N))`)
+ * input vbytes:
+ *   non-witness: 41 (outpoint + sequence + empty scriptSig)
+ *   witness:
+ *     - count byte (1)
+ *     - M Schnorr sigs (65 bytes each: 1 length + 64 sig)
+ *       (assumes all M signers signed; non-signers contribute 0x00 byte
+ *        empty placeholder — bitcoinjs-lib's finalizer fills both)
+ *     - N - M empty placeholders × ~1 byte each (CHECKSIGADD requires
+ *       a stack item per pubkey; non-signers push empty)
+ *     - script: 1 + 1 + N × (32 + 1) + 1 + 1 + 1 = 4 + 33*N bytes
+ *     - control block: 1 + (1 + 32 + 32 × tree_depth) — single-leaf, depth=0,
+ *       so 1 + 33 = 34 bytes
+ * vsize ≈ 41 + ceil((1 + 65*M + (N - M) + 4 + 33*N + 34) / 4)
+ *      = 41 + ceil((40 + 64*M + 34*N) / 4)
+ */
+function trMultisigInputVbytes(threshold: number, totalSigners: number): number {
+  return 41 + Math.ceil((40 + 64 * threshold + 34 * totalSigners) / 4);
+}
+
+function multisigInputVbytes(wallet: PairedBitcoinMultisigWallet): number {
+  return wallet.scriptType === "tr"
+    ? trMultisigInputVbytes(wallet.threshold, wallet.totalSigners)
+    : p2wshMultisigInputVbytes(wallet.threshold, wallet.totalSigners);
+}
 
 /** Mainnet recipient output: covers P2WPKH (31) / P2WSH (43) / P2TR (43). Conservative pick. */
 const STANDARD_OUTPUT_VBYTES = 43;
@@ -722,7 +975,7 @@ function estimateMultisigTxVbytes(
 ): number {
   return (
     TX_OVERHEAD_VBYTES +
-    inputCount * p2wshMultisigInputVbytes(wallet.threshold, wallet.totalSigners) +
+    inputCount * multisigInputVbytes(wallet) +
     outputCount * STANDARD_OUTPUT_VBYTES
   );
 }
@@ -889,10 +1142,9 @@ export async function prepareBitcoinMultisigSend(
           : `Call \`register_btc_multisig_wallet\` first.`),
     );
   }
-  if (wallet.scriptType !== "wsh") {
+  if (wallet.scriptType !== "wsh" && wallet.scriptType !== "tr") {
     throw new Error(
-      `prepare_btc_multisig_send: scriptType "${wallet.scriptType}" not supported in this ` +
-        `release — taproot lands in a follow-up PR.`,
+      `prepare_btc_multisig_send: scriptType "${wallet.scriptType}" not supported.`,
     );
   }
 
@@ -996,23 +1248,65 @@ export async function prepareBitcoinMultisigSend(
         `Internal: prev-tx hex missing for ${utxo.txid} after fan-out fetch.`,
       );
     }
-    const bip32Derivation = wallet.cosigners.map((c, idx) => ({
-      masterFingerprint: Buffer.from(c.masterFingerprint, "hex"),
-      pubkey: utxo.cosignerPubkeys[idx],
-      // Full path including the leaf — the Ledger app requires the
-      // leading `m/` and the per-cosigner derivationPath, then the
-      // /<chain>/<index> tail at this UTXO's leaf.
-      path: `m/${c.derivationPath}/${utxo.chain}/${utxo.addressIndex}`,
-    }));
-    psbt.addInput({
-      hash: utxo.txid,
-      index: utxo.vout,
-      sequence: 0xfffffffd, // RBF-eligible.
-      witnessUtxo: { script: utxo.scriptPubKey, value: utxo.value },
-      nonWitnessUtxo: Buffer.from(prevTxHex, "hex"),
-      witnessScript: utxo.witnessScript,
-      bip32Derivation,
-    });
+    if (wallet.scriptType === "tr") {
+      // Taproot script-path input: tap_bip32_derivation (with leaf
+      // hashes), tap_internal_key, tap_merkle_root, tap_leaf_script.
+      // No `bip32Derivation` / `witnessScript` (those are P2WSH-side).
+      // No `nonWitnessUtxo` — taproot sighashes commit to input amount,
+      // so the device verifies amounts from `witnessUtxo` directly.
+      if (
+        !utxo.tapLeafHash ||
+        !utxo.internalPubkey ||
+        !utxo.controlBlock
+      ) {
+        throw new Error(
+          `Internal: taproot UTXO at ${utxo.txid}:${utxo.vout} is missing tapLeafHash / ` +
+            `internalPubkey / controlBlock. The derivation path may not have populated them.`,
+        );
+      }
+      const leafHash = utxo.tapLeafHash;
+      const tapBip32Derivation = wallet.cosigners.map((c, idx) => ({
+        masterFingerprint: Buffer.from(c.masterFingerprint, "hex"),
+        pubkey: utxo.cosignerPubkeys[idx], // x-only (32 bytes) for taproot
+        path: `m/${c.derivationPath}/${utxo.chain}/${utxo.addressIndex}`,
+        leafHashes: [leafHash],
+      }));
+      psbt.addInput({
+        hash: utxo.txid,
+        index: utxo.vout,
+        sequence: 0xfffffffd,
+        witnessUtxo: { script: utxo.scriptPubKey, value: utxo.value },
+        tapInternalKey: utxo.internalPubkey,
+        tapMerkleRoot: utxo.tapLeafHash,
+        tapLeafScript: [
+          {
+            leafVersion: 0xc0, // BIP-342 leaf version.
+            script: utxo.witnessScript,
+            controlBlock: utxo.controlBlock,
+          },
+        ],
+        tapBip32Derivation,
+      });
+    } else {
+      // P2WSH multi-sig input.
+      const bip32Derivation = wallet.cosigners.map((c, idx) => ({
+        masterFingerprint: Buffer.from(c.masterFingerprint, "hex"),
+        pubkey: utxo.cosignerPubkeys[idx],
+        // Full path including the leaf — the Ledger app requires the
+        // leading `m/` and the per-cosigner derivationPath, then the
+        // /<chain>/<index> tail at this UTXO's leaf.
+        path: `m/${c.derivationPath}/${utxo.chain}/${utxo.addressIndex}`,
+      }));
+      psbt.addInput({
+        hash: utxo.txid,
+        index: utxo.vout,
+        sequence: 0xfffffffd, // RBF-eligible.
+        witnessUtxo: { script: utxo.scriptPubKey, value: utxo.value },
+        nonWitnessUtxo: Buffer.from(prevTxHex, "hex"),
+        witnessScript: utxo.witnessScript,
+        bip32Derivation,
+      });
+    }
   }
   // Recipient output.
   psbt.addOutput({

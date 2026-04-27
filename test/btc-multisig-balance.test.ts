@@ -123,16 +123,8 @@ describe("deriveMultisigAddress", () => {
     expect(info.witnessScript[info.witnessScript.length - 1]).toBe(0xae);
   });
 
-  it("refuses unsupported scriptType (taproot deferred to PR4)", async () => {
-    const wallet = await registerVault();
-    const taprootWallet = { ...wallet, scriptType: "tr" as never };
-    const { deriveMultisigAddress } = await import(
-      "../src/modules/btc/multisig-derive.ts"
-    );
-    expect(() => deriveMultisigAddress(taprootWallet, 0, 0)).toThrow(
-      /not supported in this module/,
-    );
-  });
+  // (Phase 3 PR4 added "tr" support via deriveTaprootMultisigAddress;
+  // dedicated taproot tests live in test/btc-multisig-taproot.test.ts.)
 });
 
 describe("getMultisigBalance", () => {

@@ -1567,8 +1567,16 @@ export interface PairedBitcoinMultisigWallet {
   threshold: number;
   /** Total signers N. */
   totalSigners: number;
-  /** Script type — Phase 2 is "wsh" only. */
-  scriptType: "wsh";
+  /**
+   * Script type:
+   *  - `wsh` — P2WSH `sortedmulti(M, ...)`. Standard ECDSA signatures
+   *    splice into PSBT `partialSig`. Phase 2 default.
+   *  - `tr` — Taproot script-path `tr(<NUMS>, sortedmulti_a(M, ...))`.
+   *    Schnorr signatures splice into PSBT `tap_script_sig`. Internal
+   *    key is a NUMS point with no known private key (provably
+   *    unspendable key-path). Phase 3 PR4.
+   */
+  scriptType: "wsh" | "tr";
   /**
    * The Miniscript descriptor template registered with the device, e.g.
    * `wsh(sortedmulti(2,@0/**,@1/**,@2/**))`. Slot indices `@N` correspond

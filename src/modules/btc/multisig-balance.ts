@@ -66,18 +66,27 @@ export interface MultisigBalance {
 }
 
 export interface MultisigUtxo extends BitcoinUtxo {
-  /** Address (bech32) the UTXO funds. */
+  /** Address (bech32 / bech32m) the UTXO funds. */
   address: string;
   /** scriptPubKey bytes for this address (witness program). */
   scriptPubKey: Buffer;
-  /** witnessScript bytes — needed to build PSBT inputs in PR3. */
+  /** witnessScript bytes — needed to build PSBT inputs (P2WSH or taproot leaf). */
   witnessScript: Buffer;
-  /** Compressed cosigner pubkeys at this leaf, in slot order (NOT sorted). Used for PSBT bip32_derivation. */
+  /**
+   * Cosigner pubkeys at this leaf, slot order. P2WSH: 33-byte
+   * compressed. Taproot: 32-byte x-only.
+   */
   cosignerPubkeys: Buffer[];
   /** Chain (0 = receive, 1 = change). */
   chain: 0 | 1;
   /** Address index along this chain. */
   addressIndex: number;
+  /** Taproot-only: tapleaf hash for the script-path branch. */
+  tapLeafHash?: Buffer;
+  /** Taproot-only: x-only NUMS internal key. */
+  internalPubkey?: Buffer;
+  /** Taproot-only: control block witness for the script-path spend. */
+  controlBlock?: Buffer;
 }
 
 export interface MultisigUtxoSet {
@@ -117,6 +126,9 @@ async function walkChain<T>(
     scriptPubKey: Buffer;
     witnessScript: Buffer;
     cosignerPubkeys: Buffer[];
+    tapLeafHash?: Buffer;
+    internalPubkey?: Buffer;
+    controlBlock?: Buffer;
     /** True iff the address has on-chain history (txCount > 0 or a non-zero balance). */
     hasHistory: boolean;
   }) => Promise<T | undefined>,
@@ -141,6 +153,11 @@ async function walkChain<T>(
         scriptPubKey: info.scriptPubKey,
         witnessScript: info.witnessScript,
         cosignerPubkeys: info.cosignerPubkeys,
+        ...(info.tapLeafHash !== undefined ? { tapLeafHash: info.tapLeafHash } : {}),
+        ...(info.internalPubkey !== undefined
+          ? { internalPubkey: info.internalPubkey }
+          : {}),
+        ...(info.controlBlock !== undefined ? { controlBlock: info.controlBlock } : {}),
         hasHistory: true,
       });
       if (ret !== undefined) visited.push(ret);
@@ -260,6 +277,11 @@ export async function getMultisigUtxos(
         ...u,
         address: info.address,
         scriptPubKey: info.scriptPubKey,
+        ...(info.tapLeafHash !== undefined ? { tapLeafHash: info.tapLeafHash } : {}),
+        ...(info.internalPubkey !== undefined
+          ? { internalPubkey: info.internalPubkey }
+          : {}),
+        ...(info.controlBlock !== undefined ? { controlBlock: info.controlBlock } : {}),
         witnessScript: info.witnessScript,
         cosignerPubkeys: info.cosignerPubkeys,
         chain: info.chain,

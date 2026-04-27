@@ -1351,11 +1351,15 @@ export const registerBitcoinMultisigWalletInput = z.object({
         "and uses it for signing. Phase 2 requires ≥ 2 cosigners (1-of-1 is single-sig)."
     ),
   scriptType: z
-    .literal("wsh")
+    .enum(["wsh", "tr"])
     .describe(
-      "Script type for the multi-sig wrapper. Phase 2 supports \"wsh\" only (P2WSH " +
-        "native segwit, `bc1q...`-style addresses). Taproot multi-sig and P2SH-wrapped " +
-        "multi-sig are deferred."
+      'Script type for the multi-sig wrapper:\n' +
+        '  - "wsh" — P2WSH `sortedmulti(M, ...)`. Standard ECDSA signatures, ' +
+        "`bc1q...`-style addresses. Phase 2 default.\n" +
+        '  - "tr" — Taproot script-path `tr(<NUMS>, sortedmulti_a(M, ...))`. ' +
+        "Schnorr signatures, `bc1p...`-style addresses. Internal key is a NUMS " +
+        "point with no known private key, so the only spend path is the M-of-N " +
+        "leaf script. Requires Ledger BTC app ≥ 2.2.0. Phase 3 PR4."
     ),
 });
 

@@ -562,7 +562,7 @@ describe("signBitcoinMultisigPsbt", () => {
     const { signBitcoinMultisigPsbt } = await import("../src/modules/btc/multisig.js");
     await expect(
       signBitcoinMultisigPsbt({ walletName: "Vault", psbtBase64 }),
-    ).rejects.toThrow(/no bip32_derivation entry for our master fingerprint/);
+    ).rejects.toThrow(/no bip32_derivation .*for our/);
     expect(signPsbtMock).not.toHaveBeenCalled();
   });
 
