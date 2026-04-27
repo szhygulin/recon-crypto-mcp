@@ -322,3 +322,174 @@ describe("classifySolanaRpcSource integration — runtime-override wins", () => 
     delete process.env.SOLANA_RPC_URL;
   });
 });
+
+describe("recordProactivePublicAccess — issue #410", () => {
+  it("queues a Helius nudge with proactive copy (no error count) on first call", async () => {
+    const { recordProactivePublicAccess, consumePendingNudge } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    recordProactivePublicAccess("helius");
+    const nudge = consumePendingNudge("helius");
+    expect(nudge).not.toBeNull();
+    // Proactive variant: lead-in talks about likely-future throttling, not
+    // a count of past errors. Reactive variant carries "rate-limit error(s)
+    // this session" — must NOT appear here.
+    expect(nudge!).toMatch(/throttle|throttling|throttles/i);
+    expect(nudge!).not.toMatch(/has hit \d+ rate-limit/);
+    // Still carries the actionable bits — signup URL, set_helius_api_key.
+    expect(nudge!).toContain("set_helius_api_key");
+    expect(nudge!).toContain("dashboard.helius.dev");
+  });
+
+  it("does NOT bump the error counter (counts stay tied to actual errors)", async () => {
+    const {
+      recordProactivePublicAccess,
+      getSolanaPublicErrorCount,
+    } = await import("../src/data/runtime-rpc-overrides.js");
+    recordProactivePublicAccess("helius");
+    expect(getSolanaPublicErrorCount()).toBe(0);
+  });
+
+  it("is idempotent — second call does not re-queue (stays once-per-session)", async () => {
+    const { recordProactivePublicAccess, consumePendingNudge } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    recordProactivePublicAccess("helius");
+    consumePendingNudge("helius");
+    // Second call after consumption: should NOT re-queue. The user has
+    // already seen the heads-up; further re-queues would be noise.
+    recordProactivePublicAccess("helius");
+    expect(consumePendingNudge("helius")).toBeNull();
+  });
+
+  it("does NOT queue a nudge when an override is already active", async () => {
+    const { recordProactivePublicAccess, consumePendingNudge } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    setHeliusApiKey(VALID_KEY);
+    recordProactivePublicAccess("helius");
+    expect(consumePendingNudge("helius")).toBeNull();
+  });
+
+  it("yields to a reactive nudge that's already pending (real error count beats speculative)", async () => {
+    const { recordProactivePublicAccess, consumePendingNudge } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    // Simulate an error tripping the reactive nudge first.
+    recordSolanaPublicError();
+    // Then the proactive trigger fires (e.g. another tool resolved the
+    // public URL between the error happening and the nudge being consumed).
+    recordProactivePublicAccess("helius");
+    const nudge = consumePendingNudge("helius");
+    // Reactive variant wins — has the real error count.
+    expect(nudge!).toMatch(/has hit 1 rate-limit error this session/);
+  });
+
+  it("re-arms after clearRuntimeOverride so a future re-trigger fires the heads-up again", async () => {
+    const {
+      recordProactivePublicAccess,
+      clearRuntimeOverride,
+      consumePendingNudge,
+    } = await import("../src/data/runtime-rpc-overrides.js");
+    setHeliusApiKey(VALID_KEY); // marks proactive as fired (user has acted)
+    clearRuntimeOverride("helius"); // user explicitly removes the key
+    recordProactivePublicAccess("helius");
+    expect(consumePendingNudge("helius")).not.toBeNull();
+  });
+});
+
+describe("fetchWithRateLimitDetect — broadened detection (issue #410)", () => {
+  // Helper: build a Response shaped like what fetch returns, then run it
+  // through the same gate the production fetch shim uses. Re-imports the
+  // module each test so reset is honored.
+  async function detectThrottle(opts: {
+    status: number;
+    contentType?: string;
+    body?: unknown;
+  }): Promise<{ throttled: boolean; errorCount: number }> {
+    const fakeResponse = new Response(
+      opts.body !== undefined ? JSON.stringify(opts.body) : null,
+      {
+        status: opts.status,
+        headers: opts.contentType ? { "content-type": opts.contentType } : {},
+      },
+    );
+    // Mock global.fetch for the shim's single call.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => fakeResponse.clone();
+    try {
+      const { _fetchWithRateLimitDetectForTests } = await import(
+        "../src/modules/solana/rpc.js"
+      );
+      // Drain the response body in the shim path; production calls .clone()
+      // first, so the original is still readable to the caller. We just
+      // care whether recordSolanaPublicError got called.
+      _resetRuntimeRpcOverridesForTests();
+      const before = getSolanaPublicErrorCount();
+      await _fetchWithRateLimitDetectForTests("https://api.mainnet-beta.solana.com");
+      const after = getSolanaPublicErrorCount();
+      return { throttled: after > before, errorCount: after };
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  it("HTTP 429 → counted (existing behavior, lock-in)", async () => {
+    expect((await detectThrottle({ status: 429 })).throttled).toBe(true);
+  });
+
+  it("HTTP 410 → counted (Solana public sometimes returns 410 for throttled methods)", async () => {
+    expect((await detectThrottle({ status: 410 })).throttled).toBe(true);
+  });
+
+  it("HTTP 503 → counted (overloaded public node)", async () => {
+    expect((await detectThrottle({ status: 503 })).throttled).toBe(true);
+  });
+
+  it("HTTP 200 + JSON-RPC error code -32429 → counted", async () => {
+    const res = await detectThrottle({
+      status: 200,
+      contentType: "application/json",
+      body: { jsonrpc: "2.0", id: 1, error: { code: -32429, message: "Too Many Requests" } },
+    });
+    expect(res.throttled).toBe(true);
+  });
+
+  it("HTTP 200 + JSON-RPC error code -32005 → counted (Alchemy-style rate limit)", async () => {
+    const res = await detectThrottle({
+      status: 200,
+      contentType: "application/json",
+      body: { jsonrpc: "2.0", id: 1, error: { code: -32005, message: "rate limit exceeded" } },
+    });
+    expect(res.throttled).toBe(true);
+  });
+
+  it("HTTP 200 + JSON-RPC error message matching /rate.?limit|too many|throttl|quota/ → counted", async () => {
+    // Custom error code but recognizable message — covers operators that
+    // pick a different numeric code while still surfacing the limit.
+    const res = await detectThrottle({
+      status: 200,
+      contentType: "application/json",
+      body: { jsonrpc: "2.0", id: 1, error: { code: -1, message: "RPC quota exceeded for this IP" } },
+    });
+    expect(res.throttled).toBe(true);
+  });
+
+  it("HTTP 200 with success body → NOT counted (don't treat normal responses as throttling)", async () => {
+    const res = await detectThrottle({
+      status: 200,
+      contentType: "application/json",
+      body: { jsonrpc: "2.0", id: 1, result: { context: { slot: 100 }, value: 42 } },
+    });
+    expect(res.throttled).toBe(false);
+  });
+
+  it("HTTP 200 + non-JSON body → NOT counted (fail-open on parse errors)", async () => {
+    const res = await detectThrottle({
+      status: 200,
+      contentType: "text/plain",
+      body: "OK",
+    });
+    expect(res.throttled).toBe(false);
+  });
+});
