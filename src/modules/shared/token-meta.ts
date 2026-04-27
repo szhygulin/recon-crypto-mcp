@@ -34,3 +34,38 @@ export async function resolveTokenMeta(
   const symbol = sanitizeContractName(rawSymbol as string) ?? "UNKNOWN";
   return { decimals: Number(decimals), symbol };
 }
+
+/**
+ * Batch variant of `resolveTokenMeta` — fetches `decimals` + `symbol` for
+ * N tokens in a single multicall. LP pools involve 2-8 tokens (Uniswap V3
+ * pairs, Curve pools up to 4 coins, Balancer composable-stable pools up
+ * to 8); the per-token N round-trips this would otherwise require add up
+ * fast. Returns one entry per input token in the same order. Symbol
+ * sanitization carries the same threat model as the single-token reader:
+ * a malicious ERC-20 owner can return prompt-injection prose from
+ * `symbol()`, which flows into agent-rendered tx descriptions.
+ *
+ * Uses `allowFailure: false` because every LP encoder needs all the
+ * decimals to convert human amounts → wei; one missing entry would
+ * silently produce a wrong calldata. Callers who need a partial-failure
+ * shape should layer it on top.
+ */
+export async function resolveTokenPairMeta(
+  chain: SupportedChain,
+  tokens: ReadonlyArray<`0x${string}`>
+): Promise<Array<{ decimals: number; symbol: string }>> {
+  if (tokens.length === 0) return [];
+  const client = getClient(chain);
+  const calls = tokens.flatMap((asset) => [
+    { address: asset, abi: erc20Abi, functionName: "decimals" as const },
+    { address: asset, abi: erc20Abi, functionName: "symbol" as const },
+  ]);
+  const results = await client.multicall({
+    contracts: calls,
+    allowFailure: false,
+  });
+  return tokens.map((_, i) => ({
+    decimals: Number(results[i * 2]),
+    symbol: sanitizeContractName(results[i * 2 + 1] as string) ?? "UNKNOWN",
+  }));
+}

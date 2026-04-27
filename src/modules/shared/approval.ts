@@ -164,6 +164,27 @@ export function chainApproval(approval: UnsignedTx | null, next: UnsignedTx): Un
 }
 
 /**
+ * Build a linked list of N approvals terminating in `mainTx`. Mirrors
+ * `chainApproval` but for the multi-coin LP case: a Curve add_liquidity on
+ * a 3-coin pool needs up to 3 approvals (one per coin the user is
+ * depositing) chained ahead of the main call. Each entry can be null
+ * (allowance already sufficient) — those are skipped — and each non-null
+ * entry can itself be a reset→approve chain (USDT-style tokens), already
+ * handled by `chainApproval`'s tail-walk. Order is preserved.
+ */
+export function chainApprovals(
+  approvals: ReadonlyArray<UnsignedTx | null>,
+  mainTx: UnsignedTx,
+): UnsignedTx {
+  let head: UnsignedTx | null = null;
+  for (const approval of approvals) {
+    if (!approval) continue;
+    head = chainApproval(head, approval);
+  }
+  return chainApproval(head, mainTx);
+}
+
+/**
  * Zod schema fragment for an optional `approvalCap` tool parameter. Share
  * across every prepare_* tool that emits an approval.
  */
