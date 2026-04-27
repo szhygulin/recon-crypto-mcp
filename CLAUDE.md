@@ -14,6 +14,12 @@
 - Do not repeat the same informational tool call (e.g., lending_positions, compound_positions) within a single turn. Cache results mentally and reuse.
 - If a tool returns ambiguous or empty data, verify once with a different method; do not enter polling loops without user consent.
 
+## SDK Scope-Probing Discipline
+- **When a plan proposes adopting a new third-party SDK (DeFi protocol clients, wallet libraries, aggregators), scope-probe the package BEFORE committing the plan, not at code time.** Invoke the `rnd` skill. Spend 15-30 minutes on: (1) `npm view <pkg>` for runtime deps + last-published date; (2) install into `/tmp/<pkg>-probe/` and read `dist/*.d.ts`; (3) check the transit graph for `*-contracts` packages, hardhat, ethersproject v5, or other parallel core libraries; (4) confirm the API exposes UNSIGNED tx output (compatible with our Ledger flow) rather than internally-signing-and-broadcasting helpers.
+- **Document the probe verdict in the plan with a table**: SDK / version / red flags / decision (adopt / cherry-pick / skip). Future-you will need to justify the choice.
+- **Real cost of skipping the probe**: PR #334 (Uniswap V3 mint) initially adopted `@uniswap/v3-sdk` per Option C (cherry-pick math, viem-encode calldata). The d.ts inspection at probe time stopped one level deep — Snyk caught the rest at PR-CI time when `@uniswap/swap-router-contracts → hardhat-watcher → hardhat → @sentry/node + undici + mocha + solc` showed up. ~2 hours to refactor: drop the SDK, port `getSqrtRatioAtTick` + `Position.fromAmounts` + `mintAmountsWithSlippage` to native bigint (~470 LoC) and lock bit-exactness via fixture tests.
+- **Real reward of doing the probe**: Phase 2 (Curve) + Phase 3 (Balancer) planning (2026-04-27) — `@curvefi/api` was rejected at probe time (signing-tightly-coupled to ethers, would force a viem↔ethers bridge across every prepare flow); `@balancer-labs/sdk` (V2) was rejected at probe time (stale, ethersproject-bound, Snyk-failure-equivalent); `@balancer/sdk` (V3) was accepted at probe time after confirming viem-native + bundling V2 helpers too — net result: 1 SDK adopted instead of 3, no architectural mismatch, plans grounded in known-good integration shape. Avoids a Uniswap-style dep-tree disaster and validates the probe-at-plan-time discipline.
+
 ## Security Incident Response Tone
 - When diagnosing malware/compromise, start with evidence-based scoping before recommending destructive actions (wipe, nuke, rotate-all). Never delete evidence files before reading them.
 
