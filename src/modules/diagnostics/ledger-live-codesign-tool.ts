@@ -7,6 +7,7 @@
  * NOT auto-fired on every signing call — codesign tools take 100s of
  * ms per invocation and the binary doesn't change between signs. Run
  * after first install / Ledger Live update / OS update.
+ * bump
  */
 import {
   verifyLedgerLiveCodesign as verify,
