@@ -1772,3 +1772,84 @@ export const prepareUniswapV3IncreaseLiquidityInput = z.object({
 export type PrepareUniswapV3IncreaseLiquidityArgs = z.infer<
   typeof prepareUniswapV3IncreaseLiquidityInput
 >;
+
+// M1c — close-out lifecycle. The decrease + collect + burn trio.
+export const prepareUniswapV3DecreaseLiquidityInput = z.object({
+  wallet: walletSchema,
+  chain: chainEnum.default("ethereum"),
+  tokenId: z
+    .string()
+    .regex(/^[0-9]+$/)
+    .max(100)
+    .describe(
+      "ERC-721 tokenId of the LP NFT to decrease liquidity from. Must be owned by `wallet`.",
+    ),
+  liquidityPct: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe(
+      "Percentage of position liquidity to withdraw (1-100). Pass 100 for full close-out " +
+        "(typical follow-up: prepare_uniswap_v3_collect, then optionally burn). " +
+        "Mutually exclusive with `liquidity` — pass exactly one.",
+    ),
+  liquidity: z
+    .string()
+    .regex(/^[0-9]+$/)
+    .max(100)
+    .optional()
+    .describe(
+      "Raw liquidity to withdraw (decimal-string bigint). Use when you need exact " +
+        "accounting; otherwise prefer liquidityPct. Mutually exclusive with `liquidityPct`.",
+    ),
+  slippageBps: z
+    .number()
+    .int()
+    .min(0)
+    .max(500)
+    .optional()
+    .describe("Slippage tolerance in bps. Default 50; soft cap 100."),
+  acknowledgeHighSlippage: z.boolean().optional(),
+  deadlineSec: z.number().int().min(60).max(3600).optional(),
+});
+
+export const prepareUniswapV3CollectInput = z.object({
+  wallet: walletSchema,
+  chain: chainEnum.default("ethereum"),
+  tokenId: z
+    .string()
+    .regex(/^[0-9]+$/)
+    .max(100)
+    .describe(
+      "ERC-721 tokenId of the LP NFT to harvest fees + tokensOwed from. Must be owned by `wallet`.",
+    ),
+  recipient: addressSchema
+    .optional()
+    .describe(
+      "Address to receive the harvested tokens. Default: wallet (the position owner).",
+    ),
+});
+
+export const prepareUniswapV3BurnInput = z.object({
+  wallet: walletSchema,
+  chain: chainEnum.default("ethereum"),
+  tokenId: z
+    .string()
+    .regex(/^[0-9]+$/)
+    .max(100)
+    .describe(
+      "ERC-721 tokenId of the LP NFT to destroy. Must be owned by `wallet`. The position " +
+        "must be fully drained: liquidity = 0 AND tokensOwed{0,1} = 0. Refused otherwise " +
+        "with the right sequence (decrease → collect → burn) named in the error.",
+    ),
+});
+
+export type PrepareUniswapV3DecreaseLiquidityArgs = z.infer<
+  typeof prepareUniswapV3DecreaseLiquidityInput
+>;
+export type PrepareUniswapV3CollectArgs = z.infer<
+  typeof prepareUniswapV3CollectInput
+>;
+export type PrepareUniswapV3BurnArgs = z.infer<typeof prepareUniswapV3BurnInput>;

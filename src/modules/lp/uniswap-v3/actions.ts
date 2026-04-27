@@ -28,7 +28,11 @@ import {
 import { resolveTokenPairMeta } from "../../shared/token-meta.js";
 import { parseSlippageBps } from "../preflight.js";
 import { TICK_SPACINGS, nearestUsableTick } from "./tick-math.js";
-import { mintAmountsWithSlippage, type PoolState } from "./position-math.js";
+import {
+  burnAmountsWithSlippage,
+  mintAmountsWithSlippage,
+  type PoolState,
+} from "./position-math.js";
 import type { SupportedChain, UnsignedTx } from "../../../types/index.js";
 
 const SUPPORTED_FEE_TIERS = [100, 500, 3000, 10000] as const;
@@ -520,6 +524,404 @@ export async function buildUniswapIncrease(
   }
 
   return chainApprovals(approvals, increaseTx);
+}
+
+// uint128 max — used by `collect()` to harvest everything the position
+// is owed without a 256-bit cap argument.
+const U128_MAX = (1n << 128n) - 1n;
+
+/**
+ * Read positions(tokenId) + ownerOf(tokenId) for a Uniswap V3 LP NFT;
+ * assert ownership matches `wallet`. Returns the parsed tuple. Used by
+ * decrease / collect / burn — all three need the same preflight.
+ */
+async function readOwnedPosition(
+  chain: SupportedChain,
+  positionManager: `0x${string}`,
+  wallet: `0x${string}`,
+  tokenId: bigint,
+): Promise<{
+  nonce: bigint;
+  operator: `0x${string}`;
+  token0: `0x${string}`;
+  token1: `0x${string}`;
+  fee: number;
+  tickLower: number;
+  tickUpper: number;
+  liquidity: bigint;
+  feeGrowthInside0LastX128: bigint;
+  feeGrowthInside1LastX128: bigint;
+  tokensOwed0: bigint;
+  tokensOwed1: bigint;
+}> {
+  const client = getClient(chain);
+  let posResult: readonly unknown[];
+  let owner: `0x${string}`;
+  try {
+    const [pos, ownerRes] = await client.multicall({
+      contracts: [
+        {
+          address: positionManager,
+          abi: uniswapPositionManagerAbi,
+          functionName: "positions",
+          args: [tokenId],
+        },
+        {
+          address: positionManager,
+          abi: uniswapPositionManagerAbi,
+          functionName: "ownerOf",
+          args: [tokenId],
+        },
+      ],
+      allowFailure: false,
+    });
+    posResult = pos as readonly unknown[];
+    owner = ownerRes as `0x${string}`;
+  } catch (err) {
+    throw new Error(
+      `Uniswap V3 NPM positions(${tokenId}) read failed on ${chain}. ` +
+        `Most likely the tokenId does not exist. ` +
+        `(${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+  if (owner.toLowerCase() !== wallet.toLowerCase()) {
+    throw new Error(
+      `Uniswap V3 LP NFT tokenId=${tokenId} is owned by ${owner}, not ${wallet}. ` +
+        `Refusing — the on-chain call would credit the actual position owner, ` +
+        `not the caller. Verify the tokenId via get_lp_positions.`,
+    );
+  }
+  return {
+    nonce: posResult[0] as bigint,
+    operator: posResult[1] as `0x${string}`,
+    token0: posResult[2] as `0x${string}`,
+    token1: posResult[3] as `0x${string}`,
+    fee: posResult[4] as number,
+    tickLower: posResult[5] as number,
+    tickUpper: posResult[6] as number,
+    liquidity: posResult[7] as bigint,
+    feeGrowthInside0LastX128: posResult[8] as bigint,
+    feeGrowthInside1LastX128: posResult[9] as bigint,
+    tokensOwed0: posResult[10] as bigint,
+    tokensOwed1: posResult[11] as bigint,
+  };
+}
+
+export interface BuildUniswapDecreaseParams {
+  chain: SupportedChain;
+  wallet: `0x${string}`;
+  tokenId: string;
+  /**
+   * Percentage of the position's liquidity to withdraw, 1-100. Pass
+   * `100` to fully drain (typical close-out path is then collect+burn).
+   * Mutually exclusive with `liquidity`.
+   */
+  liquidityPct?: number;
+  /**
+   * Raw liquidity amount to withdraw. Use this when you need exact
+   * accounting; otherwise prefer `liquidityPct`. Mutually exclusive
+   * with `liquidityPct`.
+   */
+  liquidity?: string;
+  slippageBps?: number;
+  acknowledgeHighSlippage?: boolean;
+  deadlineSec?: number;
+}
+
+/**
+ * Build an unsigned `decreaseLiquidity()` tx for an existing Uniswap V3
+ * LP position. The decrease ALONE does not transfer tokens to the
+ * caller — it credits `tokensOwed{0,1}` on the position. The agent
+ * follows up with `prepare_uniswap_v3_collect` (or, for full close-out,
+ * with rebalance / burn) to actually move the tokens.
+ *
+ * The `liquidity` arg the on-chain call needs is computed from
+ * `liquidityPct` × `position.liquidity`. amount0Min/amount1Min come
+ * from `burnAmountsWithSlippage`.
+ */
+export async function buildUniswapDecrease(
+  p: BuildUniswapDecreaseParams,
+): Promise<UnsignedTx> {
+  const cfg = CONTRACTS[p.chain]?.uniswap;
+  if (!cfg) {
+    throw new Error(`Uniswap V3 is not registered on ${p.chain}.`);
+  }
+  if (
+    (p.liquidityPct === undefined && p.liquidity === undefined) ||
+    (p.liquidityPct !== undefined && p.liquidity !== undefined)
+  ) {
+    throw new Error(
+      "Pass exactly one of `liquidityPct` (1-100) or `liquidity` (raw bigint string).",
+    );
+  }
+  if (p.liquidityPct !== undefined) {
+    if (
+      !Number.isInteger(p.liquidityPct) ||
+      p.liquidityPct < 1 ||
+      p.liquidityPct > 100
+    ) {
+      throw new Error(
+        `liquidityPct must be an integer in [1, 100] (got ${p.liquidityPct}).`,
+      );
+    }
+  }
+  const positionManager = cfg.positionManager as `0x${string}`;
+  const factoryAddr = cfg.factory as `0x${string}`;
+  const tokenIdBig = BigInt(p.tokenId);
+  const slippageBps = parseSlippageBps({
+    slippageBps: p.slippageBps,
+    acknowledgeHighSlippage: p.acknowledgeHighSlippage,
+  });
+
+  const pos = await readOwnedPosition(p.chain, positionManager, p.wallet, tokenIdBig);
+
+  if (pos.liquidity === 0n) {
+    throw new Error(
+      `Position #${p.tokenId} has zero liquidity already — nothing to decrease. ` +
+        `If you want to harvest fees only, use \`prepare_uniswap_v3_collect\`. ` +
+        `If you want to remove the NFT entirely, use \`prepare_uniswap_v3_burn\`.`,
+    );
+  }
+
+  const liquidityToBurn =
+    p.liquidity !== undefined
+      ? BigInt(p.liquidity)
+      : (pos.liquidity * BigInt(p.liquidityPct!)) / 100n;
+  if (liquidityToBurn === 0n) {
+    throw new Error(
+      `liquidityPct=${p.liquidityPct} on position #${p.tokenId} resolved to 0. ` +
+        `Pass a higher percentage or use raw \`liquidity\`.`,
+    );
+  }
+  if (liquidityToBurn > pos.liquidity) {
+    throw new Error(
+      `liquidity=${liquidityToBurn} exceeds position liquidity ${pos.liquidity}.`,
+    );
+  }
+
+  const client = getClient(p.chain);
+  const [meta, poolAddr] = await Promise.all([
+    resolveTokenPairMeta(p.chain, [pos.token0, pos.token1]),
+    client.readContract({
+      address: factoryAddr,
+      abi: uniswapFactoryAbi,
+      functionName: "getPool",
+      args: [pos.token0, pos.token1, pos.fee],
+    }) as Promise<`0x${string}`>,
+  ]);
+  if (poolAddr === "0x0000000000000000000000000000000000000000") {
+    throw new Error(
+      `Uniswap V3 pool ${pos.token0}/${pos.token1} fee=${pos.fee} on ${p.chain} ` +
+        `does not resolve. Investigate.`,
+    );
+  }
+  const [symbol0, symbol1] = [meta[0].symbol, meta[1].symbol];
+
+  const [slot0] = await client.multicall({
+    contracts: [
+      { address: poolAddr, abi: uniswapPoolAbi, functionName: "slot0" },
+    ],
+    allowFailure: false,
+  });
+  const sqrtPriceX96 = (slot0 as readonly [bigint, number, ...unknown[]])[0];
+  const currentTick = Number((slot0 as readonly [bigint, number, ...unknown[]])[1]);
+
+  const tickSpacing = TICK_SPACINGS[pos.fee];
+  if (!tickSpacing) {
+    throw new Error(
+      `Uniswap V3 position ${p.tokenId} has unknown fee tier ${pos.fee}.`,
+    );
+  }
+
+  const { amount0: amount0Min, amount1: amount1Min } = burnAmountsWithSlippage({
+    pool: {
+      fee: pos.fee,
+      sqrtRatioX96: sqrtPriceX96,
+      tickCurrent: currentTick,
+      tickSpacing,
+    },
+    tickLower: pos.tickLower,
+    tickUpper: pos.tickUpper,
+    liquidity: liquidityToBurn,
+    slippageBps,
+  });
+
+  const deadlineSec = p.deadlineSec ?? DEFAULT_DEADLINE_SEC;
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + deadlineSec);
+
+  const data = encodeFunctionData({
+    abi: uniswapPositionManagerAbi,
+    functionName: "decreaseLiquidity",
+    args: [
+      {
+        tokenId: tokenIdBig,
+        liquidity: liquidityToBurn,
+        amount0Min,
+        amount1Min,
+        deadline,
+      },
+    ],
+  });
+  const pctLabel =
+    p.liquidityPct !== undefined ? `${p.liquidityPct}%` : `${liquidityToBurn} raw`;
+  return {
+    chain: p.chain,
+    to: positionManager,
+    data,
+    value: "0",
+    from: p.wallet,
+    description:
+      `Decrease Uniswap V3 LP position #${p.tokenId} by ${pctLabel} ` +
+      `(${symbol0}/${symbol1} at ${pos.fee / 10_000}% fee, slippage ${slippageBps} bps). ` +
+      `Withdrawn tokens become tokensOwed on the position — follow up with ` +
+      `prepare_uniswap_v3_collect to actually move them to the wallet.`,
+    decoded: {
+      functionName: "decreaseLiquidity",
+      args: {
+        tokenId: p.tokenId,
+        liquidity: liquidityToBurn.toString(),
+        amount0Min: amount0Min.toString(),
+        amount1Min: amount1Min.toString(),
+        deadline: deadline.toString(),
+      },
+    },
+  };
+}
+
+export interface BuildUniswapCollectParams {
+  chain: SupportedChain;
+  wallet: `0x${string}`;
+  tokenId: string;
+  /** Recipient of the harvested tokens. Default: wallet. */
+  recipient?: `0x${string}`;
+}
+
+/**
+ * Build an unsigned `collect()` tx that harvests every token the
+ * position is owed (decreased liquidity + accrued fees) up to
+ * `uint128.max` per side. The on-chain implementation pays out the
+ * lesser of `tokensOwed` and the provided cap, so passing the max
+ * is the standard way to drain everything in one call.
+ */
+export async function buildUniswapCollect(
+  p: BuildUniswapCollectParams,
+): Promise<UnsignedTx> {
+  const cfg = CONTRACTS[p.chain]?.uniswap;
+  if (!cfg) {
+    throw new Error(`Uniswap V3 is not registered on ${p.chain}.`);
+  }
+  const positionManager = cfg.positionManager as `0x${string}`;
+  const tokenIdBig = BigInt(p.tokenId);
+  const pos = await readOwnedPosition(p.chain, positionManager, p.wallet, tokenIdBig);
+
+  // tokensOwed* on the position struct is the *settled* fee + decreased-
+  // liquidity buffer. Uncollected fees that haven't been settled to the
+  // position struct yet (the fee-growth tracker delta) ALSO get
+  // harvested by collect() — the protocol updates owed first inside the
+  // call. So a position with tokensOwed0 = 0 may still receive tokens,
+  // and we should not refuse on that basis.
+  const recipient = p.recipient ?? p.wallet;
+
+  const client = getClient(p.chain);
+  const meta = await resolveTokenPairMeta(p.chain, [pos.token0, pos.token1]);
+  const [symbol0, symbol1] = [meta[0].symbol, meta[1].symbol];
+  void client;
+
+  const data = encodeFunctionData({
+    abi: uniswapPositionManagerAbi,
+    functionName: "collect",
+    args: [
+      {
+        tokenId: tokenIdBig,
+        recipient,
+        amount0Max: U128_MAX,
+        amount1Max: U128_MAX,
+      },
+    ],
+  });
+  return {
+    chain: p.chain,
+    to: positionManager,
+    data,
+    value: "0",
+    from: p.wallet,
+    description:
+      `Collect Uniswap V3 LP position #${p.tokenId} fees + tokensOwed (${symbol0}/${symbol1}) ` +
+      `to ${recipient.toLowerCase() === p.wallet.toLowerCase() ? "wallet" : recipient}. ` +
+      `Harvests everything (amount0Max=amount1Max=uint128.max).`,
+    decoded: {
+      functionName: "collect",
+      args: {
+        tokenId: p.tokenId,
+        recipient,
+        amount0Max: "uint128.max",
+        amount1Max: "uint128.max",
+      },
+    },
+  };
+}
+
+export interface BuildUniswapBurnParams {
+  chain: SupportedChain;
+  wallet: `0x${string}`;
+  tokenId: string;
+}
+
+/**
+ * Build an unsigned `burn()` tx that destroys the position NFT.
+ *
+ * Hard-refuses unless the position is already drained: liquidity == 0
+ * AND tokensOwed0 == 0 AND tokensOwed1 == 0. The on-chain call would
+ * revert otherwise; refusing at prepare time gives the caller a more
+ * actionable error pointing at the right sequence (decrease → collect
+ * → burn, or use rebalance).
+ */
+export async function buildUniswapBurn(
+  p: BuildUniswapBurnParams,
+): Promise<UnsignedTx> {
+  const cfg = CONTRACTS[p.chain]?.uniswap;
+  if (!cfg) {
+    throw new Error(`Uniswap V3 is not registered on ${p.chain}.`);
+  }
+  const positionManager = cfg.positionManager as `0x${string}`;
+  const tokenIdBig = BigInt(p.tokenId);
+  const pos = await readOwnedPosition(p.chain, positionManager, p.wallet, tokenIdBig);
+
+  if (pos.liquidity > 0n) {
+    throw new Error(
+      `Position #${p.tokenId} still has liquidity=${pos.liquidity}. ` +
+        `burn() reverts on a position with non-zero liquidity. Run ` +
+        `prepare_uniswap_v3_decrease_liquidity({ liquidityPct: 100 }) first, ` +
+        `then prepare_uniswap_v3_collect, then this. (Or use rebalance to ` +
+        `compose the whole thing in one tx.)`,
+    );
+  }
+  if (pos.tokensOwed0 > 0n || pos.tokensOwed1 > 0n) {
+    throw new Error(
+      `Position #${p.tokenId} has unharvested tokensOwed (${pos.tokensOwed0} token0, ` +
+        `${pos.tokensOwed1} token1). burn() reverts unless both are 0. Run ` +
+        `prepare_uniswap_v3_collect first to harvest them, then burn.`,
+    );
+  }
+
+  const data = encodeFunctionData({
+    abi: uniswapPositionManagerAbi,
+    functionName: "burn",
+    args: [tokenIdBig],
+  });
+  return {
+    chain: p.chain,
+    to: positionManager,
+    data,
+    value: "0",
+    from: p.wallet,
+    description:
+      `Burn Uniswap V3 LP NFT #${p.tokenId} (irreversible — destroys the position record).`,
+    decoded: {
+      functionName: "burn",
+      args: { tokenId: p.tokenId },
+    },
+  };
 }
 
 // Re-export erc20Abi so future builders in this module don't need a

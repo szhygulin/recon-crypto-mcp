@@ -17,6 +17,8 @@ import {
   encodeSqrtRatioX96,
   getAmount0DeltaRoundUp,
   getAmount1DeltaRoundUp,
+  getAmount0DeltaRoundDown,
+  getAmount1DeltaRoundDown,
 } from "./sqrt-price-math.js";
 import {
   MIN_SQRT_RATIO,
@@ -281,4 +283,111 @@ export function mintAmountsWithSlippage(args: {
     liquidity: liquidityImprecise,
   });
   return { amount0, amount1, liquidity: liquidityImprecise };
+}
+
+/**
+ * Returns `{ amount0, amount1 }` the position would burn at the given
+ * pool price for the given liquidity, using round-DOWN math (burn-side).
+ * SDK reference: `Position.amount0` + `Position.amount1` getters
+ * (which use `getAmount{0,1}Delta(..., roundUp: false)`).
+ */
+export function burnAmounts(args: {
+  pool: PoolState;
+  tickLower: number;
+  tickUpper: number;
+  liquidity: bigint;
+}): { amount0: bigint; amount1: bigint } {
+  const sqrtRatioAX96 = getSqrtRatioAtTick(args.tickLower);
+  const sqrtRatioBX96 = getSqrtRatioAtTick(args.tickUpper);
+  if (args.pool.tickCurrent < args.tickLower) {
+    return {
+      amount0: getAmount0DeltaRoundDown(sqrtRatioAX96, sqrtRatioBX96, args.liquidity),
+      amount1: 0n,
+    };
+  }
+  if (args.pool.tickCurrent < args.tickUpper) {
+    return {
+      amount0: getAmount0DeltaRoundDown(
+        args.pool.sqrtRatioX96,
+        sqrtRatioBX96,
+        args.liquidity,
+      ),
+      amount1: getAmount1DeltaRoundDown(
+        sqrtRatioAX96,
+        args.pool.sqrtRatioX96,
+        args.liquidity,
+      ),
+    };
+  }
+  return {
+    amount0: 0n,
+    amount1: getAmount1DeltaRoundDown(sqrtRatioAX96, sqrtRatioBX96, args.liquidity),
+  };
+}
+
+/**
+ * Reuses ratiosAfterSlippage. Exposed so `burnAmountsWithSlippage`
+ * can re-enter without duplication. Inlined here to keep
+ * `ratiosAfterSlippage` private to this module — both helpers share
+ * the same algebra.
+ */
+function ratiosAfterSlippagePublic(
+  pool: PoolState,
+  slippageBps: number,
+): { sqrtRatioX96Lower: bigint; sqrtRatioX96Upper: bigint } {
+  return ratiosAfterSlippage(pool, slippageBps);
+}
+
+/**
+ * Compute the slippage-bounded `amount0Min` / `amount1Min` the
+ * `decreaseLiquidity(...)` call should pass — the user wants to
+ * receive *at least* these amounts after slippage. SDK reference:
+ * `Position.burnAmountsWithSlippage`.
+ *
+ * Mirrors `mintAmountsWithSlippage` but in burn direction:
+ *   - construct counterfactual pools at the slippage-shifted sqrt
+ *     ratios;
+ *   - compute `burnAmounts` on each;
+ *   - the worse-direction (smaller) amount per side is what we
+ *     guarantee — amount0 from the upper-price counterfactual, amount1
+ *     from the lower-price one.
+ */
+export function burnAmountsWithSlippage(args: {
+  pool: PoolState;
+  tickLower: number;
+  tickUpper: number;
+  liquidity: bigint;
+  slippageBps: number;
+}): { amount0: bigint; amount1: bigint } {
+  const { sqrtRatioX96Lower, sqrtRatioX96Upper } = ratiosAfterSlippagePublic(
+    args.pool,
+    args.slippageBps,
+  );
+  const tickLowerCf = getTickAtSqrtRatio(sqrtRatioX96Lower);
+  const tickUpperCf = getTickAtSqrtRatio(sqrtRatioX96Upper);
+  const poolLowerCf: PoolState = {
+    fee: args.pool.fee,
+    sqrtRatioX96: sqrtRatioX96Lower,
+    tickCurrent: tickLowerCf,
+    tickSpacing: args.pool.tickSpacing,
+  };
+  const poolUpperCf: PoolState = {
+    fee: args.pool.fee,
+    sqrtRatioX96: sqrtRatioX96Upper,
+    tickCurrent: tickUpperCf,
+    tickSpacing: args.pool.tickSpacing,
+  };
+  const { amount0 } = burnAmounts({
+    pool: poolUpperCf,
+    tickLower: args.tickLower,
+    tickUpper: args.tickUpper,
+    liquidity: args.liquidity,
+  });
+  const { amount1 } = burnAmounts({
+    pool: poolLowerCf,
+    tickLower: args.tickLower,
+    tickUpper: args.tickUpper,
+    liquidity: args.liquidity,
+  });
+  return { amount0, amount1 };
 }

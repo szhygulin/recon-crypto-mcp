@@ -173,6 +173,9 @@ import {
   prepareAaveRepay,
   prepareUniswapV3Mint,
   prepareUniswapV3IncreaseLiquidity,
+  prepareUniswapV3DecreaseLiquidity,
+  prepareUniswapV3Collect,
+  prepareUniswapV3Burn,
   prepareLidoStake,
   prepareLidoUnstake,
   prepareEigenLayerDeposit,
@@ -259,6 +262,9 @@ import {
   prepareAaveRepayInput,
   prepareUniswapV3MintInput,
   prepareUniswapV3IncreaseLiquidityInput,
+  prepareUniswapV3DecreaseLiquidityInput,
+  prepareUniswapV3CollectInput,
+  prepareUniswapV3BurnInput,
   prepareLidoStakeInput,
   prepareLidoUnstakeInput,
   prepareEigenLayerDepositInput,
@@ -2897,6 +2903,44 @@ async function main() {
       inputSchema: prepareUniswapV3IncreaseLiquidityInput.shape,
     },
     txHandler("prepare_uniswap_v3_increase_liquidity", prepareUniswapV3IncreaseLiquidity)
+  );
+
+  registerTool(server,
+    "prepare_uniswap_v3_decrease_liquidity",
+    {
+      description:
+        "Build an unsigned Uniswap V3 LP decreaseLiquidity transaction — removes liquidity from an existing position by tokenId. " +
+        "Pass `liquidityPct: 100` for a full close-out (typical follow-up: `prepare_uniswap_v3_collect`, then optionally `prepare_uniswap_v3_burn`). " +
+        "Pass `liquidity: \"<raw>\"` for exact-amount accounting; the two args are mutually exclusive. " +
+        "Hard-refuses when the tokenId is not owned by `wallet` (would credit the actual owner) and when the position has zero liquidity (nothing to decrease). " +
+        "**Withdrawn tokens become `tokensOwed` on the position — they do NOT move to the wallet until you call `prepare_uniswap_v3_collect` afterwards.** This separation matches the on-chain protocol shape and lets the agent batch decrease+collect via rebalance.",
+      inputSchema: prepareUniswapV3DecreaseLiquidityInput.shape,
+    },
+    txHandler("prepare_uniswap_v3_decrease_liquidity", prepareUniswapV3DecreaseLiquidity)
+  );
+
+  registerTool(server,
+    "prepare_uniswap_v3_collect",
+    {
+      description:
+        "Build an unsigned Uniswap V3 LP collect transaction — harvests every token the position is owed (decreased liquidity from prior `prepare_uniswap_v3_decrease_liquidity` calls + accrued swap fees) up to uint128.max per side. " +
+        "Hard-refuses when the tokenId is not owned by `wallet`. The protocol auto-settles uncollected fee growth into `tokensOwed` inside the call, so even a position with `tokensOwed{0,1}=0` may receive tokens. " +
+        "`recipient` defaults to the wallet; pass an address to send the harvest elsewhere.",
+      inputSchema: prepareUniswapV3CollectInput.shape,
+    },
+    txHandler("prepare_uniswap_v3_collect", prepareUniswapV3Collect)
+  );
+
+  registerTool(server,
+    "prepare_uniswap_v3_burn",
+    {
+      description:
+        "Build an unsigned Uniswap V3 LP burn transaction — destroys the position NFT (irreversible). " +
+        "Hard-refuses unless the position is fully drained: `liquidity == 0` AND `tokensOwed{0,1} == 0`. " +
+        "Standard close-out sequence: `prepare_uniswap_v3_decrease_liquidity({ liquidityPct: 100 })` → `prepare_uniswap_v3_collect` → `prepare_uniswap_v3_burn`. The error message names the right next step on each refusal.",
+      inputSchema: prepareUniswapV3BurnInput.shape,
+    },
+    txHandler("prepare_uniswap_v3_burn", prepareUniswapV3Burn)
   );
 
   registerTool(server,

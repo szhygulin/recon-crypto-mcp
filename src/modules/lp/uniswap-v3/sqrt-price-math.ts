@@ -1,13 +1,12 @@
 /**
  * Pure-bigint port of the slice of Uniswap V3's `SqrtPriceMath` +
- * `FullMath` + `encodeSqrtRatioX96` + `sqrt` helpers we need for LP
- * mint flows. Originally in `@uniswap/v3-sdk` and `@uniswap/sdk-core`.
+ * `FullMath` + `encodeSqrtRatioX96` + `sqrt` helpers used across LP
+ * flows. Originally in `@uniswap/v3-sdk` and `@uniswap/sdk-core`.
  *
- * Only the round-up paths are exposed: mint flows always round
- * required-amount up so the user deposits a hair more than the strict
- * minimum (avoiding a 1-wei revert). The round-down counterparts
- * exist on-chain for `burn` / fee-collection flows; we'll add them
- * when those builders land.
+ * Round-up variants serve the mint side (deposit a hair more than
+ * the strict minimum so a 1-wei rounding never reverts). Round-down
+ * variants serve the burn / decrease side (never overclaim what the
+ * protocol's accounting actually allocated).
  */
 
 /** Q64.96 fixed-point unit. */
@@ -105,4 +104,40 @@ export function getAmount1DeltaRoundUp(
     [sqrtRatioAX96, sqrtRatioBX96] = [sqrtRatioBX96, sqrtRatioAX96];
   }
   return mulDivRoundingUp(liquidity, sqrtRatioBX96 - sqrtRatioAX96, Q96);
+}
+
+/**
+ * Δamount0 across a price range, rounded down. Used at burn /
+ * decrease time — the protocol's accounting only credits what its
+ * own rounding allocated, never more.
+ *
+ * SDK reference: `SqrtPriceMath.getAmount0Delta(sqrtA, sqrtB, L, false)`.
+ */
+export function getAmount0DeltaRoundDown(
+  sqrtRatioAX96: bigint,
+  sqrtRatioBX96: bigint,
+  liquidity: bigint,
+): bigint {
+  if (sqrtRatioAX96 > sqrtRatioBX96) {
+    [sqrtRatioAX96, sqrtRatioBX96] = [sqrtRatioBX96, sqrtRatioAX96];
+  }
+  const numerator1 = liquidity << 96n;
+  const numerator2 = sqrtRatioBX96 - sqrtRatioAX96;
+  // Round-down: integer divide; no rounding-up correction.
+  return (numerator1 * numerator2) / sqrtRatioBX96 / sqrtRatioAX96;
+}
+
+/**
+ * Δamount1 across a price range, rounded down.
+ * SDK reference: `SqrtPriceMath.getAmount1Delta(sqrtA, sqrtB, L, false)`.
+ */
+export function getAmount1DeltaRoundDown(
+  sqrtRatioAX96: bigint,
+  sqrtRatioBX96: bigint,
+  liquidity: bigint,
+): bigint {
+  if (sqrtRatioAX96 > sqrtRatioBX96) {
+    [sqrtRatioAX96, sqrtRatioBX96] = [sqrtRatioBX96, sqrtRatioAX96];
+  }
+  return (liquidity * (sqrtRatioBX96 - sqrtRatioAX96)) / Q96;
 }
