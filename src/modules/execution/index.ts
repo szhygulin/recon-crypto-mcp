@@ -93,7 +93,13 @@ import {
   buildAaveBorrow,
   buildAaveRepay,
 } from "../positions/actions.js";
-import { buildUniswapMint, buildUniswapIncrease } from "../lp/uniswap-v3/actions.js";
+import {
+  buildUniswapMint,
+  buildUniswapIncrease,
+  buildUniswapDecrease,
+  buildUniswapCollect,
+  buildUniswapBurn,
+} from "../lp/uniswap-v3/actions.js";
 import {
   buildLidoStake,
   buildLidoUnstake,
@@ -111,6 +117,9 @@ import type {
   PrepareAaveRepayArgs,
   PrepareUniswapV3MintArgs,
   PrepareUniswapV3IncreaseLiquidityArgs,
+  PrepareUniswapV3DecreaseLiquidityArgs,
+  PrepareUniswapV3CollectArgs,
+  PrepareUniswapV3BurnArgs,
   PrepareLidoStakeArgs,
   PrepareLidoUnstakeArgs,
   PrepareEigenLayerDepositArgs,
@@ -2262,6 +2271,48 @@ export async function prepareUniswapV3IncreaseLiquidity(
       acknowledgeHighSlippage: args.acknowledgeHighSlippage,
       deadlineSec: args.deadlineSec,
       approvalCap: args.approvalCap,
+    }),
+  );
+}
+
+export async function prepareUniswapV3DecreaseLiquidity(
+  args: PrepareUniswapV3DecreaseLiquidityArgs,
+): Promise<UnsignedTx> {
+  return enrichTx(
+    await buildUniswapDecrease({
+      wallet: args.wallet as `0x${string}`,
+      chain: args.chain as SupportedChain,
+      tokenId: args.tokenId,
+      liquidityPct: args.liquidityPct,
+      liquidity: args.liquidity,
+      slippageBps: args.slippageBps,
+      acknowledgeHighSlippage: args.acknowledgeHighSlippage,
+      deadlineSec: args.deadlineSec,
+    }),
+  );
+}
+
+export async function prepareUniswapV3Collect(
+  args: PrepareUniswapV3CollectArgs,
+): Promise<UnsignedTx> {
+  return enrichTx(
+    await buildUniswapCollect({
+      wallet: args.wallet as `0x${string}`,
+      chain: args.chain as SupportedChain,
+      tokenId: args.tokenId,
+      recipient: args.recipient as `0x${string}` | undefined,
+    }),
+  );
+}
+
+export async function prepareUniswapV3Burn(
+  args: PrepareUniswapV3BurnArgs,
+): Promise<UnsignedTx> {
+  return enrichTx(
+    await buildUniswapBurn({
+      wallet: args.wallet as `0x${string}`,
+      chain: args.chain as SupportedChain,
+      tokenId: args.tokenId,
     }),
   );
 }
