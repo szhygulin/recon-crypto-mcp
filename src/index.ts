@@ -98,6 +98,7 @@ import { getVaultPilotConfigStatus } from "./modules/diagnostics/index.js";
 import { getLedgerDeviceInfo } from "./modules/diagnostics/ledger-device-info.js";
 import { verifyLedgerFirmware } from "./modules/diagnostics/ledger-firmware-verify.js";
 import { verifyLedgerLiveCodesign } from "./modules/diagnostics/ledger-live-codesign-tool.js";
+import { verifyLedgerAttestation } from "./signing/se-attestation.js";
 
 import { getTransactionHistory } from "./modules/history/index.js";
 import { getTransactionHistoryInput } from "./modules/history/schemas.js";
@@ -269,6 +270,7 @@ import {
   getLedgerDeviceInfoInput,
   verifyLedgerFirmwareInput,
   verifyLedgerLiveCodesignInput,
+  verifyLedgerAttestationInput,
   getLedgerStatusInput,
   prepareAaveSupplyInput,
   prepareAaveWithdrawInput,
@@ -2921,6 +2923,28 @@ async function main() {
       inputSchema: verifyLedgerLiveCodesignInput.shape,
     },
     handler(verifyLedgerLiveCodesign)
+  );
+
+  registerTool(server,
+    "verify_ledger_attestation",
+    {
+      description:
+        "READ-ONLY Secure Element attestation challenge (issue #325 P1). " +
+        "INTENDED behavior: issue a fresh nonce APDU to the device, receive " +
+        "the SE's attestation signature, verify locally against Ledger's " +
+        "published attestation root CA. CURRENT behavior: returns " +
+        "`status: \"not-implemented\"` with a structured explanation — the " +
+        "actual cryptographic check is gated on live-device research that " +
+        "hasn't happened yet (canonical APDU for current firmware, PEM/DER " +
+        "of Ledger's attestation root CA, signature-verification algorithm). " +
+        "Sibling defenses cover most of the threat surface in the meantime: " +
+        "verify_ledger_firmware (P3, #354), verify_ledger_live_codesign " +
+        "(P4, #360), the WC peer pin (P5, #356), and the per-chain device " +
+        "identity binding at signing time. The tool surface is shipped now " +
+        "so future research can fill in the implementation without a redesign.",
+      inputSchema: verifyLedgerAttestationInput.shape,
+    },
+    handler(verifyLedgerAttestation)
   );
 
   registerTool(server,

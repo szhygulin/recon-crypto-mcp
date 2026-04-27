@@ -622,6 +622,19 @@ export const getLedgerDeviceInfoInput = z.object({});
 export const verifyLedgerFirmwareInput = z.object({});
 
 /**
+ * `verify_ledger_attestation` — issue a nonce APDU to the Ledger SE
+ * and verify the response signature against Ledger's published
+ * attestation root CA. Issue #325 P1.
+ *
+ * Currently scaffolded; the actual cryptographic check is gated on
+ * live-device research (canonical APDU, root cert, verification
+ * algorithm). Returns `not-implemented` until that lands. Sibling
+ * checks (verify_ledger_firmware, verify_ledger_live_codesign, WC
+ * peer pin) cover most of the threat surface in the meantime.
+ */
+export const verifyLedgerAttestationInput = z.object({});
+
+/**
  * `verify_ledger_live_codesign` — verify the on-disk Ledger Live
  * binary carries a valid Ledger-issued code signature. Issue #325 P4.
  */
@@ -1634,6 +1647,7 @@ export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigSt
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;
 export type VerifyLedgerFirmwareArgs = z.infer<typeof verifyLedgerFirmwareInput>;
 export type VerifyLedgerLiveCodesignArgs = z.infer<typeof verifyLedgerLiveCodesignInput>;
+export type VerifyLedgerAttestationArgs = z.infer<typeof verifyLedgerAttestationInput>;
 
 /**
  * Litecoin (initial release) — minimal core surface: pair, single-address
