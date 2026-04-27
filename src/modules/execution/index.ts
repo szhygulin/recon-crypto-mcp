@@ -87,6 +87,7 @@ import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { resolveTokenMeta } from "../shared/token-meta.js";
 import { simulateTx } from "../simulation/index.js";
+import { isDemoMode } from "../../demo/index.js";
 import {
   buildAaveSupply,
   buildAaveWithdraw,
@@ -2818,7 +2819,12 @@ async function runEvmPreSignGuards(tx: UnsignedTx): Promise<void> {
         `and wait for confirmation before retrying. Use simulate_transaction to debug.`,
     );
   }
-  if (tx.from) {
+  // The WC account-match check is meaningless in demo mode: there's no paired
+  // session (and no project ID needed), and `send_transaction` returns a sim
+  // envelope rather than broadcasting. Calling getConnectedAccounts() here
+  // would throw inside getProjectId() and abort the whole preview flow before
+  // the integrity-check / hash output the demo is meant to showcase.
+  if (tx.from && !isDemoMode()) {
     const accounts = (await getConnectedAccounts()).map((a) => a.toLowerCase());
     const from = tx.from.toLowerCase();
     if (accounts.length > 0 && !accounts.includes(from)) {
@@ -2936,11 +2942,21 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     };
   }
   await runEvmPreSignGuards(tx);
+  // Demo mode never opens a WC session, so don't fall back to it for the
+  // sender address. Every prepare_* writes `tx.from` from the wallet arg,
+  // which is the persona address in demo mode — that's the value we want.
   const from =
-    tx.from ?? ((await getConnectedAccounts())[0] as `0x${string}` | undefined);
+    tx.from ??
+    (isDemoMode()
+      ? undefined
+      : ((await getConnectedAccounts())[0] as `0x${string}` | undefined));
   if (!from) {
     throw new Error(
-      "Cannot determine sender address for nonce/fee pin; pair Ledger Live first.",
+      isDemoMode()
+        ? "Cannot determine sender address for nonce/fee pin in demo mode. The prepare_* tool " +
+            "did not set tx.from; this is an internal bug. Re-run set_demo_wallet and the " +
+            "prepare_* tool, or file an issue with the failing tool name."
+        : "Cannot determine sender address for nonce/fee pin; pair Ledger Live first.",
     );
   }
   const pinned = await pinSendFields(tx.chain, from, tx.to, tx.data, tx.value);
