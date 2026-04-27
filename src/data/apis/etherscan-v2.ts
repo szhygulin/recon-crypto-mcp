@@ -29,11 +29,24 @@ interface EtherscanEnvelope<T> {
 
 export class EtherscanApiKeyMissingError extends Error {
   constructor() {
+    // Issue #413 — surface the fastest fix (the runtime `set_etherscan_api_key`
+    // tool, no restart needed) FIRST, then the persistent options. Names the
+    // tools that need the key so the user knows what they unblock by
+    // setting it. The previous copy pointed at a wrong signup URL
+    // (etherscan.io/apis → 404; correct is etherscan.io/myapikey) and a
+    // wrong config path (~/.vaultpilot/ → ~/.vaultpilot-mcp/), and didn't
+    // mention the runtime tool at all.
     super(
-      "ETHERSCAN_API_KEY is not set. Etherscan V2 requires an API key — " +
-        "get a free one at https://etherscan.io/apis and set ETHERSCAN_API_KEY " +
-        "in the MCP server env, or run `vaultpilot-mcp-setup` to store it in " +
-        "~/.vaultpilot/config.json."
+      "ETHERSCAN_API_KEY is not set — required for `get_transaction_history`, " +
+        "`get_token_allowances`, `explain_tx`, and address-poisoning checks " +
+        "(Etherscan V2 refuses unauthed multi-chain calls). " +
+        "Fastest fix (no restart): get a free key at https://etherscan.io/myapikey " +
+        "(~60 sec; free tier covers personal use across Ethereum / Arbitrum / " +
+        "Polygon / Base / Optimism), then call " +
+        "`set_etherscan_api_key({ apiKey: \"<paste>\" })` to set it for this " +
+        "session. To persist across restarts, set ETHERSCAN_API_KEY in the MCP " +
+        "server env or run `vaultpilot-mcp-setup` to save it to " +
+        "~/.vaultpilot-mcp/config.json."
     );
     this.name = "EtherscanApiKeyMissingError";
   }
