@@ -152,6 +152,8 @@ import type {
   GetBitcoinTxHistoryArgs,
   PrepareBitcoinNativeSendArgs,
   PrepareBitcoinRbfBumpArgs,
+  RegisterBitcoinMultisigWalletArgs,
+  SignBitcoinMultisigPsbtArgs,
   SignBtcMessageArgs,
   PairLedgerLitecoinArgs,
   GetLitecoinBalanceArgs,
@@ -1223,6 +1225,26 @@ export async function prepareBitcoinRbfBump(args: PrepareBitcoinRbfBumpArgs) {
 export async function signBtcMessage(args: SignBtcMessageArgs) {
   const { signBitcoinMessage } = await import("../btc/actions.js");
   return signBitcoinMessage({ wallet: args.wallet, message: args.message });
+}
+
+export async function registerBtcMultisigWallet(
+  args: RegisterBitcoinMultisigWalletArgs,
+) {
+  const { registerBitcoinMultisigWallet } = await import("../btc/multisig.js");
+  return registerBitcoinMultisigWallet({
+    name: args.name,
+    threshold: args.threshold,
+    cosigners: args.cosigners,
+    scriptType: args.scriptType,
+  });
+}
+
+export async function signBtcMultisigPsbt(args: SignBitcoinMultisigPsbtArgs) {
+  const { signBitcoinMultisigPsbt } = await import("../btc/multisig.js");
+  return signBitcoinMultisigPsbt({
+    walletName: args.walletName,
+    psbtBase64: args.psbtBase64,
+  });
 }
 
 /**
