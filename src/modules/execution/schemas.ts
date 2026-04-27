@@ -600,6 +600,7 @@ export const getVaultPilotConfigStatusInput = z.object({});
  * (CLA=0xb0 INS=0x01), and returns the name/version of the currently-
  * open app. Read-only, one USB round-trip, closes the transport before
  * returning.
+ * bump
  */
 export const getLedgerDeviceInfoInput = z.object({});
 
