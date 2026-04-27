@@ -142,12 +142,12 @@ describe("getDemoFixture — deterministic, non-empty for fixtured tools", () =>
     expect(result._message).toContain("get_portfolio_summary");
   });
 
-  it("covers all priority tools the demo-mode plan calls out by name (v1 + v2)", async () => {
+  it("covers all priority tools the demo-mode plan calls out by name (v1 + v2 + v3)", async () => {
     const { getDemoFixture } = await import("../src/demo/index.js");
-    // v1 (24) + v2 (19) = 43 fixtured read tools. Locking them so a
-    // future fixture-table refactor can't silently drop one. If a tool
-    // here falls through to the `not-implemented` echo, the test fails
-    // with the offending tool name in the message.
+    // v1 (24) + v2 (19) + v3 (18) = 61 fixtured read tools. Locking them
+    // so a future fixture-table refactor can't silently drop one. If a
+    // tool here falls through to the `not-implemented` echo, the test
+    // fails with the offending tool name in the message.
     const fixturedTools = [
       // v1
       "get_ledger_status",
@@ -194,8 +194,27 @@ describe("getDemoFixture — deterministic, non-empty for fixtured tools", () =>
       "reverse_resolve_ens",
       "get_portfolio_diff",
       "list_tron_witnesses",
+      // v3 (issue #371 follow-up — fixture refresh for tools shipped after demo v2)
+      "get_ltc_balance",
+      "get_ltc_block_tip",
+      "get_ltc_chain_tips",
+      "get_ltc_mempool_summary",
+      "get_ltc_block_stats",
+      "get_ltc_blocks_recent",
+      "rescan_ltc_account",
+      "get_curve_positions",
+      "get_safe_positions",
+      "get_nft_portfolio",
+      "get_nft_collection",
+      "get_nft_history",
+      "get_daily_briefing",
+      "get_pnl_summary",
+      "compare_yields",
+      "get_token_allowances",
+      "get_coin_price",
+      "explain_tx",
     ];
-    expect(fixturedTools.length).toBe(43);
+    expect(fixturedTools.length).toBe(61);
     for (const tool of fixturedTools) {
       const result = getDemoFixture(tool, undefined) as Record<string, unknown>;
       expect(result, `expected fixture for ${tool}`).toBeDefined();
@@ -403,6 +422,132 @@ describe("demoSigningRefusalMessage — stable for pattern-matching agents", () 
     expect(msg).toContain("'prepare_swap'");
     expect(msg).toContain("disabled in demo mode");
     expect(msg).toContain("vaultpilot-mcp-setup");
+  });
+});
+
+describe("v3 fixtures — shape sanity for the post-v2 tool refresh (issue #371)", () => {
+  it("get_vaultpilot_config_status fixture is now structurally aligned with the real return shape", async () => {
+    const { getDemoFixture } = await import("../src/demo/index.js");
+    const status = getDemoFixture("get_vaultpilot_config_status", undefined) as Record<string, unknown>;
+    // Real shape uses configFileExists + serverVersion + pairings (not configExists, version, pairedLedger).
+    expect(status.configFileExists).toBe(true);
+    expect(typeof status.serverVersion).toBe("string");
+    expect(status.pairings).toBeDefined();
+    expect((status.pairings as Record<string, unknown>).walletConnect).toBeDefined();
+    // Old field names must NOT appear — would mean the fixture rotted again.
+    expect(status.configExists).toBeUndefined();
+    expect(status.version).toBeUndefined();
+    expect(status.pairedLedger).toBeUndefined();
+    expect(status.wcTopic).toBeUndefined();
+    // Real-shape fields preflightSkill + setupHints + apiKey field name.
+    expect(status.preflightSkill).toBeDefined();
+    expect(Array.isArray(status.setupHints)).toBe(true);
+    const apiKeys = status.apiKeys as Record<string, { set: boolean }>;
+    expect(apiKeys.etherscan.set).toBe(true);
+    expect(apiKeys.walletConnectProjectId).toBeDefined();
+    expect((apiKeys as Record<string, unknown>).walletConnect).toBeUndefined();
+    // demoMode sub-object preserved from PR 1.
+    const demoMode = status.demoMode as { active: boolean; envVar: string };
+    expect(demoMode.active).toBe(true);
+    expect(demoMode.envVar).toBe("VAULTPILOT_DEMO");
+  });
+
+  it("LTC reads return realistic litecoin data with the demo wallet's LTC address", async () => {
+    const { getDemoFixture } = await import("../src/demo/index.js");
+    const { DEMO_WALLET } = await import("../src/demo/fixtures.js");
+    const balance = getDemoFixture("get_ltc_balance", undefined) as {
+      address: string;
+      confirmedLtc: string;
+    };
+    expect(balance.address).toBe(DEMO_WALLET.litecoin);
+    expect(parseFloat(balance.confirmedLtc)).toBeGreaterThan(0);
+
+    const tip = getDemoFixture("get_ltc_block_tip", undefined) as {
+      height: number;
+      hash: string;
+    };
+    expect(tip.height).toBeGreaterThan(2_000_000);
+    expect(tip.hash.length).toBeGreaterThan(40);
+
+    // get_ltc_blocks_recent honors the count arg (capped at 200).
+    const recent = getDemoFixture("get_ltc_blocks_recent", { count: 10 }) as { length: number };
+    expect((recent as unknown as Array<unknown>).length).toBe(10);
+    const capped = getDemoFixture("get_ltc_blocks_recent", { count: 999 }) as Array<unknown>;
+    expect(capped.length).toBe(200);
+  });
+
+  it("compare_yields returns rows sorted by APR descending and lists unavailable protocols", async () => {
+    const { getDemoFixture } = await import("../src/demo/index.js");
+    const yields = getDemoFixture("compare_yields", { asset: "USDC" }) as {
+      asset: string;
+      rows: { protocol: string; supplyApr: number }[];
+      unavailable: { protocol: string; reason: string }[];
+    };
+    expect(yields.asset).toBe("USDC");
+    expect(yields.rows.length).toBeGreaterThan(0);
+    // Sorted descending.
+    for (let i = 0; i < yields.rows.length - 1; i++) {
+      expect(yields.rows[i].supplyApr).toBeGreaterThanOrEqual(yields.rows[i + 1].supplyApr);
+    }
+    expect(yields.unavailable.length).toBeGreaterThan(0);
+  });
+
+  it("get_token_allowances flags the unlimited-approval count and labels known spenders", async () => {
+    const { getDemoFixture } = await import("../src/demo/index.js");
+    const allowances = getDemoFixture("get_token_allowances", undefined) as {
+      unlimitedCount: number;
+      rows: { spenderLabel?: string; isUnlimited: boolean }[];
+      notes: string[];
+    };
+    expect(allowances.unlimitedCount).toBeGreaterThanOrEqual(1);
+    const labeled = allowances.rows.find((r) => r.spenderLabel?.includes("Aave"));
+    expect(labeled?.isUnlimited).toBe(true);
+    expect(allowances.notes.join(" ")).toContain("unlimited");
+  });
+
+  it("get_coin_price returns table-backed prices for major non-EVM natives", async () => {
+    const { getDemoFixture } = await import("../src/demo/index.js");
+    for (const symbol of ["BTC", "LTC", "SOL", "TRX"]) {
+      const r = getDemoFixture("get_coin_price", { symbol }) as {
+        symbol: string;
+        priceUsd: number;
+        confidence: number;
+      };
+      expect(r.symbol).toBe(symbol);
+      expect(r.priceUsd).toBeGreaterThan(0);
+      expect(r.confidence).toBeGreaterThan(0.9);
+    }
+  });
+
+  it("explain_tx + get_daily_briefing + get_pnl_summary honor the format arg (structured | markdown | both)", async () => {
+    const { getDemoFixture } = await import("../src/demo/index.js");
+    // explain_tx — both is the default
+    const both = getDemoFixture("explain_tx", { txHash: "0xabc" }) as {
+      markdown?: string;
+      method?: string;
+    };
+    expect(both.markdown).toBeDefined();
+    expect(both.method).toBeDefined();
+    const onlyStruct = getDemoFixture("explain_tx", { txHash: "0xabc", format: "structured" }) as {
+      markdown?: string;
+      method?: string;
+    };
+    expect(onlyStruct.markdown).toBeUndefined();
+    expect(onlyStruct.method).toBeDefined();
+    const onlyMd = getDemoFixture("explain_tx", { txHash: "0xabc", format: "markdown" }) as {
+      markdown?: string;
+      method?: string;
+    };
+    expect(onlyMd.markdown).toBeDefined();
+    expect(onlyMd.method).toBeUndefined();
+
+    // daily_briefing same pattern
+    const dbStruct = getDemoFixture("get_daily_briefing", { format: "structured" }) as {
+      markdown?: string;
+      portfolioTotal?: unknown;
+    };
+    expect(dbStruct.markdown).toBeUndefined();
+    expect(dbStruct.portfolioTotal).toBeDefined();
   });
 });
 

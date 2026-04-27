@@ -26,6 +26,7 @@ export const DEMO_WALLET = {
   tron: "TDemoVAULTpilotxxxxxxxxxxxxxxxxxxxxx" as const,
   solana: "DEMo1111111111111111111111111111111111111111" as const,
   bitcoin: "bc1qdemo7xpyrkfsm7dl5kfjxgvm8azwj9c4yefzx0" as const,
+  litecoin: "ltc1qdemo7xpyrkfsm7dl5kfjxgvm8azwj9c4ydemo0" as const,
 };
 
 /**
@@ -404,23 +405,32 @@ export const DEMO_FIXTURES: Record<string, FixtureFn> = {
 
   get_vaultpilot_config_status: () => ({
     configPath: "~/.vaultpilot-mcp/config.json",
-    configExists: true,
-    version: "0.8.2",
+    configFileExists: true,
+    serverVersion: "demo",
     rpc: {
-      ethereum: { source: "demo-fixture" },
-      arbitrum: { source: "demo-fixture" },
-      polygon: { source: "demo-fixture" },
-      base: { source: "demo-fixture" },
-      optimism: { source: "demo-fixture" },
+      ethereum: { source: "env-var" },
+      arbitrum: { source: "env-var" },
+      polygon: { source: "env-var" },
+      base: { source: "env-var" },
+      optimism: { source: "env-var" },
+      solana: { source: "env-var" },
     },
     apiKeys: {
-      etherscan: { exists: true, source: "demo-fixture" },
-      oneinch: { exists: true, source: "demo-fixture" },
-      tronGrid: { exists: true, source: "demo-fixture" },
-      walletConnect: { exists: true, source: "demo-fixture" },
+      etherscan: { set: true, source: "config" },
+      oneInch: { set: true, source: "config" },
+      tronGrid: { set: true, source: "config" },
+      walletConnectProjectId: { set: true, source: "config" },
     },
-    pairedLedger: { solana: 1, tron: 1, bitcoin: 1 },
-    wcTopic: "...demo0000",
+    pairings: {
+      walletConnect: { sessionTopicSuffix: "demo0000" },
+      solana: { count: 1 },
+      tron: { count: 1 },
+    },
+    preflightSkill: {
+      expectedPath: "~/.claude/skills/vaultpilot-preflight/SKILL.md",
+      installed: true,
+    },
+    setupHints: [],
     demoMode: {
       active: true,
       envVar: "VAULTPILOT_DEMO",
@@ -792,6 +802,353 @@ export const DEMO_FIXTURES: Record<string, FixtureFn> = {
     availableVotes: 0,
     note: "demo fixture — user has no votes cast (matches get_tron_staking which has votes: [])",
   }),
+
+  // -------- v3: Litecoin reads (mirror BTC fixture shapes) ---------------------
+  get_ltc_balance: () => ({
+    address: DEMO_WALLET.litecoin,
+    confirmedSats: "5000000000",
+    unconfirmedSats: "0",
+    confirmedLtc: "50.0",
+    unconfirmedLtc: "0",
+  }),
+  get_ltc_block_tip: () => ({
+    height: 2_842_500,
+    hash: "demoltcblock0000000000000000000000000000000000000000000000000001",
+    timestamp: 1_745_625_600,
+    ageSeconds: 90,
+  }),
+  get_ltc_chain_tips: () => ({
+    tips: [
+      {
+        height: 2_842_500,
+        hash: "demoltcblock0000000000000000000000000000000000000000000000000001",
+        branchlen: 0,
+        status: "active",
+      },
+    ],
+  }),
+  get_ltc_mempool_summary: () => ({
+    size: 142,
+    bytes: 38_400,
+    usage: 105_600,
+    totalFee: "0.00012345",
+    minFee: "0.00001",
+  }),
+  get_ltc_block_stats: () => ({
+    height: 2_842_500,
+    avgFee: 1_500,
+    avgFeeRate: 5,
+    feeRatePercentiles: [1, 2, 5, 10, 20],
+    txs: 142,
+    totalFee: 213_000,
+    subsidy: 625_000_000,
+  }),
+  get_ltc_blocks_recent: (args) => {
+    const a = (args ?? {}) as { count?: number };
+    const count = Math.min(a.count ?? 144, 200);
+    return Array.from({ length: count }, (_, i) => ({
+      height: 2_842_500 - i,
+      hash: `demoltcblock${i.toString().padStart(4, "0")}000000000000000000000000000000000000000000000000000`,
+      timestamp: 1_745_625_600 - i * 150,
+      txCount: 100 + (i % 80),
+    }));
+  },
+  rescan_ltc_account: (args) => {
+    const a = (args ?? {}) as { accountIndex?: number };
+    return {
+      accountIndex: a.accountIndex ?? 0,
+      addressesScanned: 21,
+      addressesWithHistory: 4,
+      needsExtend: false,
+      unverifiedChains: [],
+      note: "demo fixture — cached txCount refreshed from indexer (no real RPC).",
+    };
+  },
+
+  // -------- v3: Curve LP positions (Ethereum stable_ng plain pools) -----------
+  get_curve_positions: () => ({
+    positions: [
+      {
+        chain: "ethereum",
+        pool: "0xDemoCurveStableNgPlainPoolUsdcUsdt00000",
+        poolName: "USDC/USDT (stable_ng)",
+        coins: ["USDC", "USDT"],
+        lpBalance: "1500.000000000000000000",
+        lpBalanceUsd: 1_502.34,
+        gaugeBalance: "0",
+        gaugeBalanceUsd: 0,
+        claimableCrv: "12.45",
+        claimableCrvUsd: 8.71,
+      },
+    ],
+    notes: [
+      "demo fixture — v0.1 scope is Ethereum stable_ng plain pools only; legacy pools and other chains land in follow-up PRs.",
+    ],
+  }),
+
+  // -------- v3: Safe (Gnosis Safe) multisig positions -------------------------
+  get_safe_positions: () => ({
+    safes: [
+      {
+        chain: "ethereum",
+        safeAddress: "0xDemoSafe0000000000000000000000000000Safe",
+        threshold: 2,
+        owners: [
+          DEMO_WALLET.evm,
+          "0xDemoCoSigner1111111111111111111111111111",
+          "0xDemoCoSigner2222222222222222222222222222",
+        ],
+        version: "1.4.1",
+        nativeBalance: "1.25",
+        nativeBalanceUsd: 2_895.11,
+        pendingTxCount: 1,
+        recentExecutedCount: 4,
+        modules: [],
+        guard: null,
+        risks: [],
+      },
+    ],
+    notes: [
+      "demo fixture — wallet is owner on one 2-of-3 Safe with $2.9k ETH balance and 1 pending tx awaiting a co-signer.",
+    ],
+  }),
+
+  // -------- v3: NFT reads (Reservoir-backed) ----------------------------------
+  get_nft_portfolio: () => ({
+    wallet: DEMO_WALLET.evm,
+    chains: ["ethereum"],
+    collections: [
+      {
+        chain: "ethereum",
+        contract: "0xDemoNftPudgyPenguins000000000000000000Pp",
+        name: "Pudgy Penguins (demo)",
+        tokenCount: 2,
+        floorEth: "9.5",
+        floorUsd: 22_002.86,
+        totalFloorEth: "19.0",
+        totalFloorUsd: 44_005.71,
+      },
+      {
+        chain: "ethereum",
+        contract: "0xDemoNftAzuki00000000000000000000000Azuki",
+        name: "Azuki (demo)",
+        tokenCount: 1,
+        floorEth: "4.2",
+        floorUsd: 9_727.58,
+        totalFloorEth: "4.2",
+        totalFloorUsd: 9_727.58,
+      },
+    ],
+    totalFloorEth: "23.2",
+    totalFloorUsd: 53_733.29,
+    coverage: [{ chain: "ethereum", errored: false }],
+    notes: [
+      "Floor != liquidation. `totalFloorUsd` is an upper bound — what the wallet would net selling everything immediately is typically lower after marketplace fees + slippage.",
+    ],
+  }),
+  get_nft_collection: (args) => {
+    const a = (args ?? {}) as { contract?: string; chain?: string };
+    return {
+      chain: a.chain ?? "ethereum",
+      contract: a.contract ?? "0xDemoNftPudgyPenguins000000000000000000Pp",
+      name: "Pudgy Penguins (demo)",
+      symbol: "PPG",
+      image: "https://demo.vaultpilot.example/pudgy.png",
+      description: "Deterministic demo collection metadata — not a real Reservoir lookup.",
+      floorAskEth: "9.5",
+      floorAskUsd: 22_002.86,
+      topBidEth: "9.1",
+      topBidUsd: 21_076.42,
+      volume: { "1day": "82.4", "7day": "612.5", "30day": "2410.7", allTime: "412900" },
+      ownerCount: 4_812,
+      totalSupply: 8_888,
+      royaltyBps: 500,
+      royaltyRecipient: "0xDemoRoyaltyRecipient000000000000000000Royalty",
+    };
+  },
+  get_nft_history: () => ({
+    wallet: DEMO_WALLET.evm,
+    activity: [
+      {
+        type: "sale",
+        chain: "ethereum",
+        contract: "0xDemoNftAzuki00000000000000000000000Azuki",
+        tokenId: "4242",
+        priceEth: "4.2",
+        priceUsd: 9_727.58,
+        timestamp: 1_745_022_400,
+        txHash: "0xdemo1nftsale1111111111111111111111111111111111111111111111111111",
+      },
+      {
+        type: "mint",
+        chain: "ethereum",
+        contract: "0xDemoNftPudgyPenguins000000000000000000Pp",
+        tokenId: "1234",
+        priceEth: "0.08",
+        priceUsd: 185.29,
+        timestamp: 1_744_500_000,
+        txHash: "0xdemo2nftmint2222222222222222222222222222222222222222222222222222",
+      },
+    ],
+    coverage: [{ chain: "ethereum", errored: false }],
+  }),
+
+  // -------- v3: Daily briefing + P&L summary (composed read tools) ------------
+  get_daily_briefing: (args) => {
+    const a = (args ?? {}) as { period?: "24h" | "7d" | "30d"; format?: "structured" | "markdown" | "both" };
+    const period = a.period ?? "24h";
+    const format = a.format ?? "both";
+    const structured = {
+      period,
+      portfolioTotal: { usd: 14_062.85, deltaUsd: 142.07, deltaPct: 0.0102 },
+      topMovers: [
+        { chain: "ethereum", asset: "ETH", deltaUsd: 92.3, deltaPct: 0.016 },
+        { chain: "solana", asset: "SOL", deltaUsd: 41.2, deltaPct: 0.022 },
+        { chain: "ethereum", asset: "stETH", deltaUsd: 8.57, deltaPct: 0.005 },
+      ],
+      healthAlerts: [],
+      activity: { received: 0, sent: 1, swapped: 1, supplied: 0, borrowed: 0, repaid: 0, withdrew: 0, other: 0 },
+      bestStablecoinYield: { available: false, reason: "demo fixture — section coverage parity with v1." },
+      liquidationCalendar: { available: false, reason: "demo fixture — section coverage parity with v1." },
+    };
+    const markdown =
+      `**Demo portfolio briefing (${period})**\n\n` +
+      `Total: $14,062.85 (+$142.07, +1.02% over the window). ETH up $92, SOL up $41, stETH yield +$8.57. ` +
+      `No Aave health-factor alerts; demo wallet HF = 4.85, well above threshold. ` +
+      `Activity: 1 swap, 1 send.`;
+    if (format === "structured") return structured;
+    if (format === "markdown") return { markdown };
+    return { ...structured, markdown };
+  },
+  get_pnl_summary: (args) => {
+    const a = (args ?? {}) as { period?: "24h" | "7d" | "30d" | "ytd" | "inception" };
+    const period = a.period ?? "30d";
+    return {
+      period,
+      pnlUsd: 412.55,
+      pnlPct: 0.0301,
+      perChain: {
+        ethereum: { pnlUsd: 268.4, walletValueChange: 350.0, netFlowUsd: 81.6 },
+        solana: { pnlUsd: 102.15, walletValueChange: 102.15, netFlowUsd: 0 },
+        arbitrum: { pnlUsd: 42.0, walletValueChange: 42.0, netFlowUsd: 0 },
+        tron: { pnlUsd: 0, walletValueChange: 0, netFlowUsd: 0 },
+      },
+      perAsset: [
+        { chain: "ethereum", asset: "ETH", pnlUsd: 215.5 },
+        { chain: "solana", asset: "SOL", pnlUsd: 102.15 },
+        { chain: "ethereum", asset: "stETH", pnlUsd: 52.9 },
+      ],
+      caveats: [
+        "demo fixture — wallet token balances only; gas costs not subtracted.",
+        "Bitcoin intentionally excluded from v1 P&L (lacks in-window flow accounting).",
+      ],
+    };
+  },
+
+  // -------- v3: Yield comparison + token allowances + non-EVM coin price ------
+  compare_yields: (args) => {
+    const a = (args ?? {}) as { asset?: string };
+    const asset = (a.asset ?? "USDC").toUpperCase();
+    return {
+      asset,
+      rows: [
+        { protocol: "compound-v3", chain: "ethereum", market: "cUSDCv3", supplyApr: 0.0541, supplyApy: 0.0556, tvl: 850_000_000, riskScore: 88, notes: [] },
+        { protocol: "aave-v3", chain: "arbitrum", market: asset, supplyApr: 0.0492, supplyApy: 0.0504, tvl: 412_000_000, riskScore: 85, notes: [] },
+        { protocol: "aave-v3", chain: "ethereum", market: asset, supplyApr: 0.0481, supplyApy: 0.0492, tvl: 1_280_000_000, riskScore: 90, notes: [] },
+        { protocol: "compound-v3", chain: "base", market: "cUSDCv3", supplyApr: 0.0455, supplyApy: 0.0465, tvl: 220_000_000, riskScore: 86, notes: [] },
+      ],
+      unavailable: [
+        { protocol: "morpho-blue", reason: "demo fixture — wallet-less market reader not yet split out." },
+        { protocol: "marginfi", reason: "demo fixture — wallet-less market reader not yet split out." },
+      ],
+    };
+  },
+  get_token_allowances: (args) => {
+    const a = (args ?? {}) as { token?: string; chain?: string };
+    return {
+      wallet: DEMO_WALLET.evm,
+      chain: a.chain ?? "ethereum",
+      token: a.token ?? "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      tokenSymbol: "USDC",
+      rows: [
+        {
+          spender: "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+          spenderLabel: "Aave V3 Pool",
+          currentAllowance: "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          currentAllowanceFormatted: "unlimited",
+          isUnlimited: true,
+          lastApprovedBlock: 21_500_000,
+          lastApprovedTxHash: "0xdemoAllowance00000000000000000000000000000000000000000000000000aave",
+          lastApprovedAt: 1_744_400_000,
+        },
+        {
+          spender: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+          spenderLabel: "Uniswap V3 SwapRouter02",
+          currentAllowance: "1000000000",
+          currentAllowanceFormatted: "1000.0",
+          isUnlimited: false,
+          lastApprovedBlock: 21_530_000,
+          lastApprovedTxHash: "0xdemoAllowance0000000000000000000000000000000000000000000000000uniswap",
+          lastApprovedAt: 1_745_000_000,
+        },
+      ],
+      unlimitedCount: 1,
+      notes: [
+        "demo fixture — 1 unlimited approval (Aave V3 Pool) can move the entire balance including future top-ups; revoke via approve(spender, 0) if unused.",
+      ],
+    };
+  },
+  get_coin_price: (args) => {
+    const a = (args ?? {}) as { symbol?: string; coingeckoId?: string };
+    const symbol = (a.symbol ?? a.coingeckoId ?? "BTC").toUpperCase();
+    const priceTable: Record<string, number> = {
+      BTC: 95_142.18,
+      LTC: 92.45,
+      SOL: 184.21,
+      TRX: 0.241,
+      DOGE: 0.165,
+      XMR: 198.40,
+      ETH: 2_316.09,
+    };
+    const priceUsd = priceTable[symbol] ?? 1;
+    return {
+      symbol,
+      priceUsd,
+      source: "demo-fixture",
+      resolvedKey: a.coingeckoId ?? `coingecko:${symbol.toLowerCase()}`,
+      asOf: "2026-04-26T00:00:00Z",
+      confidence: 0.99,
+    };
+  },
+
+  // -------- v3: explain_tx narrative analysis ---------------------------------
+  explain_tx: (args) => {
+    const a = (args ?? {}) as { txHash?: string; chain?: string; format?: "structured" | "markdown" | "both" };
+    const txHash = a.txHash ?? "0xdemo1deadbeef000000000000000000000000000000000000000000000000demo";
+    const format = a.format ?? "both";
+    const structured = {
+      txHash,
+      chain: a.chain ?? "ethereum",
+      status: "success",
+      method: "swapExactTokensForTokens",
+      decodedEvents: [
+        { kind: "Transfer", token: "USDC", from: DEMO_WALLET.evm, to: "0xDemoUniswapPool0000000000000000000000Pool", amount: "1000.0" },
+        { kind: "Transfer", token: "WETH", from: "0xDemoUniswapPool0000000000000000000000Pool", to: DEMO_WALLET.evm, amount: "0.4318" },
+      ],
+      walletBalanceChanges: [
+        { token: "USDC", deltaFormatted: "-1000.0", deltaUsd: -1_000.0 },
+        { token: "WETH", deltaFormatted: "+0.4318", deltaUsd: 1_000.09 },
+      ],
+      feePaidUsd: 1.42,
+      heuristics: [],
+    };
+    const markdown =
+      `**Demo tx walkthrough** — \`${txHash.slice(0, 10)}…\`\n\n` +
+      `Method: \`swapExactTokensForTokens\` (Uniswap-style swap). Wallet sent 1,000 USDC and received 0.4318 WETH (~$1,000.09 net) for $1.42 in gas. No flagged heuristics — nothing surprising.`;
+    if (format === "structured") return structured;
+    if (format === "markdown") return { markdown };
+    return { ...structured, markdown };
+  },
 };
 
 /**
