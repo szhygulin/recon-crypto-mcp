@@ -100,6 +100,19 @@ jobs:
       - name: Build dist/
         run: npm run build
 
+      - name: Prune devDependencies before pkg snapshot
+        # `npm ci` above installs deps + devDeps (we need typescript etc. for
+        # `npm run build`). Once dist/ is built, drop the devDeps so pkg
+        # doesn't snapshot them. vitest pulls in @rolldown (45MB binding) and
+        # lightningcss (~20MB) transitively — neither is reachable from the
+        # MCP server entry point at runtime, but pkg's static-require walker
+        # can't always prove that, so the snapshot grows. Empirically this
+        # shaves ~20MB off the binary on linux-x64. Lower output size = faster
+        # release-asset upload + less likely to trip GitHub's reverse-proxy
+        # idle-timeout on slow runners (root cause of the v0.9.4
+        # macos-arm64-server upload failure — issue #330 follow-up).
+        run: npm prune --omit=dev --legacy-peer-deps
+
       - name: Bundle server binary
         # `pkg .` (not `pkg dist/index.js`) so pkg picks up package.json
         # context including the `pkg.scripts` glob and the bin block.

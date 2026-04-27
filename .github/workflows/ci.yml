@@ -71,6 +71,13 @@ jobs:
       - name: Build dist/
         run: npm run build
 
+      - name: Prune devDependencies before pkg snapshot
+        # Mirror release-binaries.yml so the smoke test exercises the same
+        # node_modules shape the release binary will see. Catches the case
+        # where a runtime feature accidentally requires a devDep (would be
+        # invisible without prune; would only fail at release time).
+        run: npm prune --omit=dev --legacy-peer-deps
+
       - name: Bundle server binary
         run: npx pkg . --target node22-linux-x64 --output release/vaultpilot-mcp-linux-x64-server
         env:
