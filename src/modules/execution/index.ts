@@ -3008,96 +3008,175 @@ export function getTxVerification(args: GetTxVerificationArgs): UnsignedTx | Uns
 }
 
 /**
- * Static prompt appended to every verification artifact. Tells a second LLM
- * how to independently decode the payload without trusting any of the first
- * agent's narrative. Kept in one place so every artifact carries byte-identical
- * instructions — if the text drifts per tx, an attacker gains a channel to
- * inject behavior through the instructions.
+ * Per-chain prompts appended to verification artifacts. Each tells a second
+ * LLM how to independently decode the payload of one specific chain without
+ * trusting any of the first agent's narrative. Split per chain (rather than
+ * a single all-chains blob) because the unified version was 80+ lines and
+ * carried boilerplate for two chains the user wasn't transacting on — the
+ * paste was unreadable in practice.
+ *
+ * Each constant is byte-identical across every artifact for that chain, so
+ * an attacker still cannot inject behavior through the instructions: the
+ * text doesn't depend on tx data, only on which chain the handle is for.
  */
-const SECOND_AGENT_INSTRUCTIONS = [
-  "You are auditing a transaction a user is about to sign on a Ledger hardware wallet.",
-  "The payload below is JSON. Do these steps in order:",
+const EVM_AGENT_INSTRUCTIONS = [
+  "You are auditing an EVM transaction a user is about to sign on a Ledger",
+  "hardware wallet. The payload below is JSON. Do these steps in order:",
   "",
-  "  1. Parse the SIGNABLE BYTES yourself — payload.data (EVM), payload.rawDataHex",
-  "     (TRON), or payload.messageBase64 (Solana — base64-decode then use",
-  "     @solana/web3.js Message.from). Identify the 4-byte selector / TRON contract",
-  "     type / Solana instruction programIds, the function or action name, and all",
-  "     arguments. DO NOT trust the description / decoded fields in the payload",
-  "     for THIS step — the whole point of this cross-check is that you decode the",
-  "     bytes from scratch, independently of whatever the first agent claimed.",
+  "  1. Parse the SIGNABLE BYTES yourself — payload.data is the calldata.",
+  "     Identify the 4-byte selector, the function, and all arguments from",
+  "     the bytes. DO NOT trust the description / decoded fields in the payload",
+  "     for THIS step — decoding the bytes from scratch IS the cross-check.",
   "",
-  "  2. Describe in plain English what the transaction will do to the user's wallet:",
-  "     what contract, what action, what amounts, what destinations.",
+  "  2. Describe in plain English what the tx will do: contract (payload.to),",
+  "     action, amounts, destinations.",
   "",
-  "  3. NOW compare your decode to payload.description and payload.decoded (the",
-  "     human summary + structured args the first agent showed the user). Three",
-  "     possible outcomes:",
-  "       - MATCH: your decode and the description say the same thing → the agent",
-  "         narrated truthfully; the cross-check passes on the description-vs-bytes",
-  "         dimension.",
-  "       - MISMATCH: bytes encode something different from what the user was told",
-  "         → THIS IS THE THREAT this cross-check exists for. Lead your reply with",
-  "         a clear ✗ MISMATCH headline; tell the user to REJECT on-device.",
-  "       - PARTIAL: description omits a detail you can see in the bytes (e.g.,",
-  "         priority-fee ix, nonce-advance ix, ATA-create ix) → not a mismatch by",
-  "         itself; mention the extras and let the user decide.",
+  "  3. Compare your decode to payload.description and payload.decoded (the",
+  "     human summary + structured args the first agent showed the user):",
+  "       - MATCH: your decode and the description say the same thing → the",
+  "         agent narrated truthfully; cross-check passes.",
+  "       - MISMATCH: bytes encode something different from what the user was",
+  "         told → lead your reply with a clear ✗ MISMATCH headline; tell the",
+  "         user to REJECT on-device.",
+  "       - PARTIAL: description omits a benign detail you saw in the bytes",
+  "         (e.g. an unrelated priority fee) → mention extras; not a mismatch",
+  "         by itself.",
   "",
-  "  4. Flag red flags: unlimited approvals (uint256.max), unknown destinations,",
-  "     nested delegatecalls, transfers to addresses that don't match the stated",
-  "     recipient, approvals to spenders that are not well-known protocol routers.",
-  "     Specifically: if the calldata embeds a recipient / `to` / unwrap target",
-  "     (e.g. unwrapWETH9's recipient, a bridge's destination, a transfer's `to`),",
-  "     compare it to payload.from. If they match, it is the signer's own wallet",
-  "     — that is the expected case for swaps/unwraps/withdrawals. If they DIFFER,",
-  "     the user is sending value to a third party and should confirm that",
-  "     destination was intentional.",
+  "  4. Red flags: uint256.max approvals, unknown destinations, nested",
+  "     delegatecalls, approvals to spenders that are not well-known protocol",
+  "     routers (Aave / Compound / Morpho / Lido / EigenLayer / Uniswap / LiFi).",
+  "     If the calldata embeds a recipient / `to` / unwrap target (e.g.",
+  "     unwrapWETH9's recipient, a bridge's destination, a transfer's `to`),",
+  "     compare it to payload.from. Match → the signer's own wallet (expected",
+  "     for swaps/unwraps/withdraws). Differ → the user is sending value to a",
+  "     third party; they should confirm that destination was intentional.",
   "",
-  "  5. SOLANA-SPECIFIC NOTES — these patterns are NOT red flags by themselves;",
-  "     do NOT alarm the user about them. This server (vaultpilot-mcp) makes two",
-  "     deliberate design choices a generic Solana auditor would otherwise misread:",
+  "  5. If you can't decode the selector (not in your training data), say so",
+  "     — do not guess. \"I don't know this selector\" is the correct answer",
+  "     when true.",
+  "",
+  "  6. Remind the user the last check happens on-device. Ledger has two",
+  "     display modes and the check differs between them:",
+  "       - BLIND-SIGN (device shows only a hash — the typical case for swaps",
+  "         and most DeFi calls): the on-device hash MUST equal",
+  "         payload.preSignHash. Mismatch → REJECT on-device.",
+  "       - CLEAR-SIGN (decoded fields — Aave, Lido, 1inch, LiFi, approve",
+  "         plugins): hash matching does NOT apply; verify the on-screen",
+  "         function name + amount + recipient match what you described.",
+  "         Mismatch → REJECT.",
+  "     If you can't tell which mode the device is in from the user's",
+  "     description, explain both so the user picks the right check.",
+].join("\n");
+
+const TRON_AGENT_INSTRUCTIONS = [
+  "You are auditing a TRON transaction a user is about to sign on a Ledger",
+  "hardware wallet. The payload below is JSON. Do these steps in order:",
+  "",
+  "  1. Parse the SIGNABLE BYTES yourself — payload.rawDataHex is the",
+  "     protobuf-encoded Transaction.raw. Identify the contract type",
+  "     (TransferContract, TriggerSmartContract, VoteWitnessContract,",
+  "     FreezeBalanceV2Contract, etc.), the parameters, and any TRC-20",
+  "     selector + args inside TriggerSmartContract.parameter. DO NOT trust",
+  "     the description / decoded fields in the payload for THIS step.",
+  "",
+  "  2. Describe in plain English what the tx will do.",
+  "",
+  "  3. Compare your decode to payload.description and payload.decoded:",
+  "       - MATCH: descriptions agree → cross-check passes.",
+  "       - MISMATCH: bytes encode something different from what the user was",
+  "         told → lead with a clear ✗ MISMATCH headline; tell the user to",
+  "         REJECT on-device.",
+  "       - PARTIAL: description omits a benign detail you saw in the bytes",
+  "         → mention extras; not a mismatch by itself.",
+  "",
+  "  4. Red flags: TRC-20 approve(spender, max_uint256), recipients that",
+  "     don't match payload.from when the description claims a self-targeted",
+  "     op. For a TriggerSmartContract.parameter recipient, compare against",
+  "     payload.from (match = self; differ = third-party — confirm with",
+  "     the user that the third party was intentional).",
+  "",
+  "  5. If you can't decode the contract type or TRC-20 selector, say so —",
+  "     do not guess.",
+  "",
+  "  6. The last check happens on-device. The Ledger TRON app CLEAR-SIGNS",
+  "     every supported action (TransferContract, VoteWitness, FreezeBalanceV2,",
+  "     and TRC-20 transfer/approve on canonical tokens) — there is NO",
+  "     blind-sign hash to match. Verify the on-screen action + recipient +",
+  "     amount match what you described. Mismatch → REJECT on-device.",
+].join("\n");
+
+const SOLANA_AGENT_INSTRUCTIONS = [
+  "You are auditing a Solana transaction a user is about to sign on a Ledger",
+  "hardware wallet. The payload below is JSON. Do these steps in order:",
+  "",
+  "  1. Parse the SIGNABLE BYTES yourself — base64-decode payload.messageBase64,",
+  "     then `@solana/web3.js` Message.from. Enumerate every instruction:",
+  "     programId, accounts, and (for known programs) the decoded function +",
+  "     args. DO NOT trust the description / decoded fields in the payload",
+  "     for THIS step.",
+  "",
+  "  2. Describe in plain English what the tx will do across all instructions.",
+  "",
+  "  3. Compare your decode to payload.description and payload.decoded:",
+  "       - MATCH: descriptions agree → cross-check passes.",
+  "       - MISMATCH: bytes encode something different from what the user was",
+  "         told → lead with a clear ✗ MISMATCH headline; tell the user to",
+  "         REJECT on-device.",
+  "       - PARTIAL: description omits a detail you saw in the bytes (e.g.",
+  "         priority-fee ix, nonce-advance ix, ATA-create ix) → mention",
+  "         extras; not a mismatch by itself.",
+  "",
+  "  4. Red flags: token transfers / authority delegations to addresses that",
+  "     don't match payload.from when the description implies a self-targeted",
+  "     op. ATA-create, ComputeBudget, and priority-fee instructions are",
+  "     normal — list them under PARTIAL, don't flag.",
+  "",
+  "  5. SERVER-SPECIFIC PATTERNS — NOT red flags. vaultpilot-mcp makes two",
+  "     deliberate design choices a generic Solana auditor would otherwise",
+  "     misread:",
   "",
   "     (a) DURABLE-NONCE PROTECTION — every send (native_send / spl_send /",
   "         nonce_close) carries `SystemProgram.AdvanceNonceAccount` as ix[0],",
-  "         operating on a per-wallet PDA derived deterministically from the user's",
-  "         pubkey + the public seed string `vaultpilot-nonce-v1`. The authority",
-  "         on that ix == payload.from. This lets the user take unlimited time on",
-  "         Ledger review without the ~60s `recentBlockhash` window expiring (and",
-  "         the recentBlockhash field carries the nonce VALUE, not a network",
-  "         blockhash, when ix[0] is nonceAdvance — Agave's standard behavior).",
-  "         Do NOT describe this as 'signature collection for replay' or 'delayed",
-  "         signing attack' — it is the normal flow for every Solana send this",
-  "         server builds. Only flag if the nonce account's authority does NOT",
-  "         match payload.from (which would mean someone else controls it).",
+  "         operating on a per-wallet PDA derived deterministically from the",
+  "         user's pubkey + the public seed string `vaultpilot-nonce-v1`. The",
+  "         authority on that ix == payload.from. This lets the user take",
+  "         unlimited time on Ledger review without the ~60s `recentBlockhash`",
+  "         window expiring (and the recentBlockhash field carries the nonce",
+  "         VALUE, not a network blockhash, when ix[0] is AdvanceNonceAccount",
+  "         — Agave's standard behavior). Do NOT describe this as 'signature",
+  "         collection for replay' or 'delayed signing attack'. Only flag if",
+  "         the nonce account's authority does NOT match payload.from.",
   "",
-  "     (b) SELF-TRANSFER — for SPL TransferChecked, source ATA and destination",
-  "         ATA can legitimately be the same when the user is sending to their",
-  "         own wallet (used for testing or to advance a nonce as a no-op).",
-  "         Check payload.description: if it says 'self', '(self)', 'to yourself',",
-  "         or echoes the same address as both from and to, the source==dest",
-  "         pattern is INTENTIONAL — say so and stop. Only flag source==dest as",
-  "         suspicious if the description claims a non-self recipient but the",
-  "         bytes encode a self-transfer (genuine description-vs-bytes mismatch).",
+  "     (b) SELF-TRANSFER — for SPL TransferChecked, source ATA and",
+  "         destination ATA can legitimately be the same when the user is",
+  "         sending to their own wallet. If payload.description says 'self',",
+  "         '(self)', 'to yourself', or echoes the same address as both from",
+  "         and to, the source==dest pattern is INTENTIONAL — say so and",
+  "         stop. Only flag source==dest as suspicious if the description",
+  "         claims a non-self recipient but the bytes encode a self-transfer",
+  "         (genuine description-vs-bytes mismatch).",
   "",
-  "  6. If you cannot decode the selector / instruction (not in your training",
-  "     data), say so — do not guess. 'I don't know this selector' is the correct",
-  "     answer when true.",
+  "  6. If you can't decode an instruction, say so — do not guess.",
   "",
-  "  7. Remind the user that the last check happens on-device, before they tap",
-  "     'Approve'. Ledger has two display modes and the check differs between them:",
-  "       - BLIND-SIGN (device shows only a hash — the typical case for swaps and",
-  "         most DeFi calls, and ALL SPL token transfers on Solana): the hash on-",
-  "         device MUST equal payload.preSignHash (EVM), the signed rawData digest",
-  "         (TRON), or payload.ledgerMessageHash (Solana — the device label is",
-  "         'Message Hash'). Mismatch means the artifact was fabricated by a",
-  "         compromised intermediary — REJECT on-device.",
-  "       - CLEAR-SIGN (device shows decoded fields — enabled for Aave, Lido, 1inch,",
-  "         LiFi, approve, and a few other plugins): hash matching does NOT apply.",
-  "         Instead verify that the function name and key fields on-screen (amount,",
-  "         recipient, spender, etc.) match what you described above. If the device",
-  "         shows a different function or different values — REJECT.",
-  "     If you cannot tell which mode the device is in from the user's description,",
-  "     explain both cases so the user picks the right check when they see the screen.",
+  "  7. The last check happens on-device. Ledger has two modes here:",
+  "       - BLIND-SIGN — ALL SPL token transfers on Solana require this.",
+  "         The on-device 'Message Hash' MUST equal payload.ledgerMessageHash.",
+  "         Mismatch → REJECT.",
+  "       - CLEAR-SIGN — native SOL sends and nonce_init / nonce_close: hash",
+  "         matching does NOT apply; verify the on-screen amount + recipient",
+  "         match what you described. Mismatch → REJECT.",
 ].join("\n");
+
+/**
+ * Pick the per-chain prompt for `buildPasteableBlock`. Centralized so the
+ * three call sites (EVM / TRON / Solana branches of getVerificationArtifact)
+ * stay terse and impossible to mis-pair.
+ */
+function instructionsFor(chain: "tron" | "solana" | SupportedChain): string {
+  if (chain === "tron") return TRON_AGENT_INSTRUCTIONS;
+  if (chain === "solana") return SOLANA_AGENT_INSTRUCTIONS;
+  return EVM_AGENT_INSTRUCTIONS;
+}
 
 /**
  * Explicit start/end copy-markers so the user (and the second LLM) can tell
@@ -3110,12 +3189,15 @@ const PASTE_START = '===== COPY FROM THIS LINE TO THE "END" MARKER INTO A SEPARA
 const PASTE_START_2 = "===== (ideally a different LLM provider — the point is no shared context)    =====";
 const PASTE_END = '===== END — STOP COPYING HERE =====';
 
-function buildPasteableBlock(payload: Record<string, unknown>): string {
+function buildPasteableBlock(
+  chain: "tron" | "solana" | SupportedChain,
+  payload: Record<string, unknown>,
+): string {
   return [
     PASTE_START,
     PASTE_START_2,
     "",
-    SECOND_AGENT_INSTRUCTIONS,
+    instructionsFor(chain),
     "",
     "PAYLOAD:",
     JSON.stringify(payload, null, 2),
@@ -3257,7 +3339,7 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       value: tx.value,
       data: tx.data,
       payloadHash: tx.verification.payloadHash,
-      pasteableBlock: buildPasteableBlock(pasteablePayload),
+      pasteableBlock: buildPasteableBlock(tx.chain, pasteablePayload),
     };
     if (tx.from) artifact.from = tx.from;
     if (pin) artifact.preSignHash = pin.preSignHash;
@@ -3283,7 +3365,7 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       txID: tx.txID,
       rawDataHex: tx.rawDataHex,
       payloadHash: tx.verification.payloadHash,
-      pasteableBlock: buildPasteableBlock(pasteablePayload),
+      pasteableBlock: buildPasteableBlock("tron", pasteablePayload),
     };
   }
   if (hasSolanaHandle(args.handle)) {
@@ -3350,7 +3432,7 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       messageBase64: tx.messageBase64,
       recentBlockhash: tx.recentBlockhash,
       payloadHash: tx.verification.payloadHash,
-      pasteableBlock: buildPasteableBlock(pasteablePayload),
+      pasteableBlock: buildPasteableBlock("solana", pasteablePayload),
     };
     if (ledgerMessageHash) artifact.ledgerMessageHash = ledgerMessageHash;
     return artifact;
