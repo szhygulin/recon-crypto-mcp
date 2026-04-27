@@ -53,6 +53,7 @@ import {
  * Phase 2 scope: P2WSH (`wsh(sortedmulti(...))`) only. Taproot multi-sig
  * (`tr(multi_a(...))`) and `sh(wsh(...))` wrapped multi-sig are
  * deferred — small audience, distinct script types.
+ * bump
  */
 
 // --- bitcoinjs-lib loader (CommonJS-only) ---------------------------------
