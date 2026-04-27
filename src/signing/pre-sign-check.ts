@@ -233,21 +233,34 @@ export async function assertTransactionSafe(tx: UnsignedTx): Promise<void> {
       );
     }
     let spender: string;
+    let amount: bigint;
     try {
       const decoded = decodeFunctionData({ abi: erc20Abi, data: tx.data });
       spender = (decoded.args?.[0] as string).toLowerCase();
+      amount = decoded.args?.[1] as bigint;
     } catch {
       throw new Error(
         `Pre-sign check: could not decode approve() calldata on ${tx.to}. Refusing to sign.`
       );
     }
+    // Revokes — `approve(spender, 0)` — bypass the spender allowlist. Setting
+    // an allowance to zero cannot grant any authority, so the canonical
+    // phishing/drain pattern doesn't apply. Without this carve-out
+    // `prepare_revoke_approval` is unusable for its primary use case:
+    // cleaning up obsolete allowances to spenders the allowlist doesn't
+    // recognize (Permit2, dead router versions, deprecated routers) — those
+    // are exactly the spenders users want OFF, not added to the allowlist.
+    // Issue #305.
+    if (amount === 0n) return;
     const allowlist = buildSpenderAllowlist(tx.chain);
     if (!allowlist.has(spender)) {
       throw new Error(
         `Pre-sign check: refusing approve(spender=${spender}, ...) on ${tx.chain} — spender is ` +
           `not in the protocol allowlist (Aave Pool, Compound Comet, Morpho Blue, Lido Queue, ` +
           `EigenLayer, Uniswap NPM, Uniswap SwapRouter02, LiFi Diamond). This is the canonical phishing/prompt-injection ` +
-          `pattern. If you need to approve a different spender, do it from the Ledger Live app directly.`
+          `pattern. If you need to approve a different spender, do it from the Ledger Live app directly. ` +
+          `(Revokes — approve(spender, 0) — bypass this check; if you want to revoke an existing ` +
+          `allowance, run prepare_revoke_approval instead of crafting your own approve.)`
       );
     }
     return;
