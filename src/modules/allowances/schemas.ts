@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
 import { EVM_ADDRESS } from "../../shared/address-patterns.js";
+import type { Permit2SubAllowanceRow } from "./permit2.js";
+
+export type { Permit2SubAllowanceRow };
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 
@@ -76,6 +79,18 @@ export interface AllowanceRow {
   lastApprovedTxHash: `0x${string}`;
   /** ISO-8601 timestamp from the indexer's `timeStamp` field, when available. */
   lastApprovedAt?: string;
+  /**
+   * Populated when `spender` is the Permit2 contract — the wallet's
+   * direct ERC-20 approval to Permit2 is functionally a permission
+   * granted to MANY downstream contracts. Each entry here is one
+   * non-zero, non-expired sub-allowance the wallet has authorized via
+   * Permit2's own ledger. Issue #304 — without this field, the primary
+   * tool's promise of "show me all my unrevoked allowances" is
+   * radically incomplete for any wallet that has touched Uniswap.
+   *
+   * Absent for non-Permit2 spenders.
+   */
+  permit2SubAllowances?: Permit2SubAllowanceRow[];
 }
 
 export interface GetTokenAllowancesResult {

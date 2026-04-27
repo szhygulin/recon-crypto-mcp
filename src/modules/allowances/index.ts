@@ -24,6 +24,7 @@
  * No price math, no USD valuation in v1. The "how much exposure?"
  * question is genuinely about the raw allowance, not its current spot
  * value — a 1000 USDC allowance is concerning regardless of USDC price.
+ * bump
  */
 
 import type { Hex } from "viem";
@@ -38,6 +39,49 @@ import type {
   GetTokenAllowancesArgs,
   GetTokenAllowancesResult,
 } from "./schemas.js";
+import {
+  PERMIT2_ADDRESS,
+  fetchPermit2SubAllowances,
+} from "./permit2.js";
+
+/**
+ * Minimal EIP-2612 ABI fragment for the `nonces(owner)` view. Reverts
+ * cleanly on tokens that don't implement EIP-2612 — we use that as the
+ * support detection signal.
+ */
+const EIP2612_NONCES_ABI = [
+  {
+    type: "function",
+    name: "nonces",
+    stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
+/**
+ * Try `nonces(owner)` on the token contract. Returns the current nonce
+ * when the token supports EIP-2612, or undefined when it reverts (the
+ * token doesn't implement permit). USDC, DAI, AAVE, COMP, UNI all
+ * support; older tokens (USDT, WBTC, LINK) don't.
+ */
+async function tryReadEip2612Nonce(
+  chain: SupportedChain,
+  token: `0x${string}`,
+  owner: `0x${string}`,
+): Promise<bigint | undefined> {
+  const client = getClient(chain);
+  try {
+    return (await client.readContract({
+      address: token,
+      abi: EIP2612_NONCES_ABI,
+      functionName: "nonces",
+      args: [owner],
+    })) as bigint;
+  } catch {
+    return undefined;
+  }
+}
 
 const APPROVAL_TOPIC =
   "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925";
@@ -282,6 +326,35 @@ export async function getTokenAllowances(
     return 0;
   });
 
+  // 8. Issue #304 — Permit2 sub-allowance enumeration. If any row's
+  //    spender is the Permit2 contract, the wallet's direct approval
+  //    is functionally a permission granted to MANY downstream
+  //    contracts via Permit2's own ledger. The primary scan returning
+  //    just "Permit2 — unlimited" is correct but radically incomplete;
+  //    populate the sub-list so the answer reflects the actual attack
+  //    surface.
+  //
+  //    EIP-2612 nonce read runs in parallel — independent risk axis
+  //    (signed-but-unsubmitted off-chain permits, not enumerable on-
+  //    chain).
+  const permit2Row = rows.find(
+    (r) => r.spender.toLowerCase() === PERMIT2_ADDRESS,
+  );
+  const [permit2Result, eip2612Nonce] = await Promise.all([
+    permit2Row
+      ? fetchPermit2SubAllowances({
+          chain,
+          owner: wallet,
+          token,
+          decimals: meta.decimals,
+        }).catch(() => null)
+      : Promise.resolve(null),
+    tryReadEip2612Nonce(chain, token, wallet),
+  ]);
+  if (permit2Row && permit2Result) {
+    permit2Row.permit2SubAllowances = permit2Result.rows;
+  }
+
   const notes: string[] = [];
   if (truncated) {
     notes.push(
@@ -297,6 +370,50 @@ export async function getTokenAllowances(
         `unlimited approvals via \`prepare_*\` an approve(spender, 0) call, or via Etherscan's "Token Approvals" UI.`,
     );
   }
+  if (permit2Row && permit2Result) {
+    const subCount = permit2Result.rows.length;
+    if (subCount > 0) {
+      notes.push(
+        `${subCount} active Permit2 sub-allowance${subCount === 1 ? "" : "s"} for downstream spenders ` +
+          `(see \`allowances[].permit2SubAllowances[]\` on the Permit2 row). Permit2 is an intermediary — ` +
+          `the wallet's direct approval to Permit2 grants permission to every downstream spender listed. ` +
+          `Revoke a Permit2 sub-allowance with a Permit2.approve(token, spender, amount=0, expiration=any) ` +
+          `call, NOT by zeroing the parent ERC-20 approval.`,
+      );
+    } else if (permit2Result.expiredCount > 0) {
+      notes.push(
+        `Permit2 holds ${permit2Result.expiredCount} expired sub-allowance(s) for this token — those ` +
+          `entries are functionally revoked even though the storage slot is still populated.`,
+      );
+    } else {
+      notes.push(
+        `Permit2 has no active sub-allowances for this token. The direct ERC-20 approval to Permit2 is ` +
+          `still live — any future Permit2.approve / permit() submission would activate downstream spend ` +
+          `without a fresh ERC-20 approval.`,
+      );
+    }
+    if (permit2Result.truncated) {
+      notes.push(
+        `Permit2 logs scan also returned the cap (${LOGS_PAGE_SIZE} entries) — older sub-allowance events ` +
+          `may be missing.`,
+      );
+    }
+  }
+  if (eip2612Nonce !== undefined) {
+    notes.push(
+      `${meta.symbol} supports EIP-2612 \`permit()\`. Off-chain permit signatures (signed but not yet ` +
+        `submitted) are NOT enumerable on-chain — if you've ever signed an EIP-712 message naming this ` +
+        `token on a site you don't fully trust, consider invalidating any outstanding signatures by ` +
+        `submitting a permit() that bumps the nonce. Current nonce: ${eip2612Nonce.toString()}.`,
+    );
+  }
+  notes.push(
+    `Completeness caveat: the Etherscan logs scan and the Permit2 logs scan are both subject to the ` +
+      `indexer's row cap and to any missed-block edge cases on the indexer's side. The LIVE allowance ` +
+      `re-reads catch stale-revoked entries, but cannot catch a spender whose only Approval/Permit event ` +
+      `falls outside the indexer's returned set. To rule that out, an independent indexer would need to ` +
+      `cross-check.`,
+  );
   if (rows.length === 0) {
     notes.push(
       `No active approvals found for ${wallet} on ${meta.symbol} (${chain}). Either the wallet has never ` +
