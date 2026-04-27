@@ -1289,6 +1289,100 @@ export const prepareBitcoinRbfBumpInput = z.object({
     ),
 });
 
+export const registerBitcoinMultisigWalletInput = z.object({
+  name: z
+    .string()
+    .min(1)
+    .max(16)
+    .regex(/^[\x20-\x7e]+$/)
+    .describe(
+      "User-chosen label for the multi-sig setup, e.g. \"Family vault\". Must be " +
+        "printable ASCII, ≤ 16 bytes (Ledger BTC app caps wallet-policy names at " +
+        "16 bytes). Surfaces on-device during the registration approval flow and " +
+        "is the lookup key for `sign_btc_multisig_psbt`. Must be unique within the " +
+        "registered wallet set."
+    ),
+  threshold: z
+    .number()
+    .int()
+    .min(1)
+    .max(15)
+    .describe(
+      "M in M-of-N. Must be ≥ 1 and ≤ cosigner count. Phase 2 hard-caps at 15 (the " +
+        "Ledger BTC app's wallet-policy limit)."
+    ),
+  cosigners: z
+    .array(
+      z.object({
+        xpub: z
+          .string()
+          .min(1)
+          .describe(
+            "BIP-32 extended public key (xpub / Ypub / Zpub form) for this signer slot. " +
+              "Round-trips through @scure/bip32 for checksum validation — a typo silently " +
+              "registers a wrong wallet that can never sign, so we hard-validate."
+          ),
+        masterFingerprint: z
+          .string()
+          .regex(/^[0-9a-fA-F]{8}$/)
+          .describe(
+            "4-byte master fingerprint as 8 hex chars (lowercase preferred but case-insensitive). " +
+              "Each cosigner gets it from `getmasterfingerprint` on their wallet (Ledger / " +
+              "Sparrow / Specter all expose it)."
+          ),
+        derivationPath: z
+          .string()
+          .min(1)
+          .describe(
+            "BIP-32 derivation path leading to `xpub`, NO leading `m/`. Standard BIP-48 " +
+              "P2WSH multisig: \"48'/0'/0'/2'\" (account 0). The wildcard suffix `/<change>/<index>` " +
+              "is appended at signing time via the descriptor template — supply only the account-level " +
+              "path here."
+          ),
+      })
+    )
+    .min(2)
+    .max(15)
+    .describe(
+      "Cosigner slots in the order they should appear in the descriptor's `@N` slots. " +
+        "Slot order is part of the descriptor identity — every cosigner must agree on " +
+        "the same ordering or they'll register different wallets. Exactly one entry's " +
+        "fingerprint+xpub must match the connected Ledger; the device flags it `isOurs` " +
+        "and uses it for signing. Phase 2 requires ≥ 2 cosigners (1-of-1 is single-sig)."
+    ),
+  scriptType: z
+    .literal("wsh")
+    .describe(
+      "Script type for the multi-sig wrapper. Phase 2 supports \"wsh\" only (P2WSH " +
+        "native segwit, `bc1q...`-style addresses). Taproot multi-sig and P2SH-wrapped " +
+        "multi-sig are deferred."
+    ),
+});
+
+export const signBitcoinMultisigPsbtInput = z.object({
+  walletName: z
+    .string()
+    .min(1)
+    .max(16)
+    .describe(
+      "Name of a previously-registered multi-sig wallet (matches the `name` passed to " +
+        "`register_btc_multisig_wallet`). Refused if no wallet is registered under " +
+        "this name."
+    ),
+  psbtBase64: z
+    .string()
+    .min(1)
+    .max(200_000)
+    .describe(
+      "Base64-encoded PSBT v0 from the initiator. Every input must carry a " +
+        "`bip32_derivation` entry for our master fingerprint, or we refuse to forward " +
+        "to the device. The Ledger app then walks every output (address + amount) " +
+        "on-device and asks for confirmation; the user MUST verify the on-device walk " +
+        "matches the chat-side verification block before approving. Cap of ~200 KB to " +
+        "bound transport buffer + on-device parsing time."
+    ),
+});
+
 export const getBitcoinTxHistoryInput = z.object({
   address: bitcoinAddressSchema,
   limit: z
@@ -1344,6 +1438,10 @@ export const signBtcMessageInput = z.object({
 
 export type GetBitcoinTxHistoryArgs = z.infer<typeof getBitcoinTxHistoryInput>;
 export type PrepareBitcoinNativeSendArgs = z.infer<typeof prepareBitcoinNativeSendInput>;
+export type RegisterBitcoinMultisigWalletArgs = z.infer<
+  typeof registerBitcoinMultisigWalletInput
+>;
+export type SignBitcoinMultisigPsbtArgs = z.infer<typeof signBitcoinMultisigPsbtInput>;
 export type PrepareBitcoinRbfBumpArgs = z.infer<typeof prepareBitcoinRbfBumpInput>;
 export type SignBtcMessageArgs = z.infer<typeof signBtcMessageInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;

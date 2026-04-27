@@ -153,6 +153,8 @@ import {
   getBitcoinTxHistory,
   prepareBitcoinNativeSend,
   prepareBitcoinRbfBump,
+  registerBtcMultisigWallet,
+  signBtcMultisigPsbt,
   signBtcMessage,
   pairLedgerLitecoin,
   getLitecoinBalance,
@@ -230,6 +232,8 @@ import {
   getBitcoinTxHistoryInput,
   prepareBitcoinNativeSendInput,
   prepareBitcoinRbfBumpInput,
+  registerBitcoinMultisigWalletInput,
+  signBitcoinMultisigPsbtInput,
   signBtcMessageInput,
   pairLedgerLitecoinInput,
   getLitecoinBalanceInput,
@@ -2444,6 +2448,48 @@ async function main() {
       inputSchema: prepareBitcoinRbfBumpInput.shape,
     },
     handler(prepareBitcoinRbfBump, { toolName: "prepare_btc_rbf_bump" })
+  );
+
+  registerTool(server,
+    "register_btc_multisig_wallet",
+    {
+      description:
+        "One-time registration of a multi-sig Bitcoin wallet policy with the Ledger BTC " +
+        "app (BIP-388 wallet policies). REQUIREMENTS: Ledger plugged in over USB, device " +
+        "unlocked, the 'Bitcoin' app open on-screen. Constructs a " +
+        "`wsh(sortedmulti(M,@0/**,@1/**,...))` descriptor from the supplied cosigners, " +
+        "verifies the connected Ledger's master fingerprint matches exactly one cosigner " +
+        "slot, calls Ledger's `registerWallet` (the device walks every cosigner xpub " +
+        "fingerprint on-screen for verification — the user MUST confirm each fingerprint " +
+        "matches what they expect, since this is the moment that anchors the policy), " +
+        "and persists the descriptor + 32-byte HMAC. The HMAC is reused on every " +
+        "subsequent `sign_btc_multisig_psbt` call so the user only walks the descriptor " +
+        "approval flow once per setup. Phase 2 scope: P2WSH (`wsh`) only. Hard-validates " +
+        "every cosigner xpub via @scure/bip32 round-trip — typos that would silently " +
+        "register a wallet we can never sign with are refused up-front.",
+      inputSchema: registerBitcoinMultisigWalletInput.shape,
+    },
+    handler(registerBtcMultisigWallet, { toolName: "register_btc_multisig_wallet" })
+  );
+
+  registerTool(server,
+    "sign_btc_multisig_psbt",
+    {
+      description:
+        "Co-signer flow — adds OUR Ledger signature to a multi-sig PSBT produced by an " +
+        "external initiator (Sparrow / Specter / Caravan / a peer running this server). " +
+        "Looks up the registered wallet by name, decodes the PSBT, validates every input " +
+        "carries a `bip32_derivation` entry for our master fingerprint (defense against " +
+        "being tricked into signing for a foreign tx), forwards to the Ledger device " +
+        "for the on-device output walkthrough (the user MUST verify every output " +
+        "address + amount on-device matches the chat-side verification block before " +
+        "approving), splices our partial signature(s) into the PSBT, returns the " +
+        "partial PSBT for the user to share back to the coordinator. We do NOT finalize " +
+        "or broadcast — that's the initiator's job once they have all M signatures. " +
+        "Phase 2 scope: P2WSH wallets registered via `register_btc_multisig_wallet`.",
+      inputSchema: signBitcoinMultisigPsbtInput.shape,
+    },
+    handler(signBtcMultisigPsbt, { toolName: "sign_btc_multisig_psbt" })
   );
 
   registerTool(server,

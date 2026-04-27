@@ -1516,6 +1516,74 @@ export interface PairedBitcoinEntry {
 }
 
 /**
+ * Cosigner entry inside a registered multi-sig wallet policy. Carries
+ * the BIP-32 extended pubkey + master fingerprint + derivation path
+ * Ledger's wallet-policy descriptor needs to identify each signer slot.
+ *
+ * `isOurs` flags which entry corresponds to the paired Ledger device —
+ * exactly one entry has it `true` after `register_btc_multisig_wallet`
+ * verifies the user's master fingerprint + derived xpub against the
+ * cosigners list. Foreign cosigner entries (`isOurs: false`) carry only
+ * public material and are NOT touched by this server beyond shaping the
+ * descriptor; their xpubs come from out-of-band coordination (each
+ * cosigner exports their xpub independently).
+ */
+export interface PairedBitcoinMultisigCosigner {
+  /** BIP-32 extended public key (xpub/Ypub/Zpub form). */
+  xpub: string;
+  /** 4-byte master fingerprint as 8 lowercase hex chars (no `0x`). */
+  masterFingerprint: string;
+  /**
+   * Derivation path leading to `xpub`, no leading `m/`. Standard BIP-48
+   * P2WSH multisig: `48'/0'/<account>'/2'`. The `/<change>/<index>`
+   * leaves are appended at signing time via the descriptor template's
+   * `@N/**` wildcard.
+   */
+  derivationPath: string;
+  /** True for exactly one entry — the one this Ledger can sign with. */
+  isOurs: boolean;
+}
+
+/**
+ * Registered multi-sig wallet policy (BIP-388 Ledger descriptor). Persisted
+ * across server restarts; reused by every subsequent `sign_btc_multisig_psbt`
+ * call against the same setup.
+ *
+ * `policyHmac` is the 32-byte HMAC the Ledger BTC app issues during
+ * `registerWallet` and demands on every future `signPsbt(policy, hmac)`
+ * call — it cryptographically anchors the on-device policy approval to
+ * this server's stored copy. Without the HMAC the device re-prompts the
+ * full policy verification flow on every signature; storing it means the
+ * user only walks through xpub fingerprints once per setup.
+ *
+ * Phase 2 scope: `wsh(sortedmulti(M,@0/**,@1/**,...))` (P2WSH native
+ * segwit). Taproot multi-sig (`tr(multi_a(...))`) and `sh-wsh` wrapped
+ * multi-sig are deferred — small audience, distinct script types.
+ */
+export interface PairedBitcoinMultisigWallet {
+  /** User-chosen label, ASCII, ≤ 16 bytes (Ledger device limit). Unique within `bitcoinMultisig[]`. */
+  name: string;
+  /** Threshold M in M-of-N. */
+  threshold: number;
+  /** Total signers N. */
+  totalSigners: number;
+  /** Script type — Phase 2 is "wsh" only. */
+  scriptType: "wsh";
+  /**
+   * The Miniscript descriptor template registered with the device, e.g.
+   * `wsh(sortedmulti(2,@0/**,@1/**,@2/**))`. Slot indices `@N` correspond
+   * to entries in `cosigners` in registration order.
+   */
+  descriptor: string;
+  /** Cosigners in slot order. Exactly one entry has `isOurs: true`. */
+  cosigners: PairedBitcoinMultisigCosigner[];
+  /** 32-byte HMAC from `app.registerWallet`, hex-encoded (no `0x`). */
+  policyHmac: string;
+  /** Bitcoin app version at registration time, for diagnostics. */
+  appVersion: string;
+}
+
+/**
  * Litecoin pairing entry. Mirror of `PairedBitcoinEntry`. The 4
  * standard mainnet address types map to Litecoin's L/M/ltc1q/ltc1p
  * forms instead of BTC's 1/3/bc1q/bc1p.
@@ -1620,6 +1688,13 @@ export interface UserConfig {
      * write-through-to-disk semantics as the Solana / TRON slices.
      */
     bitcoin?: PairedBitcoinEntry[];
+    /**
+     * Registered Bitcoin multi-sig wallet policies. One entry per
+     * registered wallet; each carries the descriptor + cosigner xpubs +
+     * Ledger policy HMAC needed to sign subsequent PSBTs without
+     * re-walking the on-device descriptor approval flow.
+     */
+    bitcoinMultisig?: PairedBitcoinMultisigWallet[];
     /**
      * Litecoin pairings — same shape as the Bitcoin slice, BIP-44
      * coin_type 2 instead of 0.
