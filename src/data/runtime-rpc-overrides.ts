@@ -42,7 +42,13 @@ interface ServiceConfig {
   buildResolvedValue: (apiKey: string) => string;
   /** Signup URL surfaced in the nudge text. */
   signupUrl: string;
-  /** Build the nudge block (markdown) given the current error count. */
+  /**
+   * Build the nudge block (markdown). `errorCount` is 0 for proactive
+   * nudges (fired before the user has hit any rate-limit error) and >0
+   * for reactive nudges (fired by `recordPublicError`). Implementations
+   * branch on the count to swap the lead-in copy: "you'll likely hit
+   * throttling shortly" vs "you've already hit N rate-limit errors".
+   */
   renderNudge: (errorCount: number) => string;
 }
 
@@ -67,17 +73,33 @@ const SERVICE_CONFIGS: Record<ServiceId, ServiceConfig> = {
     buildResolvedValue: (apiKey) =>
       `https://mainnet.helius-rpc.com/?api-key=${apiKey}`,
     signupUrl: "https://dashboard.helius.dev/",
-    renderNudge: (errorCount) =>
-      `[VAULTPILOT_DEMO — Helius setup nudge]\n\n` +
-      `Public Solana RPC has hit ${errorCount} rate-limit error${errorCount === 1 ? "" : "s"} this session. ` +
-      `Public Solana endpoints throttle aggressively under any real walkthrough.\n\n` +
-      `Free Helius API key takes 60 seconds:\n` +
-      `  1. Open [Helius dashboard](https://dashboard.helius.dev/) — sign in with GitHub or email.\n` +
-      `  2. Dashboard auto-creates a default API key on first login. Copy it (UUID format: 8-4-4-4-12 hex).\n` +
-      `  3. Paste the key into chat. The agent will call \`set_helius_api_key({ apiKey: "<paste>" })\` for you.\n\n` +
-      `The key is held in process memory only — survives until the MCP server restarts. ` +
-      `To persist across restarts, exit demo mode (unset VAULTPILOT_DEMO + restart) and run ` +
-      `\`vaultpilot-mcp-setup\` to save the key to ~/.vaultpilot-mcp/config.json.`,
+    renderNudge: (errorCount) => {
+      const leadIn =
+        errorCount === 0
+          ? // Proactive: fired on first Solana RPC use when public fallback
+            // is in play. Wording aimed at "before you hit errors" — surfaces
+            // the fix path during the user's first read tool, not after they
+            // see 9 confusing rate-limit failures (issue #410).
+            `Solana RPC is using the public mainnet endpoint (api.mainnet-beta.solana.com). ` +
+            `That endpoint throttles aggressively under any real walkthrough — portfolio reads, ` +
+            `staking lookups, and swap quotes typically trip 429s within the first few calls.`
+          : // Reactive: fires on first error of the session and every multiple
+            // of 10 thereafter (10, 20, 30, ...). Phrased as a count so the
+            // user knows how bad it's already gotten.
+            `Public Solana RPC has hit ${errorCount} rate-limit error${errorCount === 1 ? "" : "s"} this session. ` +
+            `Public Solana endpoints throttle aggressively under any real walkthrough.`;
+      return (
+        `[VAULTPILOT_DEMO — Helius setup nudge]\n\n` +
+        `${leadIn}\n\n` +
+        `Free Helius API key takes 60 seconds:\n` +
+        `  1. Open [Helius dashboard](https://dashboard.helius.dev/) — sign in with GitHub or email.\n` +
+        `  2. Dashboard auto-creates a default API key on first login. Copy it (UUID format: 8-4-4-4-12 hex).\n` +
+        `  3. Paste the key into chat. The agent will call \`set_helius_api_key({ apiKey: "<paste>" })\` for you.\n\n` +
+        `The key is held in process memory only — survives until the MCP server restarts. ` +
+        `To persist across restarts, exit demo mode (unset VAULTPILOT_DEMO + restart) and run ` +
+        `\`vaultpilot-mcp-setup\` to save the key to ~/.vaultpilot-mcp/config.json.`
+      );
+    },
   },
   etherscan: {
     id: "etherscan",
@@ -114,6 +136,15 @@ const errorCounts = new Map<ServiceId, number>();
 const pendingNudges = new Set<ServiceId>();
 
 /**
+ * Once-per-session flag: which services have already had their
+ * proactive nudge queued (independent of the reactive error-count
+ * cadence). Without this, every cached-Connection rebuild would
+ * re-queue the proactive nudge. Cleared on `setRuntimeOverride` (the
+ * user has acted) and on test reset.
+ */
+const proactiveNudgesFired = new Set<ServiceId>();
+
+/**
  * Validate + store an API key for the given service. Throws on
  * malformed input rather than storing garbage. Side effects: resets
  * the per-service error counter + clears any pending nudge for this
@@ -148,6 +179,11 @@ export function setRuntimeOverride(
   overrides.set(service, { apiKey, resolvedValue, setAt });
   errorCounts.set(service, 0);
   pendingNudges.delete(service);
+  // The user has acted; don't re-queue the proactive notice if a future
+  // call somehow flips back to the public fallback (override cleared, key
+  // expired, etc.). Cleared in `clearRuntimeOverride` so a deliberate
+  // reset DOES re-arm it.
+  proactiveNudgesFired.add(service);
   return { resolvedValue, setAt, apiKeySuffix: apiKey.slice(-4) };
 }
 
@@ -174,6 +210,10 @@ export function getRuntimeOverrideStatus(service: ServiceId): {
 /** Clears the runtime override for one service. */
 export function clearRuntimeOverride(service: ServiceId): void {
   overrides.delete(service);
+  // Re-arm the proactive nudge so a deliberate clear (e.g. a test
+  // tearing down state, or a future tool that lets the user revoke an
+  // override) gets the heads-up again on the next public-fallback use.
+  proactiveNudgesFired.delete(service);
 }
 
 /**
@@ -199,6 +239,32 @@ export function recordPublicError(service: ServiceId): void {
 /** Read-only counter accessor for tests + diagnostic surfaces. */
 export function getPublicErrorCount(service: ServiceId): number {
   return errorCounts.get(service) ?? 0;
+}
+
+/**
+ * Issue #410 — fired the FIRST time the public-fallback path is used for
+ * a service, BEFORE any rate-limit error. Queues the proactive variant of
+ * the setup nudge so the user gets a heads-up during their first read
+ * tool, not after they've seen 9 confusing rate-limit failures.
+ *
+ * No-op when:
+ *   - An override is already set (the user has a key; nothing to nudge).
+ *   - The proactive nudge has already fired this session (every cached-
+ *     `Connection` rebuild calls this; we want one notice, not many).
+ *   - A reactive nudge is already pending for this service (a real error
+ *     count is more useful than the speculative "you'll likely hit
+ *     throttling" wording — let the reactive one win).
+ *
+ * Doesn't bump `errorCounts` — that stays tied to actual errors, so the
+ * proactive notice renders with `errorCount === 0` and the reactive
+ * variants pick up from 1 normally.
+ */
+export function recordProactivePublicAccess(service: ServiceId): void {
+  if (overrides.has(service)) return;
+  if (proactiveNudgesFired.has(service)) return;
+  if (pendingNudges.has(service)) return;
+  proactiveNudgesFired.add(service);
+  pendingNudges.add(service);
 }
 
 /**
@@ -281,4 +347,5 @@ export function _resetRuntimeRpcOverridesForTests(): void {
   overrides.clear();
   errorCounts.clear();
   pendingNudges.clear();
+  proactiveNudgesFired.clear();
 }
