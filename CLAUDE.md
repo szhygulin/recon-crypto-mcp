@@ -26,3 +26,14 @@
 
 ## Chat Output Formatting
 - Prefer Markdown hyperlinks over raw URLs everywhere: `[label](url)` instead of pasting the full URL inline. This keeps the chat scannable — long URLs (especially swiss-knife decoder URLs with multi-KB calldata query strings, Etherscan tx URLs with hashes, tenderly/phalcon simulation URLs) wrap the terminal into unreadable walls when pasted raw. Apply in user-facing responses AND in any text the server instructs the agent to render (verification blocks, prepare receipts, etc.). Raw URLs are acceptable only when the link is short and already scannable (e.g. a bare domain like `https://ledger.com`) or when explicitly required for machine-readable contexts (e.g. inside a JSON paste-block the user copies into another tool).
+
+## Push-Back Discipline
+- **If the user's request is built on a faulty premise that means the action won't achieve their stated goal, push back BEFORE acting — don't execute and then add a footnote.** Mid-response caveats ("Important caveat: this won't actually fix the thing you asked for") are evidence the wrong action was taken. The right move is to stop, surface the premise mismatch in plain terms, and ask which way to go.
+- Concrete tells that you're about to execute a misguided ask:
+  - Re-running a workflow against a frozen tag/commit/branch that predates the fix the user is trying to apply.
+  - Re-broadcasting a tx with the same nonce when the original was confirmed (would just revert).
+  - Re-querying an API with the same args after a deterministic failure.
+  - Wrapping a destructive action with a comment like "this won't really do what you want, but doing it anyway".
+- Format for push-back: one sentence stating the mismatch + the two or three concrete alternative paths + a question about which to pursue. Keep it short — the goal is to unblock the user's decision, not lecture.
+- If the user explicitly says "do it anyway" after the push-back, proceed. The discipline is about surfacing the issue, not vetoing the user.
+- **Past incident (2026-04-27)**: user asked to retrigger release-binaries.yml against the v0.9.4 tag to recover a missing macos-arm64 binary upload. The tag was frozen at a commit that predated the size + retry fixes (#346 / #349 / #361) just merged into main, so the rerun would have produced the same broken-upload-prone 504MB binary. Caught the issue mid-response but executed the rerun anyway. Right move was to flag the frozen-tag problem first and recommend cutting v0.9.5 (with all fixes baked in) as the alternative.
