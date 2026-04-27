@@ -1,6 +1,7 @@
 import { SignClient } from "@walletconnect/sign-client";
 import type { SessionTypes } from "@walletconnect/types";
 import { getSdkError } from "@walletconnect/utils";
+import { pinLedgerLivePeer, type PeerPinResult } from "./walletconnect-peer-pin.js";
 import { chmodSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { PublicClient } from "viem";
@@ -121,6 +122,37 @@ let currentSession: SessionTypes.Struct | null = null;
 let peerUnreachable = false;
 
 /**
+ * Latest result from the Ledger Live peer pin (issue #325 P5). Set
+ * each time a session is restored OR newly approved; null when no
+ * session exists. Read by `getLedgerLivePinStatus()` so diagnostic
+ * tools (`get_ledger_status`) can surface mismatch warnings to the
+ * user without re-checking on every read.
+ */
+let lastPeerPinResult: PeerPinResult | null = null;
+
+/**
+ * Run the Ledger Live peer pin against `session` and stash the
+ * result. Logs a loud warning on mismatch — non-blocking, so a
+ * legitimate-but-unusual peer (dev build, self-built Ledger Live)
+ * doesn't brick signing. The user retains the on-device approval as
+ * the trust root.
+ */
+function applyPeerPin(session: SessionTypes.Struct): PeerPinResult {
+  const result = pinLedgerLivePeer(session);
+  lastPeerPinResult = result;
+  if (result.verdict !== "match") {
+    // eslint-disable-next-line no-console
+    console.warn(`[vaultpilot wc-peer-pin] ${result.message}`);
+  }
+  return result;
+}
+
+/** Latest peer-pin verdict, or null when no session is being tracked. */
+export function getLedgerLivePinStatus(): PeerPinResult | null {
+  return lastPeerPinResult;
+}
+
+/**
  * Background keepalive timer. While a session exists we ping the peer over
  * the relay every `KEEPALIVE_INTERVAL_MS` so the relay keeps the topic
  * subscription warm and we get a continuous reachability signal (used to
@@ -221,6 +253,7 @@ export async function getSignClient(): Promise<InstanceType<typeof SignClient>> 
   //     surface the unreachable hint, but KEEP the session so reopening
   //     LL-WC resumes via the next successful keepalive without a re-pair.
   if (currentSession) {
+    applyPeerPin(currentSession);
     const liveness = await verifySessionAlive(client, currentSession.topic);
     peerUnreachable = liveness !== "alive";
     startKeepalive(client, currentSession.topic);
@@ -239,6 +272,7 @@ function handleSessionEndedByPeer(): void {
   stopKeepalive();
   currentSession = null;
   peerUnreachable = false;
+  lastPeerPinResult = null;
   patchUserConfig({
     walletConnect: { sessionTopic: undefined, pairingTopic: undefined },
   });
@@ -397,6 +431,7 @@ export async function initiatePairing(): Promise<PairResult> {
       const session = await approval();
       currentSession = session;
       peerUnreachable = false;
+      applyPeerPin(session);
       patchUserConfig({
         walletConnect: {
           sessionTopic: session.topic,
