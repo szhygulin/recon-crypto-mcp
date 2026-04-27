@@ -71,19 +71,37 @@ this to the client's MCP-server config (paths in
 }
 ```
 
-**2. Run the setup wizard once** to write `~/.vaultpilot-mcp/config.json`
-and clone the companion skills:
+Then tell the user to **restart their MCP client** so the new tools
+become visible. **This is enough for read-only portfolio queries** —
+the server falls back to free public RPCs (PublicNode for EVM, public
+Solana mainnet) when no `~/.vaultpilot-mcp/config.json` is present, so
+first-contact `"show me my portfolio"` works out of the box. A one-time
+stderr warning per chain tells the user when a public-RPC fallback is
+in effect, so 429-driven coverage failures have a clear remediation path.
+
+**2. (Optional follow-up) Run the setup wizard** to upgrade off public
+RPCs and / or install the companion skills:
 
 ```
 npx -y -p vaultpilot-mcp vaultpilot-mcp-setup --non-interactive --json
 ```
 
+When to suggest this to the user:
+
+- They want to upgrade off the rate-limited public-RPC fallbacks
+  (Helius / Infura / Alchemy / TronGrid / Etherscan keys — the wizard
+  prompts per-key, none mandatory).
+- They're going to sign transactions (the wizard offers to clone
+  [`vaultpilot-skill`](https://github.com/szhygulin/vaultpilot-skill)
+  for preflight integrity checks and
+  [`vaultpilot-setup-skill`](https://github.com/szhygulin/vaultpilot-setup-skill)
+  for the conversational `/setup` flow).
+- They've hit 429 throttling or `coverage: errored` responses on
+  portfolio reads.
+
 The wizard emits an `InstallEnvelope` JSON on stdout — parse it and
 relay `next_steps` to the user verbatim. Same output shape and
 post-install relay rules as the shell installer below.
-
-Then tell the user to **restart their MCP client** so the new tools
-become visible.
 
 **Version pinning** (for reproducibility): replace `vaultpilot-mcp`
 with `vaultpilot-mcp@<version>` in both commands above (e.g.
@@ -129,20 +147,20 @@ Get explicit consent. Tell the user:
 
 - "This installs a self-custodial crypto tool. No keys are ever
   collected — signing happens on your Ledger hardware wallet later."
-- "It will register with your MCP clients (Claude Desktop / Claude
-  Code / Cursor — whichever you have installed) automatically."
-- "After install, you'll need to **restart your MCP client** for the
-  vaultpilot-mcp tools to become visible."
-- "It runs against free public RPC endpoints by default. For heavier
-  use you can add provider API keys later by re-running the setup
-  wizard interactively (`vaultpilot-mcp-setup` if installed globally,
-  or `npx -y -p vaultpilot-mcp vaultpilot-mcp-setup` for the npx
-  path)."
+- "Step 1 is just registering the MCP server with your client. Step 2
+  (the optional setup wizard) only runs if you want to add API keys
+  for higher rate limits, or install the companion preflight skills."
+- "After step 1, **restart your MCP client** so the vaultpilot-mcp
+  tools become visible. That's enough for read-only portfolio queries
+  — the server defaults to public RPCs."
+- "Provider API keys (Helius / Infura / Alchemy / TronGrid / Etherscan)
+  are optional and add-on-demand — re-run the wizard any time."
 
 ## What to tell the user AFTER the install
 
-Both install paths above end at the same setup wizard, which emits a
-JSON envelope on stdout. Parse it and:
+The shell installer always runs the setup wizard; the npm path runs it
+only if step 2 is invoked. When the wizard runs, it emits an
+`InstallEnvelope` JSON on stdout. Parse it and:
 
 - If `status: "installed"`: relay `next_steps` verbatim. The first
   entry will name the MCP client(s) the user needs to restart.
@@ -156,6 +174,11 @@ JSON envelope on stdout. Parse it and:
   `clients_already_present` are both empty, the user has no MCP client
   installed at all — tell them to install Claude Desktop / Code /
   Cursor first, then re-run the installer.
+
+If you took the npm path's step 1 only (no wizard run), there's no
+envelope to relay — just confirm the `claude mcp add` / config-edit
+succeeded, ask the user to restart their MCP client, and offer the
+wizard as a follow-up if they want API keys or the preflight skills.
 
 ## What this server's tool surface looks like
 
