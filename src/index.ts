@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { parseDoctorFlags, runDoctor, formatDoctorReport } from "./check.js";
 import {
   isDemoMode,
   isSigningTool,
@@ -1040,6 +1041,28 @@ function bigintReplacer(_key: string, value: unknown): unknown {
 }
 
 async function main() {
+  // Issue #359 — pre-restart install validation. `--check` / `--doctor` /
+  // `--health` runs the doctor and exits without touching the MCP server,
+  // so a user (or assisting agent) can verify the install BEFORE incurring
+  // a Claude Code restart. The doctor is purely local: filesystem reads
+  // + env-var inspection, no chain reads or transport open. Static import
+  // (not dynamic) so the binary path stays compatible — issue #330 noted
+  // dynamic imports at startup throw under pkg's snapshot.
+  const doctorFlags = parseDoctorFlags(process.argv);
+  if (doctorFlags.enabled) {
+    const report = runDoctor();
+    if (doctorFlags.json) {
+      // JSON to stdout for tooling that wants to parse the envelope.
+      process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    } else {
+      // Human-readable report to stderr; stdout stays clean so a
+      // wrapper script can pipe `--check --json` separately if it
+      // wants both modes.
+      process.stderr.write(formatDoctorReport(report));
+    }
+    process.exit(report.ok ? 0 : 1);
+  }
+
   // Check for at least one configured RPC path early. We don't hard-fail — the
   // user may only use read-only tools with per-chain env vars. We just warn.
   const cfg = readUserConfig();
@@ -3666,5 +3689,12 @@ async function main() {
 
 main().catch((err) => {
   console.error("[vaultpilot-mcp] fatal:", err);
+  // Issue #359 — when the server crashes at startup, MCP clients
+  // surface only "Failed to connect" with no detail. Surface the
+  // doctor command so the user has an actionable next step instead
+  // of guessing at a blind restart.
+  console.error(
+    "[vaultpilot-mcp] tip: run `npx -y vaultpilot-mcp --check` to validate your install (config, RPC sources, native bindings) without restarting your MCP client.",
+  );
   process.exit(1);
 });

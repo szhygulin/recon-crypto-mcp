@@ -71,6 +71,24 @@ this to the client's MCP-server config (paths in
 }
 ```
 
+**1.5. Verify the install before restarting.** Restart is the
+single most disruptive step in this flow — it drops the user's
+session context. Before triggering it, run the local doctor:
+
+```
+npx -y vaultpilot-mcp --check
+```
+
+The doctor exits 0 with a human-readable summary on stderr when the
+install is healthy. If it reports any `✗` blocker (missing or
+malformed config, Node too old, broken native binding), fix that
+**before** asking the user to restart — every blocker the doctor
+catches would otherwise surface as an opaque "Failed to connect" in
+`claude mcp list` only after the disruptive restart has already
+happened. `⚠` warnings are advisory (read-only paths still work);
+`✗` is the real blocker. Pass `--json` for tooling-friendly output.
+Issue #359.
+
 Then tell the user to **restart their MCP client** so the new tools
 become visible. **This is enough for read-only portfolio queries** —
 the server falls back to free public RPCs (PublicNode for EVM, public
