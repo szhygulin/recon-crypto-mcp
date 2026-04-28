@@ -15,14 +15,9 @@ Bug fixes against an open issue, small focused features matching an existing tra
 
 ## What kinds of comments and PRs are off-topic
 
-Tracking issues — those tagged for design discussion or roadmap follow-up rather than work-ready scope — are **not bounty surfaces**. Unsolicited "I have experience with X, want me to build this?" comments on tracking issues are off-topic and will be hidden as such. The same applies to drive-by PRs from automated bounty-fishing pipelines (templated credentials list + verbatim restate of the issue's own decisions table + closing CTA).
+Tracking issues (tagged for design discussion or roadmap follow-up, not work-ready scope) are **not bounty surfaces**. Unsolicited "I have experience with X, want me to build this?" comments will be hidden. Same for drive-by PRs from automated bounty-fishing pipelines: templated credentials, verbatim restate of the issue's own decisions table, "let me know if you'd like a PR" closer.
 
-This is not a comment on legitimate contributors who happen to be new — those are welcome. The filter is on the bot pattern: opaque GitHub profile, no prior project context, generic boilerplate that adds no information beyond what the issue already says, and a "let me know if you'd like a PR" closer.
-
-If you genuinely want to contribute on a tracking issue, demonstrate it by:
-
-1. Opening a small, focused PR against an actual bug or already-scoped task first, so we have signal that you understand the codebase.
-2. Asking a specific clarifying question that shows you read the issue and the linked code — pick one of the open decisions in the issue and propose a defensible answer with reasoning.
+The filter is on the bot pattern, not on new contributors. To contribute on a tracking issue, either open a small focused PR against an actual bug first (signal that you understand the codebase) or ask a specific clarifying question that shows you read the issue and the linked code — pick an open decision and propose a defensible answer.
 
 ## Testing demo mode locally
 

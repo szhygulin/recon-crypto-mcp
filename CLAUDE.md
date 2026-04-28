@@ -20,8 +20,8 @@
 ## SDK Scope-Probing Discipline
 - **Scope-probe new third-party SDKs BEFORE committing the plan.** Invoke `rnd`. 15-30 min: `npm view <pkg>` for runtime deps + last-published; install into `/tmp/<pkg>-probe/`, read `dist/*.d.ts`; check transit graph for `*-contracts`, hardhat, ethersproject v5, parallel core libs; confirm the API exposes UNSIGNED tx output (Ledger-compatible), not internally-signing helpers.
 - Document the verdict in the plan: SDK / version / red flags / decision (adopt / cherry-pick / skip).
-- Cost of skipping: PR #334 adopted `@uniswap/v3-sdk`; d.ts inspection stopped one level deep — Snyk caught `@uniswap/swap-router-contracts → hardhat-watcher → hardhat → @sentry/node + undici + mocha + solc` at PR-CI. ~2h refactor: drop the SDK, port `getSqrtRatioAtTick` + `Position.fromAmounts` + `mintAmountsWithSlippage` to native bigint, lock bit-exactness via fixtures.
-- Reward: Phase 2/3 (Curve + Balancer) planning — `@curvefi/api` rejected (ethers-coupled signing), `@balancer-labs/sdk` V2 rejected (stale, ethersproject-bound), `@balancer/sdk` V3 accepted (viem-native + V2 helpers). 1 SDK adopted instead of 3.
+- Cost of skipping: PR #334 adopted `@uniswap/v3-sdk`; shallow d.ts inspection missed the `swap-router-contracts → hardhat → solc/sentry/undici/mocha` transit graph that Snyk caught at PR-CI. ~2h refactor to drop the SDK and port the math to native bigint with fixture-locked bit-exactness.
+- Reward: Phase 2/3 (Curve + Balancer) planning rejected `@curvefi/api` (ethers-coupled signing) and `@balancer-labs/sdk` V2 (ethersproject-bound, stale), accepted `@balancer/sdk` V3 (viem-native + V2 helpers). 1 SDK adopted instead of 3.
 
 ## Security Incident Response Tone
 - Diagnose malware/compromise with evidence-based scoping before recommending destructive actions (wipe, nuke, rotate-all). Never delete evidence files before reading them.
@@ -31,23 +31,14 @@
 
 ## Push-Back Discipline
 - **Push back BEFORE acting if the request is built on a faulty premise that won't achieve the user's stated goal.** Mid-response caveats ("won't actually fix the thing you asked for") prove the wrong action got taken.
-- Tells:
-  - Re-running a workflow against a frozen tag/commit that predates the fix.
-  - Re-broadcasting a tx with the same nonce when the original confirmed.
-  - Re-querying an API with the same args after a deterministic failure.
-  - Wrapping a destructive action with "this won't really do what you want, but doing it anyway".
+- Tells: re-running a workflow on a tag that predates the fix; re-broadcasting a tx with a confirmed nonce; wrapping a destructive action with "won't really do what you want, but doing it anyway".
 - Format: one sentence on the mismatch + 2-3 alternatives + a question. Short — unblock the decision, don't lecture.
 - If the user says "do it anyway", proceed.
 - Past incident 2026-04-27: user asked to retrigger release-binaries.yml on the v0.9.4 tag for a missing macos-arm64 upload; tag predated #346 / #349 / #361 (size + retry fixes). Right move was flag the frozen-tag problem and recommend cutting v0.9.5.
 
 ## Smallest-Solution Discipline
 - **Push back with the smallest solution that solves the stated problem.** Minimum change first; escalate only if it demonstrably doesn't cover the requirement. Issue/plan text is a problem description, not a license to build infrastructure.
-- Tells the proposal is too big:
-  - Caching/indexing/persisting a dataset to "simulate" / "replay" one operation.
-  - New module/abstraction/config surface when an inline change at the call site would do.
-  - Background worker / queue / scheduler for an action that fires once per user request.
-  - Generalizing for hypothetical future callers when there's exactly one today.
-  - "While I'm here" refactors bundled into a fix PR.
+- Tells the proposal is too big: persistence layer for a one-shot operation; new module when an inline call-site change would do; background worker/scheduler for an action that fires once per request; generalizing for hypothetical future callers; "while I'm here" refactors bundled into a fix PR.
 - Format: smallest fix + what the larger proposal adds + which scope to pursue. If the issue/plan author specified the heavy approach, surface the lighter one explicitly — don't silently downscope either.
 - If the user says the larger scope is intended, proceed.
 
@@ -61,11 +52,7 @@
 
 ## Rogue-Agent-Only Finding Triage
 - **When the threat is "rogue agent generates harmful advisory text" or "rogue agent fabricates/suppresses MCP results" with no signing flow, close as architectural — don't ship MCP/skill mitigations pretending to fix it.** The skill is text in the agent's context; a hostile agent reads any rule and ignores it. Real defenses live at model-safety-tuning (Anthropic) or chat-client output-filter (Claude Code / Cursor / Desktop) — neither in scope here.
-- Tells:
-  - Output is purely advisory text (no `prepare_*` / `preview_send` / `send_transaction`).
-  - Agent fabricates a security UI (fake `CHECKS PERFORMED` with `{✓}` verdicts).
-  - Agent suppresses or falsifies MCP results before relaying.
-  - Proposed fix is "add a rule to `vaultpilot-preflight/SKILL.md`" with no other layer.
+- Tells: output is purely advisory text (no `prepare_*` / `preview_send` / `send_transaction`); agent fabricates a security UI (fake `CHECKS PERFORMED` with `{✓}` verdicts); agent suppresses or falsifies MCP results; proposed fix is "add a rule to SKILL.md" with no other layer.
 - **Don't confuse with rogue-MCP + cooperating-agent (Role B).** Skill rules genuinely bind a cooperating agent; read-only response-spoofing, fabricated `compare_yields` rows are real targets for skill-side guidance.
 - **Don't confuse with device-layer architectural** (e.g. Ledger blind-sign) — different escalation path (vendor, not model/UI safety).
 - Closing template: brief comment naming the architectural gap, citing #536 (canonical) + vaultpilot-mcp-smoke-test#21 (Role A scope-reframing methodology), one-line recap of why skill rules don't help.
@@ -84,13 +71,7 @@
 
 ## Documentation Style — concise, non-redundant, sharp
 - **In user-facing docs (READMEs, AGENTS.md, INSTALL, prose sections of SECURITY.md, ROADMAP, AND CLAUDE.md itself), state each idea once, in its most natural place.** Long docs accumulate redundancy as features land incrementally — taglines, callouts, intro paragraphs, and feature bullets all end up restating the same pitch because each was written in isolation.
-- Tells:
-  - Same fact in 3+ places (e.g. "durable-nonce protects sends from blockhash expiry" in tagline + Features + Supported chains + Tools).
-  - Intro region with tagline + callout + multi-paragraph "what this is" — pick one.
-  - Tool/feature descriptions explaining what the name implies (`get_token_balance` "fetches a token's balance").
-  - Bullet lists duplicating prose immediately above.
-  - Run-on sentences where two short sentences would land harder.
-  - "Limitations" / "what this isn't" sections re-covering body ground.
+- Tells: same fact in 3+ places; intro region with tagline + callout + multi-paragraph "what this is" (pick one); tool descriptions explaining what the name implies; bullet lists duplicating prose immediately above; "Limitations" sections re-covering body ground.
 - Apply at write time:
   - Lead with the strongest sentence. Don't ramp up.
   - One fact, one home — link from secondary locations instead of duplicating.
@@ -102,3 +83,4 @@
   - Opportunistic dedup is fine while editing for another reason. Standalone churn PRs aren't.
 - Scope: user-facing docs and PR descriptions. Internal plans, memory, code comments, chat replies can stay verbose.
 - Past incident 2026-04-28: README grew to 258 lines with the intro restated four times, Solana durable-nonce in three sections, WC-Tron/Solana fact in two. Rewrite cut to 227 without losing technical content. CLAUDE.md rewritten same day from 110 to 103 by trimming filler — dense rule content compresses less than feature/marketing prose.
+- **Don't re-explain synonyms.** Once a term is named clearly, don't paraphrase it in the next sentence "for clarity" — readers parse repetition as either condescension or signal that the first phrasing was wrong. Pick the strongest term, use it, move on.

@@ -146,48 +146,26 @@ Picks RPC providers, validates keys, optionally pairs Ledger Live, writes `~/.va
 
 ## Demo mode
 
-Try without RPC keys, Ledger pairing, or running the wizard:
+Try without RPC keys, Ledger pairing, or the wizard:
 
 ```bash
 claude mcp add vaultpilot-mcp --env VAULTPILOT_DEMO=true -- npx -y vaultpilot-mcp
 ```
 
-`--demo` is the equivalent CLI flag; an explicit env value wins, so `VAULTPILOT_DEMO=false` is a deterministic opt-out for scripted invocations.
+`--demo` is the equivalent CLI flag; explicit env wins, so `VAULTPILOT_DEMO=false` is a deterministic opt-out for scripted invocations.
 
-- Reads run against real RPC, but every wallet is a curated public persona (`whale`, `defi-degen`, `stable-saver`, `staking-maxi`) — no key access, no signing.
-- `send_transaction` returns a [simulation envelope](src/demo/index.ts): the unsigned tx is `simulate_transaction`'d for revert detection, but nothing is signed and nothing is broadcast.
-- `pair_ledger_*`, `request_capability`, and `sign_message_*` are refused outright (no on-chain simulation equivalent). With no persona selected, signing-class tools also refuse with a structured error pointing at `set_demo_wallet`.
+- Reads run against real RPC; every wallet is a curated public persona (`whale`, `defi-degen`, `stable-saver`, `staking-maxi`).
+- `send_transaction` returns a [simulation envelope](src/demo/index.ts): unsigned tx is `simulate_transaction`'d for revert detection, nothing signed, nothing broadcast.
+- `pair_ledger_*`, `request_capability`, `sign_message_*` are refused outright. With no persona selected, signing-class tools refuse with a structured error pointing at `set_demo_wallet`.
 - Multi-step flows whose preconditions are state changes (e.g. `prepare_solana_nonce_init` → `marinade_stake`) can't be rehearsed end-to-end — simulated sends don't mutate chain state. The MCP surfaces a one-shot hint when it detects the agent-loop trap.
 
-`get_demo_wallet` lists personas + per-chain addresses + `rehearsableFlows`. `set_demo_wallet({ persona })` activates one. State is process-local and ephemeral. `exit_demo_mode` returns a tailored handoff guide for permanent setup.
+`get_demo_wallet` lists personas + addresses + `rehearsableFlows`. `set_demo_wallet({ persona })` activates one. State is process-local. `exit_demo_mode` returns a handoff guide for permanent setup. Demo is a scaffold for first contact, not a sandbox — no virtual chain overlay.
 
-Demo is a scaffold for first contact, not a sandbox — there is no virtual chain overlay. Use `vaultpilot-mcp setup` for permanent setup.
-
-For Solana RPC throttling under multi-tool fan-out, inject a [Helius](https://helius.dev) key at runtime: `set_helius_api_key({ key })`. Demo mode also nudges proactively after 10 public-RPC throttle errors.
+For Solana RPC throttling under multi-tool fan-out, inject a [Helius](https://helius.dev) key at runtime: `set_helius_api_key({ key })`. Demo mode nudges proactively after 10 public-RPC throttle errors.
 
 ## Use with Claude Desktop / Claude Code / Cursor
 
-`vaultpilot-mcp setup` detects installed clients and offers to add a `vaultpilot-mcp` entry to each one's config; existing configs are backed up to `<file>.vaultpilot.bak`. Detected paths:
-
-- Claude Desktop (macOS): `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Claude Desktop (Windows): `%APPDATA%\Claude\claude_desktop_config.json`
-- Claude Desktop (Linux): `~/.config/Claude/claude_desktop_config.json`
-- Claude Code (user-level): `~/.claude.json`
-- Cursor (user-level): `~/.cursor/mcp.json`
-
-Per-project / per-workspace configs are deliberately skipped — the wizard runs from arbitrary CWD; patching the wrong project is worse than skipping.
-
-Manual config:
-
-```json
-{
-  "mcpServers": {
-    "vaultpilot-mcp": { "command": "vaultpilot-mcp" }
-  }
-}
-```
-
-From source: `"command": "node"`, `"args": ["/abs/path/to/vaultpilot-mcp/dist/index.js"]`.
+`vaultpilot-mcp setup` detects installed clients and registers vaultpilot-mcp with each (existing configs backed up to `<file>.vaultpilot.bak`). Per-project / per-workspace configs are skipped — the wizard runs from arbitrary CWD. For manual wiring or the per-client config paths, see [INSTALL.md §5](./INSTALL.md#5-manual-mcp-client-wiring-if-auto-register-didnt-run).
 
 ## Environment variables
 
