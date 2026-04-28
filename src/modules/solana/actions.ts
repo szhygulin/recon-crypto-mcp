@@ -3,6 +3,7 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
+  TransactionInstruction,
 } from "@solana/web3.js";
 import {
   createAssociatedTokenAccountInstruction,
@@ -99,6 +100,45 @@ export interface SolanaNativeSendParams {
   to: string;
   /** Decimal SOL string ("0.5") or "max" for wallet balance minus safety buffer + fee. */
   amount: string;
+  /**
+   * Optional UTF-8 memo. When set, the tx appends an SPL Memo program ix
+   * (`MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`) carrying these bytes.
+   * The Ledger Solana app clear-signs Memo program calls.
+   */
+  memo?: string;
+}
+
+/**
+ * SPL Memo program v2 — the Solana convention since 2021. Ledger's Solana
+ * app clear-signs calls to this program and renders the UTF-8 memo on the
+ * device screen, so we don't need a Trusted-Name TLV / blind-sign path.
+ */
+const SOLANA_MEMO_PROGRAM_ID = new PublicKey(
+  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+);
+
+/**
+ * Hard byte-length cap for the encoded memo. The Memo program itself
+ * accepts up to ~566 bytes per ix, but the binding constraint is the
+ * 1232-byte tx-size limit when combined with our other ixs (advance-nonce
+ * + compute-budget pair + transfer). 256 bytes leaves comfortable headroom
+ * even on first-time-setup paths that bundle nonce-init.
+ */
+const SOLANA_MEMO_MAX_BYTES = 256;
+
+function buildMemoIx(memo: string): TransactionInstruction {
+  const data = Buffer.from(memo, "utf8");
+  if (data.length > SOLANA_MEMO_MAX_BYTES) {
+    throw new Error(
+      `memo too long: ${data.length} bytes (UTF-8) exceeds ${SOLANA_MEMO_MAX_BYTES}-byte cap. ` +
+        `Shorten the memo; multibyte characters cost more than 1 byte each.`,
+    );
+  }
+  return new TransactionInstruction({
+    keys: [],
+    programId: SOLANA_MEMO_PROGRAM_ID,
+    data,
+  });
 }
 
 /**
@@ -281,28 +321,40 @@ export async function buildSolanaNativeSend(
     }),
   );
 
+  // Memo ix appended last — order doesn't affect semantics for the Memo
+  // program (it doesn't gate the transfer), but trailing it keeps the
+  // ix[0] = nonceAdvance / nonceInit invariant the Agave detector relies
+  // on for durable-nonce txs.
+  if (p.memo !== undefined) {
+    draftTx.add(buildMemoIx(p.memo));
+  }
+
   const nonceAccountStr = noncePubkey.toBase58();
   const setupSuffix = firstTimeSetup
     ? ` (+ one-time durable-nonce account setup, ${formatSol(reservedForNonceRent)} SOL rent reclaimable later via prepare_solana_nonce_close)`
     : "";
+  const memoSuffix = p.memo !== undefined ? ` (memo: "${p.memo}")` : "";
   const estimatedFeeLamportsTotal = totalFee + nonceRentLamports;
+  const memoFunctionSuffix = p.memo !== undefined ? "+memo" : "";
   const draft: SolanaTxDraft = {
     kind: "legacy",
     draftTx,
     meta: {
       action: "native_send",
       from: p.wallet,
-      description: `Send ${displayAmount} SOL to ${p.to}${setupSuffix}`,
+      description: `Send ${displayAmount} SOL to ${p.to}${memoSuffix}${setupSuffix}`,
       decoded: {
-        functionName: firstTimeSetup
-          ? "solana.system.transfer+createNonceAccount"
-          : "solana.system.transfer",
+        functionName:
+          (firstTimeSetup
+            ? "solana.system.transfer+createNonceAccount"
+            : "solana.system.transfer") + memoFunctionSuffix,
         args: {
           from: p.wallet,
           to: p.to,
           amount: `${displayAmount} SOL`,
           lamports: lamports.toString(),
           nonceAccount: nonceAccountStr,
+          ...(p.memo !== undefined ? { memo: p.memo } : {}),
           ...(firstTimeSetup
             ? {
                 firstTimeNonceSetup: "true",
