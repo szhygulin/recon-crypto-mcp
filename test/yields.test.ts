@@ -104,6 +104,7 @@ describe("compareYields composer", () => {
     aave?: { rows: any[]; unavailable?: any[] };
     compound?: { rows: any[]; unavailable?: any[] };
     lido?: { rows: any[]; unavailable?: any[] };
+    defillama?: { rows: any[]; unavailable?: any[] };
     riskScores?: Record<string, number | undefined>;
   }) {
     vi.doMock("../src/modules/yields/adapters/aave.js", () => ({
@@ -120,6 +121,11 @@ describe("compareYields composer", () => {
       readLidoYields: vi
         .fn()
         .mockResolvedValue(opts.lido ?? { rows: [], unavailable: [] }),
+    }));
+    vi.doMock("../src/modules/yields/adapters/defillama.js", () => ({
+      readDefiLlamaYields: vi
+        .fn()
+        .mockResolvedValue(opts.defillama ?? { rows: [], unavailable: [] }),
     }));
     vi.doMock("../src/modules/security/risk-score.js", () => ({
       getProtocolRiskScore: vi.fn(async (slug: string) => ({
@@ -248,14 +254,18 @@ describe("compareYields composer", () => {
     expect(compoundUnavail[0].reason).toContain("RPC down");
   });
 
-  it("surfaces deferred protocols (Morpho/MarginFi/Kamino/...) in unavailable[]", async () => {
+  it("surfaces remaining deferred protocols (MarginFi / EigenLayer / native-stake) in unavailable[]", async () => {
     const { compareYields } = await withMocks({});
     const out = await compareYields({ asset: "USDC" });
     const protocols = new Set(out.unavailable.map((u: any) => u.protocol));
-    expect(protocols.has("morpho-blue")).toBe(true);
     expect(protocols.has("marginfi")).toBe(true);
-    expect(protocols.has("kamino")).toBe(true);
     expect(protocols.has("eigenlayer")).toBe(true);
+    expect(protocols.has("native-stake")).toBe(true);
+    // Morpho / Kamino / Marinade / Jito now ship live via the DefiLlama adapter.
+    expect(protocols.has("morpho-blue")).toBe(false);
+    expect(protocols.has("kamino")).toBe(false);
+    expect(protocols.has("marinade")).toBe(false);
+    expect(protocols.has("jito")).toBe(false);
   });
 
   it("expands 'stables' into USDC + USDT and queries adapters for both", async () => {
