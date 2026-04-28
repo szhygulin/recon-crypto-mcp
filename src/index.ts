@@ -1043,7 +1043,26 @@ function registerTool(
     if (!isDemoMode()) return realHandler(args);
     if (alwaysGated) return refuseAlwaysGated(args);
     if (conditionallyGated) {
-      if (!isLiveMode()) return refuseDefaultMode(args);
+      if (!isLiveMode()) {
+        // Issue #446 — auto-select the whale persona for `prepare_*`
+        // tools so the user can inspect what a tx would look like
+        // without first running `set_demo_wallet`. Whale chosen because
+        // it's the only persona with curated cells on all four chain
+        // families (EVM / Solana / TRON / Bitcoin) — picking a thinner
+        // persona would just defer the gap to BTC- / TRON- specific
+        // prepare flows. Smoke-test pass found ~70% of demo signing-
+        // flow halts were users hitting this gate even though they
+        // only wanted a draft. preview_* / verify_* / send_transaction
+        // continue to refuse — those are downstream of a deliberate
+        // wallet choice, not inspection-only tools. Users who want a
+        // different persona can call `set_demo_wallet` explicitly
+        // before the next prepare call.
+        if (name.startsWith("prepare_")) {
+          setLivePersona("whale");
+        } else {
+          return refuseDefaultMode(args);
+        }
+      }
       // Live mode: prepare_* / preview_* / verify_* / get_verification_artifact
       // run the real handler. send_transaction is intercepted post-real to
       // wrap the result in a simulation envelope (the broadcast layer is the
