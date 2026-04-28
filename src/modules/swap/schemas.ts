@@ -143,6 +143,35 @@ const baseSwapSchema = z.object({
         '"arbitrum-bridge". Mirrors `exchanges` but for bridge selection. Only ' +
         "applies to cross-chain routes; ignored for intra-chain swaps.",
     ),
+  // Issue #439 — blocklists + ranking criterion.
+  excludeExchanges: z
+    .array(z.string().min(1).max(40))
+    .max(20)
+    .optional()
+    .describe(
+      "Blocklist version of `exchanges` — DEXes/aggregators LiFi must avoid. Use " +
+        'when the user says "not via 1inch" or "avoid Sushiswap". Independent of ' +
+        "`exchanges`: pass both to constrain to allowlist minus blocklist. Pass-through " +
+        "to LiFi's `denyExchanges`.",
+    ),
+  excludeBridges: z
+    .array(z.string().min(1).max(40))
+    .max(20)
+    .optional()
+    .describe(
+      "Blocklist version of `bridges` — bridge protocols LiFi must avoid on cross-chain " +
+        "routes. Pass-through to LiFi's `denyBridges`.",
+    ),
+  order: z
+    .enum(["RECOMMENDED", "FASTEST", "CHEAPEST", "SAFEST"])
+    .optional()
+    .describe(
+      "Route ranking criterion. RECOMMENDED (default) — LiFi's mix of price + safety. " +
+        "CHEAPEST — pick the route with the highest output amount; use this for " +
+        '"best rate available" intent. FASTEST — minimize execution time (relevant ' +
+        "for cross-chain bridges where settlement varies). SAFEST — prefer the " +
+        "most-vetted tool set. Pass-through to LiFi's `order`.",
+    ),
 });
 
 export const getSwapQuoteInput = baseSwapSchema;

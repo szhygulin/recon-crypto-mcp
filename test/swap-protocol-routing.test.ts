@@ -217,6 +217,94 @@ describe("issue #411 — routedVia surfacing in getSwapQuote", () => {
   });
 });
 
+describe("issue #439 — excludeExchanges/excludeBridges/order forwarding", () => {
+  it("forwards `excludeExchanges` to LiFi as denyExchanges", async () => {
+    fetchQuoteMock.mockResolvedValue(makeIntraChainQuote("uniswap"));
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    await getSwapQuote({
+      wallet: EVM_WALLET,
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: ETH_USDC,
+      toToken: ETH_WETH,
+      amount: "100",
+      excludeExchanges: ["sushiswap", "0x"],
+    });
+    const lifiCall = fetchQuoteMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(lifiCall.denyExchanges).toEqual(["sushiswap", "0x"]);
+    expect(lifiCall.allowExchanges).toBeUndefined();
+  });
+
+  it("forwards `excludeBridges` to LiFi as denyBridges", async () => {
+    fetchQuoteMock.mockResolvedValue(makeIntraChainQuote("across"));
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    await getSwapQuote({
+      wallet: EVM_WALLET,
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: ETH_USDC,
+      toToken: ETH_WETH,
+      amount: "100",
+      excludeBridges: ["hop"],
+    });
+    const lifiCall = fetchQuoteMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(lifiCall.denyBridges).toEqual(["hop"]);
+  });
+
+  it("forwards `order: \"CHEAPEST\"` to LiFi as order", async () => {
+    fetchQuoteMock.mockResolvedValue(makeIntraChainQuote("1inch"));
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    await getSwapQuote({
+      wallet: EVM_WALLET,
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: ETH_USDC,
+      toToken: ETH_WETH,
+      amount: "100",
+      order: "CHEAPEST",
+    });
+    const lifiCall = fetchQuoteMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(lifiCall.order).toBe("CHEAPEST");
+  });
+
+  it("allows allow-list + deny-list + order to be combined", async () => {
+    fetchQuoteMock.mockResolvedValue(makeIntraChainQuote("uniswap"));
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    await getSwapQuote({
+      wallet: EVM_WALLET,
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: ETH_USDC,
+      toToken: ETH_WETH,
+      amount: "100",
+      exchanges: ["uniswap", "1inch"],
+      excludeExchanges: ["sushiswap"],
+      order: "FASTEST",
+    });
+    const lifiCall = fetchQuoteMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(lifiCall.allowExchanges).toEqual(["uniswap", "1inch"]);
+    expect(lifiCall.denyExchanges).toEqual(["sushiswap"]);
+    expect(lifiCall.order).toBe("FASTEST");
+  });
+
+  it("does NOT set deny lists or order when omitted (defaults preserved)", async () => {
+    fetchQuoteMock.mockResolvedValue(makeIntraChainQuote("sushiswap"));
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    await getSwapQuote({
+      wallet: EVM_WALLET,
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: ETH_USDC,
+      toToken: ETH_WETH,
+      amount: "100",
+    });
+    const lifiCall = fetchQuoteMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(lifiCall.denyExchanges).toBeUndefined();
+    expect(lifiCall.denyBridges).toBeUndefined();
+    expect(lifiCall.order).toBeUndefined();
+  });
+});
+
 describe("issue #411 — prepareSwap description carries the routing note", () => {
   it("description includes 'via <tool>' even with no filter", async () => {
     fetchQuoteMock.mockResolvedValue(makeIntraChainQuote("sushiswap"));

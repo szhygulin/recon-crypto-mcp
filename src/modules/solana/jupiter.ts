@@ -143,6 +143,20 @@ export interface JupiterQuoteParams {
   amount: string;
   slippageBps: number;
   swapMode?: "ExactIn" | "ExactOut";
+  /**
+   * Issue #439 — restrict Jupiter routing to a specific set of DEXes
+   * (e.g. ["Raydium", "Orca V2"]). When set, Jupiter only considers
+   * pools on the listed DEXes; if no satisfying route exists the API
+   * returns an error rather than silently picking another DEX.
+   * Pass-through to Jupiter's `dexes` query param (comma-separated).
+   */
+  dexes?: string[];
+  /**
+   * Issue #439 — blocklist version of `dexes`. Jupiter routes around
+   * any DEX listed here. Independent of `dexes`; both can be set
+   * simultaneously. Pass-through to Jupiter's `excludeDexes`.
+   */
+  excludeDexes?: string[];
 }
 
 /**
@@ -181,6 +195,12 @@ export async function getJupiterQuote(
     // cap that still lets most routes through (Jupiter's own UI default).
     maxAccounts: "40",
   });
+  // Jupiter v6 expects comma-separated DEX names in a single `dexes` /
+  // `excludeDexes` query param. Per-element `qs.append("dexes", x)` would
+  // produce repeated `dexes=a&dexes=b` which Jupiter rejects.
+  if (p.dexes && p.dexes.length > 0) qs.append("dexes", p.dexes.join(","));
+  if (p.excludeDexes && p.excludeDexes.length > 0)
+    qs.append("excludeDexes", p.excludeDexes.join(","));
   const res = await fetchWithTimeout(`${JUPITER_BASE}/quote?${qs}`);
   if (!res.ok) {
     const body = await res.text();

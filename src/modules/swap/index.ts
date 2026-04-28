@@ -416,6 +416,13 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
     ...(args.bridges && args.bridges.length > 0
       ? { allowBridges: args.bridges }
       : {}),
+    ...(args.excludeExchanges && args.excludeExchanges.length > 0
+      ? { denyExchanges: args.excludeExchanges }
+      : {}),
+    ...(args.excludeBridges && args.excludeBridges.length > 0
+      ? { denyBridges: args.excludeBridges }
+      : {}),
+    ...(args.order !== undefined ? { order: args.order } : {}),
   } as Parameters<typeof fetchQuote>[0];
 
   const [quote, oneInchRaw] = await Promise.all([
@@ -602,6 +609,13 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
     ...(args.bridges && args.bridges.length > 0
       ? { allowBridges: args.bridges }
       : {}),
+    ...(args.excludeExchanges && args.excludeExchanges.length > 0
+      ? { denyExchanges: args.excludeExchanges }
+      : {}),
+    ...(args.excludeBridges && args.excludeBridges.length > 0
+      ? { denyBridges: args.excludeBridges }
+      : {}),
+    ...(args.order !== undefined ? { order: args.order } : {}),
   } as Parameters<typeof fetchQuote>[0];
   const quote = await fetchQuote(lifiReq).catch((err: unknown) => {
     throw rephraseLifiNoRouteError(err, args);

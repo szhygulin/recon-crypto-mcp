@@ -167,6 +167,29 @@ export const getSolanaSwapQuoteInput = z.object({
       "ExactIn: sell exactly `amount` inputMint, receive at least minOutput. " +
         "ExactOut: buy exactly `amount` outputMint, sell at most maxInput."
     ),
+  // Issue #439 — DEX allow / block lists. Jupiter ranks routes by output
+  // amount by default; constraining to a specific DEX is the way to
+  // honor "swap on Raydium" / "avoid Orca" intent.
+  dexes: z
+    .array(z.string().min(1).max(40))
+    .max(20)
+    .optional()
+    .describe(
+      'Restrict Jupiter routing to a specific set of DEXes. Common values: "Raydium", ' +
+        '"Orca V2", "Meteora", "Meteora DLMM", "Phoenix", "Lifinity V2", "Whirlpool". ' +
+        'When the user names a DEX ("via Raydium"), pass it here — without a filter, ' +
+        "Jupiter silently picks the best-output route regardless. Multiple entries OR'd. " +
+        "If no route exists the call errors clearly; agent should offer to retry without filter."
+    ),
+  excludeDexes: z
+    .array(z.string().min(1).max(40))
+    .max(20)
+    .optional()
+    .describe(
+      'Blocklist version of `dexes` — DEXes Jupiter must avoid. Use when the user ' +
+        'says "not via Raydium" or "avoid Orca". Independent of `dexes`: pass both to ' +
+        "constrain to allowlist minus blocklist."
+    ),
 });
 
 export const prepareSolanaSwapInput = z.object({

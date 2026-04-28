@@ -523,6 +523,8 @@ export async function getSolanaSwapQuote(args: GetSolanaSwapQuoteArgs) {
     amount: args.amount,
     slippageBps: args.slippageBps,
     swapMode: args.swapMode,
+    ...(args.dexes !== undefined ? { dexes: args.dexes } : {}),
+    ...(args.excludeDexes !== undefined ? { excludeDexes: args.excludeDexes } : {}),
   });
 }
 
