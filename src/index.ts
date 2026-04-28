@@ -3247,9 +3247,19 @@ async function main() {
         "Sign a UTF-8 message with a paired Bitcoin address using the Bitcoin Signed " +
         "Message format (BIP-137). Returns a base64-encoded compact signature with a " +
         "header byte that matches the address-type convention (legacy / P2SH-wrapped / " +
-        "native segwit). The Ledger BTC app prompts the user to confirm the message " +
+        "native segwit) AND `messageSha256` — a lowercase hex SHA-256 of the exact " +
+        "UTF-8 bytes submitted to the device (Inv #8 byte-fingerprint, issue #454). " +
+        "Surface `messageSha256` in the verbatim message-sign block so the user can " +
+        "recompute on a separate device (`printf '%s' '<message>' | sha256sum`) and " +
+        "catch unicode-confusable substitution attacks the Ledger Nano OLED can't " +
+        "show in full. The Ledger BTC app prompts the user to confirm the message " +
         "text on-device before signing — same clear-sign UX as send-side flows. " +
-        "Useful for Sign-In-with-Bitcoin flows and proof-of-ownership challenges. " +
+        "DRAINER-STRING REFUSAL (issue #454): the MCP refuses messages containing " +
+        "value-transfer / authorization markers (`transfer` / `authorize` / `grant` / " +
+        "`custody` / `release` / `consent`) or explicit drainer templates (\"I authorize\", " +
+        "\"granting full custody\", \"I consent to\", \"I hereby transfer\", \"release my\") " +
+        "BEFORE any device interaction — fires regardless of agent cooperation. " +
+        "Legitimate Sign-In-with-Bitcoin / proof-of-funds flows don't use these markers. " +
         "Taproot (`bc1p…`) addresses are refused: BIP-322 (taproot's canonical message " +
         "scheme) is not yet exposed by the Ledger BTC app; sign with one of your other " +
         "paired address types from the same Ledger account instead.",
@@ -3322,8 +3332,14 @@ async function main() {
       description:
         "Sign a UTF-8 message with a paired Litecoin address using the BIP-137 " +
         "compact-signature scheme (with Litecoin's `\\x19Litecoin Signed Message:\\n` " +
-        "prefix). Same on-device clear-sign UX as `sign_message_btc`. Taproot " +
-        "(`ltc1p…`) is refused — BIP-322 isn't exposed by the Ledger Litecoin app.",
+        "prefix). Returns the signature plus `messageSha256` — lowercase hex SHA-256 " +
+        "of the exact UTF-8 bytes submitted to the device (Inv #8 byte-fingerprint, " +
+        "issue #454); surface in the verbatim block so the user can recompute on a " +
+        "separate device. Same on-device clear-sign UX as `sign_message_btc`. " +
+        "DRAINER-STRING REFUSAL (issue #454): refuses messages containing value-transfer " +
+        "/ authorization markers or explicit drainer templates BEFORE any device " +
+        "interaction — same allowlist as `sign_message_btc`. Taproot (`ltc1p…`) is " +
+        "refused — BIP-322 isn't exposed by the Ledger Litecoin app.",
       inputSchema: signLtcMessageInput.shape,
     },
     handler(signLtcMessage, { toolName: "sign_message_ltc" })

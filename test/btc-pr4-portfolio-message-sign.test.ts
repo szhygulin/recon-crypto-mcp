@@ -439,5 +439,137 @@ describe("signBitcoinMessage", () => {
       }),
     ).rejects.toThrow(/derived .* but the request asks/);
   });
+
+  // --- Issue #454: Inv #8 hardening — byte-fingerprint + drainer-string refusal ---
+
+  it("returns lowercase hex SHA-256 of the exact UTF-8 message bytes (issue #454)", async () => {
+    getWalletPublicKeyMock.mockResolvedValueOnce({
+      bitcoinAddress: SEGWIT_ADDR,
+      publicKey: SEGWIT_PUBKEY,
+      chainCode: "0".repeat(64),
+    });
+    signMessageMock.mockResolvedValueOnce({
+      v: 1,
+      r: "11".repeat(32),
+      s: "22".repeat(32),
+    });
+    const { signBitcoinMessage } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const message = "Sign in to my dapp";
+    const result = await signBitcoinMessage({
+      wallet: SEGWIT_ADDR,
+      message,
+    });
+    const expected = (await import("node:crypto"))
+      .createHash("sha256")
+      .update(Buffer.from(message, "utf-8"))
+      .digest("hex");
+    expect(result.messageSha256).toBe(expected);
+    expect(result.messageSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("hashes UTF-8 bytes (multi-byte chars eat more bytes than chars)", async () => {
+    getWalletPublicKeyMock.mockResolvedValueOnce({
+      bitcoinAddress: SEGWIT_ADDR,
+      publicKey: SEGWIT_PUBKEY,
+      chainCode: "0".repeat(64),
+    });
+    signMessageMock.mockResolvedValueOnce({
+      v: 1,
+      r: "11".repeat(32),
+      s: "22".repeat(32),
+    });
+    const { signBitcoinMessage } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const result = await signBitcoinMessage({
+      wallet: SEGWIT_ADDR,
+      message: "Verify ownership — café 你好",
+    });
+    const expected = (await import("node:crypto"))
+      .createHash("sha256")
+      .update(Buffer.from("Verify ownership — café 你好", "utf-8"))
+      .digest("hex");
+    expect(result.messageSha256).toBe(expected);
+  });
+
+  it("refuses messages containing single-word semantic markers (#454 case-insensitive)", async () => {
+    const { signBitcoinMessage } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    for (const marker of [
+      "transfer",
+      "Authorize",
+      "GRANT",
+      "custody",
+      "release",
+      "consent",
+    ]) {
+      await expect(
+        signBitcoinMessage({
+          wallet: SEGWIT_ADDR,
+          message: `Please ${marker} this for me`,
+        }),
+      ).rejects.toThrow(/MESSAGE-SIGN REFUSED — drainer-pattern marker/);
+    }
+  });
+
+  it("refuses messages containing multi-word drainer templates (#454)", async () => {
+    const { signBitcoinMessage } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    await expect(
+      signBitcoinMessage({
+        wallet: SEGWIT_ADDR,
+        message: "I authorize Acme Corp to move my funds",
+      }),
+    ).rejects.toThrow(/drainer-pattern template "i authorize"/);
+    await expect(
+      signBitcoinMessage({
+        wallet: SEGWIT_ADDR,
+        message: "I hereby transfer ownership to Bob",
+      }),
+    ).rejects.toThrow(/drainer-pattern (?:template "i hereby transfer"|marker "transfer")/);
+  });
+
+  it("refusal fires BEFORE pairing lookup (no device interaction needed)", async () => {
+    const { signBitcoinMessage } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    // Use an unpaired address — if the drainer check ran AFTER pairing,
+    // we'd see "not paired" instead of the drainer refusal.
+    await expect(
+      signBitcoinMessage({
+        wallet: "bc1q539etcvmjsvm3wtltwdkkj6tfd95kj6ttxc3zu",
+        message: "I consent to transfer my BTC to Alice",
+      }),
+    ).rejects.toThrow(/MESSAGE-SIGN REFUSED/);
+  });
+
+  it("legitimate Sign-In-with-Bitcoin messages don't trip the drainer guard (#454 false-positive control)", async () => {
+    getWalletPublicKeyMock.mockResolvedValueOnce({
+      bitcoinAddress: SEGWIT_ADDR,
+      publicKey: SEGWIT_PUBKEY,
+      chainCode: "0".repeat(64),
+    });
+    signMessageMock.mockResolvedValueOnce({
+      v: 1,
+      r: "11".repeat(32),
+      s: "22".repeat(32),
+    });
+    const { signBitcoinMessage } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    // Realistic SIWB-shaped messages: no drainer markers.
+    const result = await signBitcoinMessage({
+      wallet: SEGWIT_ADDR,
+      message:
+        "example.com wants you to sign in with your Bitcoin account:\n" +
+        SEGWIT_ADDR +
+        "\n\nVerify ownership for proof-of-funds.\n\nNonce: 12345",
+    });
+    expect(result.format).toBe("BIP-137");
+  });
 });
 

@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { assertLitecoinAddress, type LitecoinAddressType } from "./address.js";
+import { assertNoDrainerPattern } from "../../security/drainer-pattern.js";
 import { getLitecoinIndexer } from "./indexer.js";
 import { selectInputs, type CoinSelectInput } from "../shared/utxo-coin-select.js";
 import { issueLitecoinHandle } from "../../signing/ltc-tx-store.js";
@@ -457,6 +459,14 @@ export interface SignLitecoinMessageArgs {
 export interface SignedLitecoinMessage {
   address: string;
   message: string;
+  /**
+   * Lowercase hex SHA-256 of the exact UTF-8 bytes that went to the
+   * Ledger Litecoin app for signing (issue #454, Inv #8 byte-fingerprint).
+   * Mirrors `SignedBitcoinMessage.messageSha256`. The agent surfaces
+   * this in the verbatim message-sign block so the user can recompute
+   * on a separate device.
+   */
+  messageSha256: string;
   signature: string;
   format: "BIP-137";
   addressType: PairedLtcAddressType;
@@ -479,6 +489,11 @@ export async function signLitecoinMessage(
       `Message length ${args.message.length} exceeds the 10000-char ceiling.`,
     );
   }
+  // Inv #8 hardening (#454) — same drainer-pattern refusal as the BTC
+  // path; refuses BEFORE any device interaction so a compromised agent
+  // can't suppress it by skipping the preview.
+  assertNoDrainerPattern(args.message);
+
   const paired = getPairedLtcByAddress(args.wallet);
   if (!paired) {
     throw new Error(
@@ -486,20 +501,22 @@ export async function signLitecoinMessage(
         `the four standard address types and retry with one of the resulting addresses.`,
     );
   }
+  const messageBytes = Buffer.from(args.message, "utf-8");
+  const messageSha256 = createHash("sha256").update(messageBytes).digest("hex");
   const { signLtcMessageOnLedger } = await import(
     "../../signing/ltc-usb-signer.js"
   );
-  const messageHex = Buffer.from(args.message, "utf-8").toString("hex");
   const result = await signLtcMessageOnLedger({
     expectedFrom: args.wallet,
     path: paired.path,
     addressFormat: ADDRESS_FORMAT_BY_TYPE[paired.addressType],
-    messageHex,
+    messageHex: messageBytes.toString("hex"),
     addressType: paired.addressType,
   });
   return {
     address: args.wallet,
     message: args.message,
+    messageSha256,
     signature: result.signature,
     format: result.format,
     addressType: paired.addressType,
