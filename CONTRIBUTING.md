@@ -24,6 +24,22 @@ If you genuinely want to contribute on a tracking issue, demonstrate it by:
 1. Opening a small, focused PR against an actual bug or already-scoped task first, so we have signal that you understand the codebase.
 2. Asking a specific clarifying question that shows you read the issue and the linked code — pick one of the open decisions in the issue and propose a defensible answer with reasoning.
 
+## Testing demo mode locally
+
+Demo mode runs the server without RPC keys, Ledger pairing, or a config file:
+
+```bash
+VAULTPILOT_DEMO=true node dist/index.js
+```
+
+Or wire it into a local Claude Code session:
+
+```bash
+claude mcp add vaultpilot-mcp-dev --env VAULTPILOT_DEMO=true -- node /absolute/path/to/vaultpilot-mcp/dist/index.js
+```
+
+Useful when changing `src/demo/`, the `prepare_*` refusal/simulation paths, or `buildSimulationEnvelope` — unit tests cover contract correctness, but the agent-UX class of regressions (persona drift, simulation envelope readability, nudge timing) only surface in a live walkthrough.
+
 ## Reporting security issues
 
 Do **not** open a public issue for vulnerabilities. See [SECURITY.md](./SECURITY.md) for the disclosure process.
