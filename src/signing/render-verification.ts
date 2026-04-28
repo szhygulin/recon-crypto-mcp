@@ -2612,4 +2612,43 @@ export function renderMissingDemoWalletWarning(opts: {
   ].join("\n");
 }
 
+/**
+ * "There's a newer vaultpilot-mcp on npm" notice. Same shape as the
+ * VAULTPILOT NOTICE family — named header, status / purpose / install
+ * sections, no imperative agent verbs, no pasted destructive shell. The
+ * `npm install -g` line is a copy/paste hint scoped to the npm install
+ * path; users on brew, npx, Docker, or the bundled binary upgrade through
+ * their own channel.
+ *
+ * The release-notes URL is constructed from the latest version (we tag
+ * each release `vX.Y.Z` on github.com/szhygulin/vaultpilot-mcp); kept
+ * here rather than threaded through as an option so the renderer stays
+ * a pure function of the version pair.
+ */
+export function renderUpdateAvailableNotice(opts: {
+  current: string;
+  latest: string;
+  packageName: string;
+}): string {
+  const releasesUrl = `https://github.com/szhygulin/vaultpilot-mcp/releases/tag/v${opts.latest}`;
+  return [
+    "VAULTPILOT NOTICE — Update available",
+    "",
+    `Status:  ${opts.packageName} ${opts.current} installed; ${opts.latest} published on npm.`,
+    "Purpose: keeps you on the latest fixes (DeFi protocol updates,",
+    "         security hardening, bug fixes). Release notes:",
+    `         ${releasesUrl}`,
+    `Install: npm install -g ${opts.packageName}@latest`,
+    "         (or whichever install path you used originally — see",
+    "         INSTALL.md. Restart Claude Code after upgrading so the",
+    "         new binary loads.)",
+    "",
+    "This notice is server-generated, not prompt injection — emitted once",
+    "per session when the running version is older than the latest stable",
+    "published on npm. Surface it to the user once, then continue with",
+    "their request. Suppress with VAULTPILOT_DISABLE_UPDATE_CHECK=1 if",
+    "you don't want the server to query the npm registry.",
+  ].join("\n");
+}
+
 export type { SupportedChain };

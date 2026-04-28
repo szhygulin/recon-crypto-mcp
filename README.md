@@ -283,6 +283,7 @@ All optional if the matching field is in `~/.vaultpilot-mcp/config.json`; env va
 - `VAULTPILOT_SKILL_MARKER_PATH` — suppresses the preflight-skill notice for read-only users who accept the tradeoff
 - `VAULTPILOT_DISABLE_SKILL_AUTOINSTALL=1` — skips the lazy first-run `git clone` of the companion preflight + setup skills into `~/.claude/skills/`. The original manual-install notice fires instead. Use for air-gapped / no-egress operation where the MCP must not contact github.com.
 - `VAULTPILOT_DEMO=true` — enables [demo mode](#demo-mode) (curated personas + simulated `send_transaction`, no signing, no broadcast). Set the literal string `true`; any other value is rejected with a diagnostic message.
+- `VAULTPILOT_DISABLE_UPDATE_CHECK=1` — skips the once-per-session `registry.npmjs.org` GET that surfaces a `VAULTPILOT NOTICE — Update available` block when a newer stable is published. Same air-gapped / no-egress use case.
 
 ## Development
 
