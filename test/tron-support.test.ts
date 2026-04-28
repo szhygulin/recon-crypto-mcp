@@ -98,6 +98,23 @@ describe("TRON_TOKENS canonical registry", () => {
     expect(TRON_TOKENS.USDT).toBe("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t");
   });
 
+  // Issue #507 regression guard. USDD previously pointed at WTRX's contract
+  // address (TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR), which silently routed
+  // USDD balance/send/approve flows to Wrapped TRX. Pin the verified-
+  // correct USDD ("Decentralized USD" by TRON DAO Reserve) address so
+  // the wrong-address regression can't come back without this test
+  // failing. Also guard the WTRX address explicitly so a future
+  // refactor that introduces WTRX as a separate entry doesn't
+  // re-introduce the collision under a different key.
+  it("USDD points at the real USDD contract (issue #507 — not WTRX)", () => {
+    expect(TRON_TOKENS.USDD).toBe("TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn");
+    for (const [symbol, addr] of Object.entries(TRON_TOKENS)) {
+      expect(addr, `TRON_TOKENS.${symbol} must not be WTRX`).not.toBe(
+        "TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR",
+      );
+    }
+  });
+
   it("every canonical address parses as a valid TRON address", () => {
     for (const [symbol, addr] of Object.entries(TRON_TOKENS)) {
       expect(isTronAddress(addr), `TRON_TOKENS.${symbol}`).toBe(true);

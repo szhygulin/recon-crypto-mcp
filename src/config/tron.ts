@@ -26,7 +26,12 @@ export const TRONGRID_BASE_URL = "https://api.trongrid.io";
 export const TRON_TOKENS = {
   USDT: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
   USDC: "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8",
-  USDD: "TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR",
+  // USDD ("Decentralized USD" by TRON DAO Reserve) on TRON mainnet.
+  // Issue #507: this entry previously pointed at TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR,
+  // which is actually Wrapped TRX (WTRX), not USDD. Verified via OKLink
+  // (oklink.com/tron/token/TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn — name
+  // "Decentralized USD", symbol "USDD"). Decimals stay at 18 (USDD spec).
+  USDD: "TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn",
   TUSD: "TUpMhErZL2fhh4sVNULAbNKLokS4GjC1F4",
 } as const;
 
