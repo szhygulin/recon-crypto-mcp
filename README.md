@@ -86,6 +86,7 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 - **Curve + Convex + Pendle + GMX V2** — stable-LP / yield-trading / perps. Direct ABI integration for Curve / Convex / GMX; `@pendle/sdk-v2` for Pendle. ([plan](./claude-work/plan-defi-expansion-roadmap.md))
 - **Balancer V2 + V3 + Aura** — Vault-centric LP + V3 Hooks pools + Aura boost. ([plan](./claude-work/plan-balancer-v2-v3-aura.md))
 - **DEX liquidity verb set** — Uniswap V3 `mint` / `collect` / `decrease_liquidity` / `burn` / `rebalance` (reads already shipped), Curve LP, Balancer LP. ([plan](./claude-work/plan-dex-liquidity-provision.md))
+- **Canonical L1↔L2 / L2↔L2 bridges** — Optimism / Base (Bedrock, shared ABI), Arbitrum, Polygon PoS. Trust-minimized alternative to LiFi: slow (7-day proof window for OP-Stack rollups, ~30 min – 3 h for Polygon PoS exit) but L1-anchored. Phased per-bridge; Phase 1 (OP+Base) is the smallest unit. ([plan](./claude-work/plan-canonical-bridges.md))
 
 **New chains**
 
