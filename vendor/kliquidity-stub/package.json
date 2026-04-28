@@ -1,0 +1,16 @@
+{
+  "name": "@kamino-finance/kliquidity-sdk",
+  "version": "8.5.10-vaultpilot-stub.0",
+  "description": "Stub of @kamino-finance/kliquidity-sdk for vaultpilot-mcp's bundled binary. Provides the 8 utility symbols klend-sdk + farms-sdk reach into, without the Raydium/Orca/Meteora dependency cone.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "bn.js": "^5.2.1",
+    "decimal.js": "^10.4.3"
+  }
+}
