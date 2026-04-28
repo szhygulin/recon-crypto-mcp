@@ -1,9 +1,5 @@
 # VaultPilot Roadmap
 
-**In flight**
-
-- **Kamino lending** (Solana) — PR #151 landed the `@solana-program/kit` bridge foundation; supply / withdraw / borrow / repay tools follow.
-
 **New protocols (EVM)**
 
 - **Curve + Convex + Pendle + GMX V2** — stable-LP / yield-trading / perps. Direct ABI integration for Curve / Convex / GMX; `@pendle/sdk-v2` for Pendle. ([plan](./claude-work/plan-defi-expansion-roadmap.md))
@@ -19,19 +15,17 @@
 
 **More Solana protocols**
 
-- **Drift + Solend lending** — after Kamino lands.
+- **Drift + Solend lending** — Kamino's `prepare_kamino_*` tools shipped; Drift / Solend are the remaining Solana lending protocols on the planned set. ([plan](./claude-work/plan-drift-solend-lending.md))
 - **Jito liquid-staking writes** — reads ship today; writes blocked on the SDK's ephemeral-signer pattern, raw-ix builder workaround tracked.
 - **Multi-tx send pipeline** — unblocks flows that exceed the single-v0-tx size limit (needed for parts of Kamino / Drift).
 
 **New tools**
 
 - **`check_liquidation_risk`** — per-asset "ETH drops X% triggers liquidation" math across Aave V3 / Compound V3 / Morpho Blue. Replaces today's raw-HF-number output with actionable price deltas. ([plan](./claude-work/plan-health-factor-monitoring.md))
-- **`get_pnl_summary`** — wallet-level net PnL over preset periods across EVM / TRON / Solana. Balance-delta minus net user contribution, priced via DefiLlama historical. ([plan](./claude-work/plan-pnl-summary-tool.md))
 - **`prepare_eth_validator_deposit`** — solo-validator activation: 32 ETH deposit to the Beacon Deposit Contract (`0x00000000219ab540356cBB839Cbe05303d7705Fa`) using a `deposit_data.json` produced off-chain by `staking-deposit-cli`. Optional batch shape for multi-validator activations. Today's `prepare_lido_stake` produces stETH (LST exposure, not validator ownership) and `prepare_eigenlayer_deposit` is restaking on top of an existing LST — neither activates a solo validator. ([#430](https://github.com/szhygulin/vaultpilot-mcp/issues/430))
 
-**`compare_yields` adapter expansion** — v1 covers Aave V3 + Compound V3 + Lido (PR #282); v2 bundles Marinade + Jito + Kamino-lend + Morpho-Blue via DefiLlama. The remaining three protocols ship as separate adapters; full scope and rationale in [plan-yields-v2-followups.md](./claude-work/plan-yields-v2-followups.md).
+**`compare_yields` adapter expansion** — v1 (Aave V3 + Compound V3 + Lido, PR #282) and v2 (DefiLlama-bundled Marinade + Jito + Kamino-lend + Morpho-Blue + on-chain MarginFi) shipped. The remaining adapters are structurally different (per-operator / per-validator rows, not per-protocol APR); each needs its own plan file before implementation. Full scope and rationale in [plan-yields-v2-followups.md](./claude-work/plan-yields-v2-followups.md).
 
-- **MarginFi lending adapter** — DefiLlama doesn't carry MarginFi borrow-lend (only their LST product); needs an on-chain wallet-less bank reader split out from `getMarginfiPositions`. Same shape `getCompoundMarketInfo` already establishes.
 - **EigenLayer + Solana native-stake adapters** — structurally different (per-operator / per-validator rows, not per-protocol APR); each needs its own plan file before implementation.
 
 **NFT tooling — Solana follow-ups to #433**
@@ -68,7 +62,31 @@ The portfolio reader landed Solana NFT support via Helius DAS in #433; the per-f
 
 **Recently shipped** (previously on this list)
 
-- **`compare_yields`** — ranked supply-side yield comparison across integrated lending / staking protocols. Covers Aave V3 (5 EVM chains), Compound V3 (5 EVM chains, multi-market), Lido stETH, plus DefiLlama-backed Marinade / Jito / Kamino-lend / Morpho-Blue curated vaults. Surfaces data, doesn't pick — the user decides. Remaining adapters (MarginFi on-chain, EigenLayer, Solana native-stake) on the roadmap above (#282 v1, #431 v2 bundle).
+2026-04-28 push:
+
+- **`compare_yields` v2** — DefiLlama-bundled Marinade + Jito + Kamino-lend + Morpho-Blue (#500) + on-chain MarginFi adapter (#502). Closes #431 v2 + #288.
+- **`get_pnl_summary`** — wallet-level net PnL across EVM / TRON / Solana with `mtd` / `ytd` / `30d` / `7d` / `1d` periods (#525). Closes #447.
+- **Rocket Pool stake / unstake** — `prepare_rocketpool_stake` + `prepare_rocketpool_unstake` (rETH) on Ethereum (#490). Closes #429.
+- **Lido stETH ↔ wstETH wrap** — `prepare_lido_wrap` / `prepare_lido_unwrap` (#467). Closes #442.
+- **`prepare_custom_call` escape hatch** — arbitrary EVM contract calls with `acknowledgeNonProtocolTarget: true` gate, paired with `get_contract_abi` (#494, #497, #498).
+- **`prepare_sunswap_swap`** (TRON) — same-chain TRX↔TRC-20 swaps via SunSwap (#510). Closes #432.
+- **`resolve_token`** — symbol→contract lookup across EVM / Solana / TRON with bridged-variant disambiguation (#515). Closes #440.
+- **`build_incident_report`** — read-only forensic bundle for post-incident analysis (#426).
+- **`list_solana_validators`** — validator-ranking helper for `prepare_native_stake_delegate` (#512). Closes #436.
+- **Solana NFT portfolio reader** — Helius DAS branch on `get_nft_portfolio` (#478, #433 partial).
+- **Token-class registry** — non-standard ERC-20 transfer-semantics flags (rebasing seed: stETH + AMPL) on `prepare_token_send` (#509). Closes #441.
+- **Demo auto-persona on `prepare_*`** — default-mode UX upgrade (#477). Closes #446.
+- **Sandwich-MEV mainnet hint** on `prepare_swap` / `prepare_uniswap_swap` (#472, slippage × notional flagged at 0.5% on Ethereum). Closes #445. L2 expansion still on the Security-hardening list above.
+- **`get_health_alerts`** multi-protocol (Compound V3 + Morpho + MarginFi + Kamino) (#466). Closes #427.
+- **Schema fixes / UX**: `prepare_morpho_repay` accepts `amount: "max"` (#513, closes #437), `prepare_solana_native_send` optional memo (#506, closes #434), `prepare_btc_send` fee-priority preset enum (#473, refs #435), `add_contact` works without paired Ledger (#471, closes #428 partial), `TRON_TOKENS.USDD` corrected (#522, closes #507).
+- **Security skill v8 → MCP companion** — Inv #1.a canonical-dispatch allowlist (#480, #489), Inv #14 durable-binding source-of-truth verification (#529, closes #460), Inv #8 BIP-137 message-sign hardening with byte-fingerprint + drainer-string refusal (#524, closes #454), Inv #12.5 hard-trigger-ops `secondLlmRequired` scaffold (#530, closes #501).
+- **Conditional tool-surface gating** — `VAULTPILOT_CHAIN_FAMILIES` + `VAULTPILOT_PROTOCOLS` env vars narrow the registered tool set per install (#492).
+- **Unified `vaultpilot-mcp setup` binary** — server + setup wizard ship as one binary (#487). Releases 0.12.0 / 0.12.1.
+
+Earlier:
+
+- **`compare_yields` v1** — Aave V3 (5 chains), Compound V3 (5 chains, multi-market), Lido stETH (#282).
+- **Kamino lending** (Solana) — `prepare_kamino_init_user` + supply / withdraw / borrow / repay tools.
 - **Nonce-aware dropped-tx polling** (Solana) — on-chain nonce is the authoritative signal for whether a durable-nonce tx can still land; replaces the `lastValidBlockHeight` path that's meaningless for nonce-protected sends (#137).
 - **Solana liquid + native staking** — Marinade / Jito / native stake-account reads (#141, portfolio fold-in #143), Marinade writes (#145), native SOL delegate / deactivate / withdraw (#149).
 - **LiFi cross-chain EVM ↔ Solana routing** (#153, #155).
