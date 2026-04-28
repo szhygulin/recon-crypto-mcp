@@ -349,7 +349,8 @@ import {
   reverseResolve,
 } from "./modules/balances/index.js";
 import { getTokenAllowances } from "./modules/allowances/index.js";
-import { getTokenAllowancesInput } from "./modules/allowances/schemas.js";
+import { getTokenAllowancesInput, type GetTokenAllowancesResult } from "./modules/allowances/schemas.js";
+import { renderSetLevelEnumeration } from "./security/set-level-enumeration.js";
 import {
   getNftCollection,
   getNftHistory,
@@ -1194,6 +1195,34 @@ function configStatusHandler<T>(fn: (args: T) => unknown) {
     if (notice && Array.isArray(res.content)) {
       res.content.push({ type: "text", text: notice });
     }
+    return res;
+  };
+}
+
+/**
+ * Handler wrapper for `get_token_allowances`. Appends a
+ * `[SET-LEVEL ENUMERATION]` text block — the structured row dump the
+ * vaultpilot-preflight skill's Invariant #14 (set-level intent
+ * verification) expects on every response. The block is mandatory:
+ * a missing `[SET-LEVEL ENUMERATION]` block is an Invariant #4
+ * compromise signal, since the agent treats it as evidence the MCP
+ * silently filtered the row set (the reverse-revoke / set-level lie
+ * attack from corpus script `a086`, vaultpilot-mcp#450).
+ */
+function tokenAllowancesHandler<T>(fn: (args: T) => Promise<GetTokenAllowancesResult>) {
+  const inner = handler(fn);
+  return async (args: T) => {
+    const res = await inner(args);
+    if (!Array.isArray(res.content) || res.content.length === 0) return res;
+    const first = res.content[0];
+    if (!first || first.type !== "text") return res;
+    let payload: GetTokenAllowancesResult | null = null;
+    try {
+      payload = JSON.parse(first.text) as GetTokenAllowancesResult;
+    } catch {
+      return res;
+    }
+    res.content.push({ type: "text", text: renderSetLevelEnumeration(payload) });
     return res;
   };
 }
@@ -3844,7 +3873,7 @@ async function main() {
         "Enumerate every spender that currently holds a non-zero allowance over the wallet's balance of a specific ERC-20 token on a single EVM chain. Pulls Approval events from Etherscan's logs API filtered to the wallet as `owner`, dedups by spender (keeping the latest event per spender for provenance), then re-reads the LIVE `allowance(owner, spender)` for each via Multicall3 and drops anyone whose live value is 0 (revoked or fully consumed). Returns rows sorted by allowance descending, each carrying `spender`, optional `spenderLabel` (Aave V3 Pool / Uniswap V3 SwapRouter02 / Lido stETH / etc. resolved against the canonical CONTRACTS table), `currentAllowance` (raw bigint string), `currentAllowanceFormatted` (decimal-adjusted, or the literal string \"unlimited\"), `isUnlimited` (≥MAX_UINT256 − 0.01% — covers wallets that cap below MAX), and the `lastApprovedBlock` / `lastApprovedTxHash` / `lastApprovedAt` provenance. Top-level `unlimitedCount` and `notes[]` flag exposure (\"the spender(s) can move your entire balance, including future top-ups; revoke via approve(spender, 0)\"). Use this for security audits (\"do I have any unrevoked unlimited approvals?\"), pre-tx checks (\"do I already have allowance for X?\"), and revoke-cleanup workflows. v1 EVM-only (Ethereum / Arbitrum / Polygon / Base / Optimism). TRON deferred (different indexer surface); Solana intentionally out of scope (SPL delegation is per-account, not per-mint-per-owner — different question shape). Read-only; no signing, no broadcast.",
       inputSchema: getTokenAllowancesInput.shape,
     },
-    handler(getTokenAllowances)
+    tokenAllowancesHandler(getTokenAllowances)
   );
 
   registerTool(server,
