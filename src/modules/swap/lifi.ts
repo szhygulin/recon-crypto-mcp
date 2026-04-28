@@ -85,6 +85,23 @@ interface LifiQuoteRequestBase {
    */
   allowExchanges?: string[];
   allowBridges?: string[];
+  /**
+   * Issue #439 — blocklists for DEX aggregators / bridges. Mirrors
+   * `allowExchanges`/`allowBridges` but inverted: LiFi will route
+   * around any tool listed here. Independent of the allowlists; both
+   * can be set simultaneously (allowlist intersect, then blocklist
+   * subtract). Pass-through to LiFi's `denyExchanges` / `denyBridges`.
+   */
+  denyExchanges?: string[];
+  denyBridges?: string[];
+  /**
+   * Sort criterion LiFi applies when ranking candidate routes. The
+   * default is `RECOMMENDED` (LiFi's mix of price + safety). Set
+   * `CHEAPEST` for "best rate available" intent (highest output amount),
+   * `FASTEST` for low-latency bridges, `SAFEST` for the most-vetted
+   * tool set. Pass-through to LiFi's `order` param.
+   */
+  order?: "RECOMMENDED" | "FASTEST" | "CHEAPEST" | "SAFEST";
 }
 
 export type LifiQuoteRequest =
@@ -132,9 +149,9 @@ export async function fetchQuote(req: LifiQuoteRequest) {
           : NATIVE
       : req.toToken;
 
-  // LiFi's `getQuote` accepts `allowExchanges`/`allowBridges` as
-  // optional filters; spread them in only when set so the default
-  // (full routing graph) is preserved.
+  // LiFi's `getQuote` accepts allow/deny lists + `order` as optional
+  // filters; spread them in only when set so the default (full routing
+  // graph, RECOMMENDED order) is preserved.
   const filterFields = {
     ...(req.allowExchanges && req.allowExchanges.length > 0
       ? { allowExchanges: req.allowExchanges }
@@ -142,6 +159,13 @@ export async function fetchQuote(req: LifiQuoteRequest) {
     ...(req.allowBridges && req.allowBridges.length > 0
       ? { allowBridges: req.allowBridges }
       : {}),
+    ...(req.denyExchanges && req.denyExchanges.length > 0
+      ? { denyExchanges: req.denyExchanges }
+      : {}),
+    ...(req.denyBridges && req.denyBridges.length > 0
+      ? { denyBridges: req.denyBridges }
+      : {}),
+    ...(req.order !== undefined ? { order: req.order } : {}),
   };
 
   if (req.toAmount !== undefined) {

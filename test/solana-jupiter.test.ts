@@ -169,6 +169,109 @@ describe("getJupiterQuote", () => {
       }),
     ).rejects.toThrow(/Jupiter \/quote failed \(HTTP 400\):.*Invalid mint/);
   });
+
+  // Issue #439 — DEX allowlist / blocklist forwarding.
+  it("forwards `dexes` to Jupiter as a comma-separated query param", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => SAMPLE_QUOTE,
+    });
+    const { getJupiterQuote } = await import(
+      "../src/modules/solana/jupiter.js"
+    );
+    await getJupiterQuote({
+      inputMint: WSOL,
+      outputMint: USDC_MINT,
+      amount: "1000000000",
+      slippageBps: 50,
+      dexes: ["Raydium", "Orca V2"],
+    });
+    const url = fetchMock.mock.calls[0][0] as string;
+    // URLSearchParams URL-encodes spaces as `+` and commas as `%2C`.
+    expect(url).toContain("dexes=Raydium%2COrca+V2");
+    expect(url).not.toContain("excludeDexes=");
+  });
+
+  it("forwards `excludeDexes` as a comma-separated query param", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => SAMPLE_QUOTE,
+    });
+    const { getJupiterQuote } = await import(
+      "../src/modules/solana/jupiter.js"
+    );
+    await getJupiterQuote({
+      inputMint: WSOL,
+      outputMint: USDC_MINT,
+      amount: "1000000000",
+      slippageBps: 50,
+      excludeDexes: ["Phoenix"],
+    });
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("excludeDexes=Phoenix");
+    expect(url).not.toContain("dexes=Phoenix"); // (would be a substring match)
+  });
+
+  it("supports both lists simultaneously", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => SAMPLE_QUOTE,
+    });
+    const { getJupiterQuote } = await import(
+      "../src/modules/solana/jupiter.js"
+    );
+    await getJupiterQuote({
+      inputMint: WSOL,
+      outputMint: USDC_MINT,
+      amount: "1000000000",
+      slippageBps: 50,
+      dexes: ["Raydium"],
+      excludeDexes: ["Orca V2"],
+    });
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("dexes=Raydium");
+    expect(url).toContain("excludeDexes=Orca+V2");
+  });
+
+  it("does NOT add dex params to URL when both are omitted (default routing preserved)", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => SAMPLE_QUOTE,
+    });
+    const { getJupiterQuote } = await import(
+      "../src/modules/solana/jupiter.js"
+    );
+    await getJupiterQuote({
+      inputMint: WSOL,
+      outputMint: USDC_MINT,
+      amount: "1000000000",
+      slippageBps: 50,
+    });
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).not.toContain("dexes=");
+    expect(url).not.toContain("excludeDexes=");
+  });
+
+  it("ignores empty arrays (treats them as no filter)", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => SAMPLE_QUOTE,
+    });
+    const { getJupiterQuote } = await import(
+      "../src/modules/solana/jupiter.js"
+    );
+    await getJupiterQuote({
+      inputMint: WSOL,
+      outputMint: USDC_MINT,
+      amount: "1000000000",
+      slippageBps: 50,
+      dexes: [],
+      excludeDexes: [],
+    });
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).not.toContain("dexes=");
+    expect(url).not.toContain("excludeDexes=");
+  });
 });
 
 describe("buildJupiterSwap", () => {
