@@ -105,6 +105,7 @@ describe("compareYields composer", () => {
     compound?: { rows: any[]; unavailable?: any[] };
     lido?: { rows: any[]; unavailable?: any[] };
     defillama?: { rows: any[]; unavailable?: any[] };
+    marginfi?: { rows: any[]; unavailable?: any[] };
     riskScores?: Record<string, number | undefined>;
   }) {
     vi.doMock("../src/modules/yields/adapters/aave.js", () => ({
@@ -126,6 +127,11 @@ describe("compareYields composer", () => {
       readDefiLlamaYields: vi
         .fn()
         .mockResolvedValue(opts.defillama ?? { rows: [], unavailable: [] }),
+    }));
+    vi.doMock("../src/modules/yields/adapters/marginfi.js", () => ({
+      readMarginfiYields: vi
+        .fn()
+        .mockResolvedValue(opts.marginfi ?? { rows: [], unavailable: [] }),
     }));
     vi.doMock("../src/modules/security/risk-score.js", () => ({
       getProtocolRiskScore: vi.fn(async (slug: string) => ({
@@ -254,14 +260,15 @@ describe("compareYields composer", () => {
     expect(compoundUnavail[0].reason).toContain("RPC down");
   });
 
-  it("surfaces remaining deferred protocols (MarginFi / EigenLayer / native-stake) in unavailable[]", async () => {
+  it("surfaces remaining deferred protocols (EigenLayer / native-stake) in unavailable[]", async () => {
     const { compareYields } = await withMocks({});
     const out = await compareYields({ asset: "USDC" });
     const protocols = new Set(out.unavailable.map((u: any) => u.protocol));
-    expect(protocols.has("marginfi")).toBe(true);
     expect(protocols.has("eigenlayer")).toBe(true);
     expect(protocols.has("native-stake")).toBe(true);
-    // Morpho / Kamino / Marinade / Jito now ship live via the DefiLlama adapter.
+    // MarginFi ships live via the on-chain adapter (#288). Morpho / Kamino /
+    // Marinade / Jito ship live via the DefiLlama bundle (#287/#289/#290/#291).
+    expect(protocols.has("marginfi")).toBe(false);
     expect(protocols.has("morpho-blue")).toBe(false);
     expect(protocols.has("kamino")).toBe(false);
     expect(protocols.has("marinade")).toBe(false);
