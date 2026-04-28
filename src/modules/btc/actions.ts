@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { assertBitcoinAddress, type BitcoinAddressType } from "./address.js";
+import { assertNoDrainerPattern } from "../../security/drainer-pattern.js";
 import { getBitcoinIndexer } from "./indexer.js";
 import { selectInputs, type CoinSelectInput } from "../shared/utxo-coin-select.js";
 import { issueBitcoinHandle } from "../../signing/btc-tx-store.js";
@@ -916,6 +918,15 @@ export interface SignBitcoinMessageArgs {
 export interface SignedBitcoinMessage {
   address: string;
   message: string;
+  /**
+   * Lowercase hex SHA-256 of the exact UTF-8 bytes that went to the
+   * Ledger BTC app for signing (issue #454, Inv #8 byte-fingerprint).
+   * The agent surfaces this in the verbatim message-sign block so a
+   * user concerned about unicode-confusable substitution / OLED skim
+   * attacks can recompute on a separate device:
+   * `printf '%s' '<message>' | sha256sum`.
+   */
+  messageSha256: string;
   signature: string;
   format: "BIP-137";
   addressType: PairedBtcAddressType;
@@ -942,6 +953,12 @@ export async function signBitcoinMessage(
         `into 16-char windows and a multi-KB string is not realistically reviewable.`,
     );
   }
+  // Inv #8 hardening (#454): refuse drainer-pattern messages BEFORE any
+  // device interaction. The check runs on the agent-supplied bytes,
+  // which are the same bytes hashed into `messageSha256` below — no
+  // gap between what we refuse against and what we'd sign.
+  assertNoDrainerPattern(args.message);
+
   const paired = getPairedBtcByAddress(args.wallet);
   if (!paired) {
     throw new Error(
@@ -949,20 +966,22 @@ export async function signBitcoinMessage(
         `the four standard address types and retry with one of the resulting addresses.`,
     );
   }
+  const messageBytes = Buffer.from(args.message, "utf-8");
+  const messageSha256 = createHash("sha256").update(messageBytes).digest("hex");
   const { signBtcMessageOnLedger } = await import(
     "../../signing/btc-usb-signer.js"
   );
-  const messageHex = Buffer.from(args.message, "utf-8").toString("hex");
   const result = await signBtcMessageOnLedger({
     expectedFrom: args.wallet,
     path: paired.path,
     addressFormat: ADDRESS_FORMAT_BY_TYPE[paired.addressType],
-    messageHex,
+    messageHex: messageBytes.toString("hex"),
     addressType: paired.addressType,
   });
   return {
     address: args.wallet,
     message: args.message,
+    messageSha256,
     signature: result.signature,
     format: result.format,
     addressType: paired.addressType,
