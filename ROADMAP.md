@@ -27,15 +27,25 @@
 
 - **`check_liquidation_risk`** — per-asset "ETH drops X% triggers liquidation" math across Aave V3 / Compound V3 / Morpho Blue. Replaces today's raw-HF-number output with actionable price deltas. ([plan](./claude-work/plan-health-factor-monitoring.md))
 - **`get_pnl_summary`** — wallet-level net PnL over preset periods across EVM / TRON / Solana. Balance-delta minus net user contribution, priced via DefiLlama historical. ([plan](./claude-work/plan-pnl-summary-tool.md))
+- **`prepare_eth_validator_deposit`** — solo-validator activation: 32 ETH deposit to the Beacon Deposit Contract (`0x00000000219ab540356cBB839Cbe05303d7705Fa`) using a `deposit_data.json` produced off-chain by `staking-deposit-cli`. Optional batch shape for multi-validator activations. Today's `prepare_lido_stake` produces stETH (LST exposure, not validator ownership) and `prepare_eigenlayer_deposit` is restaking on top of an existing LST — neither activates a solo validator. ([#430](https://github.com/szhygulin/vaultpilot-mcp/issues/430))
 
 **`compare_yields` adapter expansion** — v1 covers Aave V3 + Compound V3 + Lido (PR #282); v2 bundles Marinade + Jito + Kamino-lend + Morpho-Blue via DefiLlama. The remaining three protocols ship as separate adapters; full scope and rationale in [plan-yields-v2-followups.md](./claude-work/plan-yields-v2-followups.md).
 
 - **MarginFi lending adapter** — DefiLlama doesn't carry MarginFi borrow-lend (only their LST product); needs an on-chain wallet-less bank reader split out from `getMarginfiPositions`. Same shape `getCompoundMarketInfo` already establishes.
 - **EigenLayer + Solana native-stake adapters** — structurally different (per-operator / per-validator rows, not per-protocol APR); each needs its own plan file before implementation.
 
-**Bitcoin tooling**
+**NFT tooling — Solana follow-ups to #433**
+
+The portfolio reader landed Solana NFT support via Helius DAS in #433; the per-feature readers and pricing are deferred follow-ups.
+
+- **Solana branch on `get_nft_history`** — wire Helius DAS `getSignaturesForAsset` (per-asset granularity), mapped to the existing `NftHistoryItem` shape (mint / sale / transfer / etc.). Probably a `solanaAsset` arg distinct from the EVM `wallet` shape. ([#474](https://github.com/szhygulin/vaultpilot-mcp/issues/474))
+- **Solana branch on `get_nft_collection`** — DAS `getAssetsByGroup({groupKey: "collection"})` for collection metadata + Magic Eden's `/v2/collections/{symbol}/stats` for floor / volume / royalty. Degrades cleanly when Magic Eden is rate-limited (collection metadata still surfaces). ([#475](https://github.com/szhygulin/vaultpilot-mcp/issues/475))
+- **Solana NFT portfolio floor pricing** — fan out per-collection floor lookups via Magic Eden (Tensor as fallback) so `floorEth` / `floorUsd` / `totalFloorUsd` populate on Solana rows; drops the current `notes[]` advisory that calls out the gap. ([#476](https://github.com/szhygulin/vaultpilot-mcp/issues/476))
+
+**Bitcoin / Litecoin tooling**
 
 - **BIP-322 message signing** — `sign_message_btc` ships BIP-137 today, which fails (or falls back to legacy-address tricks) for `bc1q` (P2WPKH) and `bc1p` (Taproot) addresses. Modern verifiers (exchanges, proof-of-reserves tools, Sparrow / Coldcard ecosystem) expect BIP-322. Deferred pending a scope probe of the Ledger BTC app's BIP-322 firmware floor + which SDK exposes the entrypoint (`@ledgerhq/hw-app-btc` vs the newer `ledger-bitcoin` v2 client) — implementing the wrong flavor (simple / full / legacy) yields valid signatures verifiers reject, and signature-flavor bugs are silent (sig generates, verifier rejects, user is confused). ([#438](https://github.com/szhygulin/vaultpilot-mcp/issues/438))
+- **`dryRun` mode for `prepare_btc_send` / `prepare_ltc_send`** — `dryRun: true` synthesizes a placeholder `paired` shape (addressType inferred from prefix, source-as-change loopback, `signable: false` flag) so an agent can build + return calldata without first running `pair_ledger_btc` / `pair_ledger_ltc`. The pairing-cache lookup is woven through the build flow at multiple points (`addressType` / `accountIndex` / `path` for PSBT input + `pickChangeEntry` derivation), so this is real surgery (~80 LoC per chain), not a one-line guard. Today's pairing-required flow covers the actual signing case; `dryRun` is forward-looking inspection. ([#479](https://github.com/szhygulin/vaultpilot-mcp/issues/479))
 
 **Wallet integrations**
 
