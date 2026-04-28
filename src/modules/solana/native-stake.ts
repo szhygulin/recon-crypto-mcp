@@ -102,6 +102,8 @@ export interface PreparedNativeStakeTx {
   rentLamports?: number;
   /** Stake account address — surfaced on delegate so the user can refer to it later. */
   stakeAccount?: string;
+  /** Invariant #14 — vote pubkey on delegate; absent on deactivate/withdraw (no candidate-set selection). Issue #460. */
+  durableBindings?: import("../../security/durable-binding.js").DurableBinding[];
 }
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -265,6 +267,9 @@ export async function buildNativeStakeDelegate(
   });
 
   const { handle } = issueSolanaDraftHandle(draft);
+  const { makeDurableBinding } = await import(
+    "../../security/durable-binding.js"
+  );
   return {
     handle,
     action: "native_stake_delegate",
@@ -275,6 +280,9 @@ export async function buildNativeStakeDelegate(
     nonceAccount: ctx.noncePubkey.toBase58(),
     rentLamports,
     stakeAccount: stakePubkey.toBase58(),
+    durableBindings: [
+      makeDurableBinding("solana-validator-vote-pubkey", validatorPk.toBase58()),
+    ],
   };
 }
 

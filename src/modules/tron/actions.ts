@@ -729,6 +729,9 @@ export async function buildTronVote(args: BuildTronVoteArgs): Promise<UnsignedTr
   });
   await assertBandwidthSufficient(args.from, res.raw_data_hex, apiKey);
 
+  const { makeDurableBinding } = await import(
+    "../../security/durable-binding.js"
+  );
   const tx: UnsignedTronTx = {
     chain: "tron",
     action: "vote",
@@ -745,6 +748,13 @@ export async function buildTronVote(args: BuildTronVoteArgs): Promise<UnsignedTr
         allocation: JSON.stringify(args.votes),
       },
     },
+    // Inv #14 — one binding per Super Representative the user is voting
+    // for. Empty `args.votes` (clear-all-votes) intentionally surfaces
+    // an empty array rather than absent so the skill can distinguish
+    // "clear" from "tool didn't emit bindings".
+    durableBindings: args.votes.map((v) =>
+      makeDurableBinding("tron-super-representative-address", v.address),
+    ),
   };
   return issueTronHandle(tx);
 }

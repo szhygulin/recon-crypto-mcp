@@ -969,6 +969,12 @@ export interface UnsignedTronTx {
    * all call sites are updated.
    */
   verification?: TxVerification;
+  /**
+   * Invariant #14 — durable-binding source-of-truth verification (issue
+   * #460). Populated by `prepare_tron_vote` (one binding per Super
+   * Representative voted for). Absent on other TRON op kinds.
+   */
+  durableBindings?: import("../security/durable-binding.js").DurableBinding[];
 }
 
 /**
@@ -1293,6 +1299,16 @@ export interface UnsignedTx {
    * any other prepare path is a server bug, not a user-controllable lever.
    */
   acknowledgedNonProtocolTarget?: boolean;
+  /**
+   * Invariant #14 — durable-binding source-of-truth verification (issue
+   * #460). When the tx binds funds to a durable on-chain object selected
+   * from a multi-candidate set (Compound Comet, Morpho marketId, Uniswap
+   * V3 LP tokenId, allowance spender, ...) the prepare_* tool emits the
+   * binding here so the skill can byte-equality-check it against the
+   * prepared calldata + surface the provenance hint to the user before
+   * signing. Absent for ops that don't bind to a durable identifier.
+   */
+  durableBindings?: import("../security/durable-binding.js").DurableBinding[];
 }
 
 /** Shape of ~/.vaultpilot-mcp/config.json. */

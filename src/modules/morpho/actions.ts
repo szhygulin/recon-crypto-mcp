@@ -4,6 +4,7 @@ import { getClient } from "../../data/rpc.js";
 import { CONTRACTS } from "../../config/contracts.js";
 import { buildApprovalTx, chainApproval, resolveApprovalCap } from "../shared/approval.js";
 import { resolveTokenMeta } from "../shared/token-meta.js";
+import { makeDurableBinding } from "../../security/durable-binding.js";
 import type {
   PrepareMorphoSupplyArgs,
   PrepareMorphoWithdrawArgs,
@@ -95,6 +96,7 @@ export async function buildMorphoSupply(p: PrepareMorphoSupplyArgs): Promise<Uns
       functionName: "supply",
       args: { marketId: p.marketId, amount: p.amount, onBehalf: wallet },
     },
+    durableBindings: [makeDurableBinding("morpho-blue-market-id", p.marketId)],
   };
   return chainApproval(approval, supplyTx);
 }
@@ -129,6 +131,7 @@ export async function buildMorphoWithdraw(p: PrepareMorphoWithdrawArgs): Promise
       functionName: "withdraw",
       args: { marketId: p.marketId, amount: p.amount, receiver: wallet },
     },
+    durableBindings: [makeDurableBinding("morpho-blue-market-id", p.marketId)],
   };
 }
 
@@ -154,6 +157,7 @@ export async function buildMorphoBorrow(p: PrepareMorphoBorrowArgs): Promise<Uns
       functionName: "borrow",
       args: { marketId: p.marketId, amount: p.amount, receiver: wallet },
     },
+    durableBindings: [makeDurableBinding("morpho-blue-market-id", p.marketId)],
   };
 }
 
@@ -252,6 +256,7 @@ export async function buildMorphoRepay(p: PrepareMorphoRepayArgs): Promise<Unsig
       functionName: "repay",
       args: { marketId: p.marketId, amount: displayAmount, onBehalf: wallet },
     },
+    durableBindings: [makeDurableBinding("morpho-blue-market-id", p.marketId)],
   };
   return chainApproval(approval, repayTx);
 }
@@ -296,6 +301,7 @@ export async function buildMorphoSupplyCollateral(
       functionName: "supplyCollateral",
       args: { marketId: p.marketId, amount: p.amount, onBehalf: wallet },
     },
+    durableBindings: [makeDurableBinding("morpho-blue-market-id", p.marketId)],
   };
   return chainApproval(approval, tx);
 }
@@ -329,5 +335,6 @@ export async function buildMorphoWithdrawCollateral(
       functionName: "withdrawCollateral",
       args: { marketId: p.marketId, amount: p.amount, receiver: wallet },
     },
+    durableBindings: [makeDurableBinding("morpho-blue-market-id", p.marketId)],
   };
 }
