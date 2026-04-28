@@ -141,11 +141,54 @@ describe("Refusal messages — stable prefix + actionable content", () => {
     expect(msg).toContain("'prepare_native_send'");
     expect(msg).toContain("set_demo_wallet");
     // Lists the four personas by ID so the agent can offer them to the user
-    // without an extra get_demo_wallet call.
+    // without an extra get_demo_wallet call. native_send is universal
+    // across all persona cells, so the message lands in the
+    // "all personas qualify" branch.
     expect(msg).toContain("defi-degen");
     expect(msg).toContain("stable-saver");
     expect(msg).toContain("staking-maxi");
     expect(msg).toContain("whale");
+  });
+
+  it("defaultModeRefusalMessage recommends a single persona when only one cell rehearses the flow", async () => {
+    // aave_supply is rehearsable on evm/defi-degen and explicitly
+    // gapped on whale + stable-saver. Recommendation should be
+    // defi-degen specifically, with the others mentioned as fallback.
+    const { defaultModeRefusalMessage } = await import("../src/demo/index.js");
+    const msg = defaultModeRefusalMessage("prepare_aave_supply");
+    expect(msg).toContain("Recommended persona: `defi-degen`");
+    expect(msg).toContain("on-chain state already supports this flow end-to-end");
+    // Other personas still get listed for fallback context.
+    expect(msg).toContain("stable-saver");
+    expect(msg).toContain("whale");
+  });
+
+  it("defaultModeRefusalMessage recommends staking-maxi for prepare_lido_stake", async () => {
+    const { defaultModeRefusalMessage } = await import("../src/demo/index.js");
+    const msg = defaultModeRefusalMessage("prepare_lido_stake");
+    expect(msg).toContain("Recommended persona: `staking-maxi`");
+  });
+
+  it("defaultModeRefusalMessage strips the solana_ prefix when matching flow IDs", async () => {
+    // prepare_solana_native_send → native_send candidate. Solana cells
+    // for whale + defi-degen + stable-saver have native_send rehearsable;
+    // staking-maxi is not curated on solana. Expect a multi-persona
+    // recommendation, NOT the all-personas fallback.
+    const { defaultModeRefusalMessage } = await import("../src/demo/index.js");
+    const msg = defaultModeRefusalMessage("prepare_solana_native_send");
+    expect(msg).toContain("Recommended persona");
+    // staking-maxi should appear as "other" since it has no solana cell.
+    expect(msg).toContain("staking-maxi");
+  });
+
+  it("defaultModeRefusalMessage falls back when no persona's curated state matches", async () => {
+    // aave_borrow is in flowGaps for every cell, never rehearsable —
+    // the fallback message should warn about state-precondition fails
+    // and point at exit_demo_mode.
+    const { defaultModeRefusalMessage } = await import("../src/demo/index.js");
+    const msg = defaultModeRefusalMessage("prepare_aave_borrow");
+    expect(msg).toContain("no persona's curated wallet currently has on-chain state");
+    expect(msg).toContain("exit_demo_mode");
   });
 });
 

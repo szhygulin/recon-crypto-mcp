@@ -468,15 +468,116 @@ export function alwaysGatedRefusalMessage(toolName: string): string {
 }
 
 /**
+ * Map a `prepare_*` tool name to candidate `rehearsableFlows` IDs we
+ * can search the matrix against. The matrix uses chain-agnostic flow
+ * IDs (`native_send`, `aave_supply`, `marinade_stake`); tool names
+ * encode the chain (`prepare_solana_native_send`, `prepare_aave_supply`,
+ * `prepare_marinade_stake`). We strip the `prepare_` prefix and try
+ * the bare form plus chain-prefix-stripped forms so most prepare tools
+ * map cleanly. A miss just falls through to the "no persona matches"
+ * branch in `defaultModeRefusalMessage`.
+ */
+function candidateFlowIds(toolName: string): string[] {
+  if (!toolName.startsWith("prepare_")) return [];
+  const tail = toolName.slice("prepare_".length);
+  const set = new Set<string>([tail]);
+  for (const prefix of ["solana_", "tron_", "btc_", "litecoin_"]) {
+    if (tail.startsWith(prefix)) set.add(tail.slice(prefix.length));
+  }
+  return Array.from(set);
+}
+
+/**
+ * Chain a `prepare_*` tool targets, derived from its name prefix.
+ * EVM tools have no chain prefix (e.g. `prepare_aave_supply`,
+ * `prepare_native_send`) and return null — those should match against
+ * any chain. Returning a chain restricts the matrix search so e.g.
+ * `prepare_solana_native_send` doesn't recommend `staking-maxi`
+ * (which has no Solana cell) just because every EVM cell rehearses
+ * `native_send`.
+ */
+function chainHintForTool(toolName: string): DemoChain | null {
+  if (!toolName.startsWith("prepare_")) return null;
+  const tail = toolName.slice("prepare_".length);
+  if (tail.startsWith("solana_")) return "solana";
+  if (tail.startsWith("tron_")) return "tron";
+  if (tail.startsWith("btc_")) return "bitcoin";
+  return null;
+}
+
+/**
+ * Recommended personas for a given tool. A persona is recommended
+ * when ANY of its curated cells (on the tool's chain, or any chain
+ * if the tool has no chain prefix) lists a `rehearsableFlows` entry
+ * matching one of the candidate flow IDs (exact match, or the cell's
+ * flow starts with `<candidate>_` so `token_send` matches
+ * `token_send_usdc` / `token_send_usdt`).
+ *
+ * The result is sorted by `DEMO_TYPES` order so the message reads
+ * deterministically across runs.
+ */
+function recommendPersonasFor(toolName: string): DemoType[] {
+  const candidates = candidateFlowIds(toolName);
+  if (candidates.length === 0) return [];
+  const chainHint = chainHintForTool(toolName);
+  const chains: readonly DemoChain[] = chainHint ? [chainHint] : DEMO_CHAINS;
+  const matched = new Set<DemoType>();
+  for (const chain of chains) {
+    for (const type of DEMO_TYPES) {
+      const cell = DEMO_WALLETS[chain][type];
+      if (!cell) continue;
+      const hit = cell.rehearsableFlows.some((flow) =>
+        candidates.some((c) => flow === c || flow.startsWith(c + "_")),
+      );
+      if (hit) matched.add(type);
+    }
+  }
+  return DEMO_TYPES.filter((t) => matched.has(t));
+}
+
+/**
  * Structured refusal for conditionally-gated tools when no live wallet
  * is set. Points the user at `set_demo_wallet` so the upgrade path is
  * discoverable from the error itself.
+ *
+ * Message branches on persona-affinity (issue #371 follow-up #7): if
+ * one persona's curated state matches the requested flow, recommend it
+ * specifically rather than dumping the full list. Sourced from the
+ * persona matrix's `rehearsableFlows`, so refreshing the matrix
+ * automatically updates the recommendations — no separate table to
+ * keep in sync.
  */
 export function defaultModeRefusalMessage(toolName: string): string {
+  const recommended = recommendPersonasFor(toolName);
+  const allPersonas = DEMO_TYPES.map((t) => `\`${t}\``).join(", ");
+  let recommendation: string;
+  if (recommended.length === 1) {
+    const others = DEMO_TYPES.filter((t) => t !== recommended[0])
+      .map((t) => `\`${t}\``)
+      .join(", ");
+    recommendation =
+      `Recommended persona: \`${recommended[0]}\` — its curated wallet's on-chain ` +
+      `state already supports this flow end-to-end. ` +
+      `Other personas: ${others}.`;
+  } else if (recommended.length > 1 && recommended.length < DEMO_TYPES.length) {
+    recommendation =
+      `Recommended personas: ${recommended.map((p) => `\`${p}\``).join(", ")}. ` +
+      `Other personas (${DEMO_TYPES.filter((t) => !recommended.includes(t))
+        .map((t) => `\`${t}\``)
+        .join(", ")}) don't have on-chain state for this specific flow.`;
+  } else if (recommended.length === DEMO_TYPES.length) {
+    recommendation = `Available personas: ${allPersonas}.`;
+  } else {
+    recommendation =
+      `Available personas: ${allPersonas}. Note: no persona's curated wallet ` +
+      `currently has on-chain state matching this specific flow, so the prepare ` +
+      `may fail with a state-precondition error. To rehearse this flow end-to-end, ` +
+      `leave demo via \`exit_demo_mode\` and pair a wallet whose state supports it.`;
+  }
   return (
     `[VAULTPILOT_DEMO] '${toolName}' requires an active demo wallet — call ` +
     `\`set_demo_wallet({ persona: "<id>" })\` first to enable the simulated transaction ` +
-    `flow. Available personas: defi-degen, stable-saver, staking-maxi, whale. ` +
+    `flow. ${recommendation} ` +
     `In default demo mode (no live wallet), only read tools and \`set_demo_wallet\` work — ` +
     `signing-class tools refuse to avoid any chance of fake-signing or fake-broadcasting. ` +
     `If you'd rather leave demo entirely and use this tool against your real wallet, call ` +
