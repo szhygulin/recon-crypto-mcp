@@ -17,6 +17,7 @@ import { readAaveYields } from "./adapters/aave.js";
 import { readCompoundYields } from "./adapters/compound.js";
 import { readLidoYields } from "./adapters/lido.js";
 import { readDefiLlamaYields } from "./adapters/defillama.js";
+import { readMarginfiYields } from "./adapters/marginfi.js";
 import {
   resolveAsset,
   expandStables,
@@ -43,11 +44,6 @@ const DEFERRED_PROTOCOLS: ReadonlyArray<{
   chain: AnyChain;
   reason: string;
 }> = [
-  {
-    protocol: "marginfi",
-    chain: "solana",
-    reason: "MarginFi borrow-lend isn't published on DefiLlama yields (only marginfi-lst); on-chain wallet-less bank reader is the follow-up — issue #288.",
-  },
   {
     protocol: "eigenlayer",
     chain: "ethereum",
@@ -112,6 +108,7 @@ async function compareYieldsImpl(args: CompareYieldsArgs): Promise<CompareYields
       readCompoundYields(sub, evmChains),
       readLidoYields(sub),
       readDefiLlamaYields(sub, requestedChains),
+      readMarginfiYields(sub, requestedChains),
     ]);
     for (const r of settled) {
       if (r.status === "fulfilled") {
