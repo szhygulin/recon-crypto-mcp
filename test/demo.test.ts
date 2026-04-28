@@ -141,11 +141,54 @@ describe("Refusal messages — stable prefix + actionable content", () => {
     expect(msg).toContain("'prepare_native_send'");
     expect(msg).toContain("set_demo_wallet");
     // Lists the four personas by ID so the agent can offer them to the user
-    // without an extra get_demo_wallet call.
+    // without an extra get_demo_wallet call. native_send is universal
+    // across all persona cells, so the message lands in the
+    // "all personas qualify" branch.
     expect(msg).toContain("defi-degen");
     expect(msg).toContain("stable-saver");
     expect(msg).toContain("staking-maxi");
     expect(msg).toContain("whale");
+  });
+
+  it("defaultModeRefusalMessage recommends a single persona when only one cell rehearses the flow", async () => {
+    // aave_supply is rehearsable on evm/defi-degen and explicitly
+    // gapped on whale + stable-saver. Recommendation should be
+    // defi-degen specifically, with the others mentioned as fallback.
+    const { defaultModeRefusalMessage } = await import("../src/demo/index.js");
+    const msg = defaultModeRefusalMessage("prepare_aave_supply");
+    expect(msg).toContain("Recommended persona: `defi-degen`");
+    expect(msg).toContain("on-chain state already supports this flow end-to-end");
+    // Other personas still get listed for fallback context.
+    expect(msg).toContain("stable-saver");
+    expect(msg).toContain("whale");
+  });
+
+  it("defaultModeRefusalMessage recommends staking-maxi for prepare_lido_stake", async () => {
+    const { defaultModeRefusalMessage } = await import("../src/demo/index.js");
+    const msg = defaultModeRefusalMessage("prepare_lido_stake");
+    expect(msg).toContain("Recommended persona: `staking-maxi`");
+  });
+
+  it("defaultModeRefusalMessage strips the solana_ prefix when matching flow IDs", async () => {
+    // prepare_solana_native_send → native_send candidate. Solana cells
+    // for whale + defi-degen + stable-saver have native_send rehearsable;
+    // staking-maxi is not curated on solana. Expect a multi-persona
+    // recommendation, NOT the all-personas fallback.
+    const { defaultModeRefusalMessage } = await import("../src/demo/index.js");
+    const msg = defaultModeRefusalMessage("prepare_solana_native_send");
+    expect(msg).toContain("Recommended persona");
+    // staking-maxi should appear as "other" since it has no solana cell.
+    expect(msg).toContain("staking-maxi");
+  });
+
+  it("defaultModeRefusalMessage falls back when no persona's curated state matches", async () => {
+    // aave_borrow is in flowGaps for every cell, never rehearsable —
+    // the fallback message should warn about state-precondition fails
+    // and point at exit_demo_mode.
+    const { defaultModeRefusalMessage } = await import("../src/demo/index.js");
+    const msg = defaultModeRefusalMessage("prepare_aave_borrow");
+    expect(msg).toContain("no persona's curated wallet currently has on-chain state");
+    expect(msg).toContain("exit_demo_mode");
   });
 });
 
@@ -198,6 +241,157 @@ describe("buildSimulationEnvelope — broadcast intercept shape", () => {
       simulationResult: null,
     });
     expect(a.simulatedTxHash).not.toBe(b.simulatedTxHash);
+  });
+
+  it("envelope echoes toolName + handle so the markdown renderer can use them", async () => {
+    const { buildSimulationEnvelope } = await import("../src/demo/index.js");
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-xyz",
+      simulationResult: null,
+    });
+    expect(env.toolName).toBe("send_transaction");
+    expect(env.unsignedTxHandle).toBe("h-xyz");
+  });
+});
+
+describe("renderSimulationEnvelopeBlock — markdown narrative", () => {
+  it("includes tool, handle, simulated hash, and the not-on-chain caveat", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-abc-123",
+      simulationResult: { ok: true },
+    });
+    const md = renderSimulationEnvelopeBlock(env);
+    expect(md).toContain("[VAULTPILOT_DEMO]");
+    expect(md).toContain("nothing on-chain");
+    expect(md).toContain("`send_transaction`");
+    expect(md).toContain("`h-abc-123`");
+    expect(md).toContain(env.simulatedTxHash);
+    // Action paragraph the agent should relay verbatim.
+    expect(md).toContain("unset `VAULTPILOT_DEMO`");
+  });
+
+  it("summarizes a successful viem-shape simulation as 'would succeed'", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-1",
+      simulationResult: { status: "success" },
+    });
+    expect(renderSimulationEnvelopeBlock(env)).toContain("would succeed");
+  });
+
+  it("summarizes a reverted simulation with the revert reason", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-2",
+      simulationResult: { status: "reverted", revertReason: "insufficient allowance" },
+    });
+    const md = renderSimulationEnvelopeBlock(env);
+    expect(md).toContain("would revert");
+    expect(md).toContain("insufficient allowance");
+  });
+
+  it("summarizes the Solana deferred-to-preview shape", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-sol",
+      simulationResult: { simulationDeferredToPreview: true, chain: "solana" },
+    });
+    expect(renderSimulationEnvelopeBlock(env)).toContain("preview_solana_send");
+  });
+
+  it("summarizes the simulationFailed shape with reason", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-fail",
+      simulationResult: { simulationFailed: true, reason: "RPC timeout" },
+    });
+    const md = renderSimulationEnvelopeBlock(env);
+    expect(md).toContain("failed");
+    expect(md).toContain("RPC timeout");
+  });
+
+  it("summarizes the simulationSkipped shape", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-skip",
+      simulationResult: {
+        simulationSkipped: true,
+        reason: "Handle not found in tx-store",
+      },
+    });
+    const md = renderSimulationEnvelopeBlock(env);
+    expect(md).toContain("skipped");
+    expect(md).toContain("Handle not found");
+  });
+
+  it("falls back to 'see simulation field' for unrecognized shapes", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-unknown",
+      simulationResult: { somethingWeird: 42 },
+    });
+    expect(renderSimulationEnvelopeBlock(env)).toContain("see `simulation` field");
+  });
+});
+
+describe("applyDemoCliFlag — --demo CLI alias", () => {
+  let originalEnv: string | undefined;
+  beforeEach(() => {
+    originalEnv = process.env.VAULTPILOT_DEMO;
+    delete process.env.VAULTPILOT_DEMO;
+  });
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.VAULTPILOT_DEMO;
+    else process.env.VAULTPILOT_DEMO = originalEnv;
+  });
+
+  it("sets VAULTPILOT_DEMO=true when --demo present and env unset", async () => {
+    const { applyDemoCliFlag } = await import("../src/demo/index.js");
+    applyDemoCliFlag(["node", "vaultpilot-mcp", "--demo"]);
+    expect(process.env.VAULTPILOT_DEMO).toBe("true");
+  });
+
+  it("does NOT overwrite an explicit env opt-out (--demo + VAULTPILOT_DEMO=false)", async () => {
+    const { applyDemoCliFlag } = await import("../src/demo/index.js");
+    process.env.VAULTPILOT_DEMO = "false";
+    applyDemoCliFlag(["node", "vaultpilot-mcp", "--demo"]);
+    expect(process.env.VAULTPILOT_DEMO).toBe("false");
+  });
+
+  it("does NOT overwrite an explicit env enable (already true)", async () => {
+    const { applyDemoCliFlag } = await import("../src/demo/index.js");
+    process.env.VAULTPILOT_DEMO = "true";
+    applyDemoCliFlag(["node", "vaultpilot-mcp", "--demo"]);
+    expect(process.env.VAULTPILOT_DEMO).toBe("true");
+  });
+
+  it("is a no-op when --demo absent", async () => {
+    const { applyDemoCliFlag } = await import("../src/demo/index.js");
+    applyDemoCliFlag(["node", "vaultpilot-mcp", "--check"]);
+    expect(process.env.VAULTPILOT_DEMO).toBeUndefined();
   });
 });
 

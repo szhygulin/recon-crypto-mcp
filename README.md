@@ -204,6 +204,43 @@ npm run setup
 
 Environment variables always override the config file.
 
+## Demo mode
+
+For try-before-install exploration without RPC keys, Ledger pairing, or running the wizard, set `VAULTPILOT_DEMO=true` (or pass `--demo`):
+
+```bash
+claude mcp add vaultpilot-mcp --env VAULTPILOT_DEMO=true -- npx -y vaultpilot-mcp
+# or, equivalently:
+claude mcp add vaultpilot-mcp -- npx -y vaultpilot-mcp --demo
+```
+
+`--demo` is a thin alias that sets `VAULTPILOT_DEMO=true` before initialization. An explicit env value (including `VAULTPILOT_DEMO=false`) wins over the flag — useful when scripted invocations need a deterministic opt-out.
+
+What demo mode does:
+
+- Reads run against real on-chain RPC, but every wallet is one of a curated set of public personas (`whale`, `defi-degen`, `stable-saver`, `staking-maxi`) — no key access, no signing.
+- `send_transaction` is intercepted and returns a [simulation envelope](src/demo/index.ts) — the unsigned tx is `simulate_transaction`'d for revert detection, but nothing is signed and nothing is broadcast.
+- Pairing tools (`pair_ledger_*`), `request_capability`, and on-device signing (`sign_message_*`) are refused outright in demo, since none have an on-chain simulation equivalent.
+
+Picking a persona:
+
+- `get_demo_wallet` lists all personas with their per-chain curated addresses + `rehearsableFlows` (multi-step flows the wallet's existing on-chain state already supports end-to-end).
+- `set_demo_wallet({ persona: "defi-degen" })` activates one. Default mode (no persona) refuses signing-class tools with a structured error pointing at this call.
+- Multi-step flows whose preconditions are themselves state changes (e.g. `prepare_solana_nonce_init` → `marinade_stake`) cannot be rehearsed end-to-end — simulated sends don't mutate chain state. The MCP surfaces a one-shot hint when the agent-loop trap is detected.
+
+API key overrides without restart:
+
+- Solana public RPC throttles within seconds under multi-tool fan-out. Inject a [Helius](https://helius.dev) key at runtime: `set_helius_api_key({ key: "..." })`. The override applies to the next Solana RPC call. Demo mode also nudges proactively every 10 public-RPC throttle errors.
+
+Leaving demo:
+
+- `exit_demo_mode` returns a tailored handoff guide — preflight checks, per-chain RPC recommendations, and the exact `claude mcp add ...` recipe with `VAULTPILOT_DEMO` removed plus a setup-wizard launch step.
+
+Caveats:
+
+- Demo state is process-local and ephemeral; restart loses persona selection.
+- Demo is a scaffold for first-contact, not a sandbox — there is no virtual chain overlay. Permanent setup is what `vaultpilot-mcp-setup` is for.
+
 ## Use with Claude Desktop / Claude Code / Cursor
 
 `vaultpilot-mcp-setup` detects which agent clients you have installed and offers to add a `vaultpilot-mcp` entry to each one's MCP-server config automatically. Each existing config is backed up to `<file>.vaultpilot.bak` before any change. Detected client paths:
@@ -245,6 +282,7 @@ All optional if the matching field is in `~/.vaultpilot-mcp/config.json`; env va
 - `VAULTPILOT_FEEDBACK_ENDPOINT` — optional https proxy for `request_capability` direct POSTs. **The client does not sign or authenticate requests — the proxy MUST enforce its own auth.**
 - `VAULTPILOT_SKILL_MARKER_PATH` — suppresses the preflight-skill notice for read-only users who accept the tradeoff
 - `VAULTPILOT_DISABLE_SKILL_AUTOINSTALL=1` — skips the lazy first-run `git clone` of the companion preflight + setup skills into `~/.claude/skills/`. The original manual-install notice fires instead. Use for air-gapped / no-egress operation where the MCP must not contact github.com.
+- `VAULTPILOT_DEMO=true` — enables [demo mode](#demo-mode) (curated personas + simulated `send_transaction`, no signing, no broadcast). Set the literal string `true`; any other value is rejected with a diagnostic message.
 
 ## Development
 
