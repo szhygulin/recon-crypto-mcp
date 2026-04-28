@@ -3,6 +3,7 @@ import { encodeFunctionData, formatUnits, isAddress, parseEther, parseUnits } fr
 import { CONTRACTS } from "../../config/contracts.js";
 import qrcodeTerminal from "qrcode-terminal";
 import { resolveRecipient } from "../../contacts/resolver.js";
+import { lookupTokenClass } from "./token-class.js";
 import {
   initiatePairing,
   requestSendTransaction,
@@ -2559,6 +2560,7 @@ export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<Unsi
   const recipientDisplay = resolved.label
     ? `${resolved.label} (${to})`
     : to;
+  const tokenClass = lookupTokenClass(chain, token);
   return enrichTx({
     chain,
     to: token,
@@ -2584,6 +2586,7 @@ export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<Unsi
       source: resolved.source,
       ...(resolved.warnings.length > 0 ? { warnings: resolved.warnings } : {}),
     },
+    ...(tokenClass !== null ? { tokenClass } : {}),
   });
 }
 
