@@ -12,6 +12,7 @@ import { describe, it, expect } from "vitest";
 import {
   renderMissingSkillWarning,
   renderMissingSetupSkillWarning,
+  renderUpdateAvailableNotice,
 } from "../src/signing/render-verification.js";
 
 const PREFLIGHT_REPO =
@@ -109,5 +110,66 @@ describe("renderMissingSetupSkillWarning — state variants", () => {
       expect(v).not.toMatch(/^\s*git clone\s/m);
       expect(v).not.toMatch(/```/);
     }
+  });
+});
+
+describe("renderUpdateAvailableNotice", () => {
+  it("renders the standard VAULTPILOT NOTICE shape with both versions", () => {
+    const out = renderUpdateAvailableNotice({
+      current: "0.10.0",
+      latest: "0.11.2",
+      packageName: "vaultpilot-mcp",
+      installBlock:
+        "         (npm-global install detected)\n" +
+        "         npm install -g vaultpilot-mcp@latest\n" +
+        "         Restart Claude Code after upgrading so the new binary loads.",
+    });
+    expect(out).toMatch(/^VAULTPILOT NOTICE — Update available/);
+    expect(out).toMatch(/vaultpilot-mcp 0\.10\.0 installed/);
+    expect(out).toMatch(/0\.11\.2 published on npm/);
+    expect(out).toMatch(/releases\/tag\/v0\.11\.2/);
+    expect(out).toMatch(/npm install -g vaultpilot-mcp@latest/);
+    expect(out).toMatch(/VAULTPILOT_DISABLE_UPDATE_CHECK=1/);
+  });
+
+  it("renders cleanly across a wider version jump", () => {
+    const out = renderUpdateAvailableNotice({
+      current: "0.10.0",
+      latest: "1.0.0",
+      packageName: "vaultpilot-mcp",
+      installBlock: "         (test) some upgrade hint",
+    });
+    expect(out).toMatch(/0\.10\.0 installed; 1\.0\.0 published/);
+    expect(out).toMatch(/releases\/tag\/v1\.0\.0/);
+  });
+
+  it("renders the supplied install block verbatim (no hardcoded npm command)", () => {
+    const block = [
+      "         (bundled-binary install detected)",
+      "         curl -fsSL https://example/install.sh | bash",
+    ].join("\n");
+    const out = renderUpdateAvailableNotice({
+      current: "0.10.0",
+      latest: "0.11.2",
+      packageName: "vaultpilot-mcp",
+      installBlock: block,
+    });
+    expect(out).toContain(block);
+    expect(out).not.toMatch(/npm install -g/);
+  });
+
+  it("carries no imperative agent verbs and no pasted shell beyond the install copy", () => {
+    const out = renderUpdateAvailableNotice({
+      current: "0.10.0",
+      latest: "0.11.2",
+      packageName: "vaultpilot-mcp",
+      installBlock:
+        "         (npm-global install detected)\n" +
+        "         npm install -g vaultpilot-mcp@latest\n" +
+        "         Restart Claude Code after upgrading so the new binary loads.",
+    });
+    expect(out).not.toMatch(/AGENT TASK/);
+    expect(out).not.toMatch(/RELAY TO USER FIRST/);
+    expect(out).not.toMatch(/```/);
   });
 });
