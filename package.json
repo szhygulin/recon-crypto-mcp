@@ -134,6 +134,7 @@
   "dependencies": {
     "@bitcoinerlab/secp256k1": "^1.2.0",
     "@kamino-finance/klend-sdk": "^7.3.22",
+    "@kamino-finance/kliquidity-sdk": "file:./vendor/kliquidity-stub",
     "@ledgerhq/hw-app-btc": "^10.21.1",
     "@ledgerhq/hw-app-solana": "^7.10.1",
     "@ledgerhq/hw-app-trx": "^6.34.1",
@@ -178,6 +179,7 @@
     "@coral-xyz/anchor": "^0.30.1",
     "@coral-xyz/borsh": "^0.30.1",
     "bs58": "^6.0.0",
+    "@kamino-finance/kliquidity-sdk": "file:./vendor/kliquidity-stub",
     "@marinade.finance/marinade-ts-sdk": {
       "@coral-xyz/anchor": "^0.28.0",
       "@coral-xyz/borsh": "^0.28.0",
