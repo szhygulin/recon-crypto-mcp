@@ -519,3 +519,220 @@ describe("get_nft_history", () => {
     expect(r.truncated).toBe(true);
   });
 });
+
+// ---- Issue #433: Solana NFT portfolio via Helius DAS ----------------
+
+const SOLANA_WALLET = "8axowbY3iTotwSMr1iHsdxLArm6oNB4mhpYJyHrohYf3";
+const COLLECTION_DEGODS = "DGZ8tBYsj5K9XPLDDibXdUYZqQ8z3VeGdBMXUe2tRrPW";
+const COLLECTION_MADLADS = "MLADsRyu5Y3ar8WFrZQ3fwxQXaH4q6P2tGw3qkCt9hF";
+
+function makeHeliusFetch(items: unknown[], opts?: { total?: number }): typeof fetch {
+  return (async (_url: unknown, _init?: unknown) => {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        jsonrpc: "2.0",
+        id: "vaultpilot",
+        result: {
+          items,
+          total: opts?.total ?? items.length,
+          limit: 1000,
+          page: 1,
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+}
+
+describe("get_nft_portfolio — Solana branch (#433)", () => {
+  beforeEach(async () => {
+    const { setRuntimeOverride } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    // UUID-shaped key the override module accepts; the URL it builds
+    // is the canonical mainnet.helius-rpc.com endpoint, which is what
+    // resolveSolanaRpcUrl returns in `getNftPortfolio` → `helius-das.ts`.
+    setRuntimeOverride("helius", "abcdef01-1234-5678-9abc-def012345678");
+  });
+  afterEach(async () => {
+    const { _setFetchForTests } = await import(
+      "../src/modules/nft/helius-das.js"
+    );
+    _setFetchForTests(null);
+    const { _resetRuntimeRpcOverridesForTests } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    _resetRuntimeRpcOverridesForTests();
+  });
+
+  it("returns per-collection rows from Helius DAS getAssetsByOwner", async () => {
+    const { _setFetchForTests } = await import(
+      "../src/modules/nft/helius-das.js"
+    );
+    _setFetchForTests(
+      makeHeliusFetch([
+        {
+          id: "asset1",
+          interface: "V1_NFT",
+          content: {
+            metadata: { name: "DeGod #100", symbol: "DEGODS" },
+            links: { image: "https://example/degod-100.png" },
+          },
+          grouping: [
+            { group_key: "collection", group_value: COLLECTION_DEGODS },
+          ],
+        },
+        {
+          id: "asset2",
+          interface: "ProgrammableNFT",
+          content: { metadata: { name: "DeGod #200" } },
+          grouping: [
+            { group_key: "collection", group_value: COLLECTION_DEGODS },
+          ],
+        },
+        {
+          id: "asset3",
+          interface: "V1_NFT",
+          content: { metadata: { name: "Mad Lad #5" } },
+          grouping: [
+            { group_key: "collection", group_value: COLLECTION_MADLADS },
+          ],
+        },
+      ]),
+    );
+    const { getNftPortfolio } = await import("../src/modules/nft/index.ts");
+    const r = await getNftPortfolio({ solanaWallet: SOLANA_WALLET });
+    expect(r.solanaWallet).toBe(SOLANA_WALLET);
+    expect(r.wallet).toBe("");
+    expect(r.chains).toEqual(["solana"]);
+    expect(r.rows).toHaveLength(2);
+    const degods = r.rows.find((x) => x.contractAddress === COLLECTION_DEGODS);
+    const madlads = r.rows.find((x) => x.contractAddress === COLLECTION_MADLADS);
+    expect(degods).toMatchObject({
+      chain: "solana",
+      tokenCount: 2,
+      collectionName: "DeGod #100",
+    });
+    expect(madlads).toMatchObject({
+      chain: "solana",
+      tokenCount: 1,
+    });
+    expect(r.notes.some((n) => /no floor pricing/i.test(n))).toBe(true);
+  });
+
+  it("skips assets without a collection grouping (1/1s)", async () => {
+    const { _setFetchForTests } = await import(
+      "../src/modules/nft/helius-das.js"
+    );
+    _setFetchForTests(
+      makeHeliusFetch([
+        {
+          id: "asset1",
+          interface: "V1_NFT",
+          content: { metadata: { name: "Solo Piece" } },
+        },
+        {
+          id: "asset2",
+          interface: "V1_NFT",
+          content: { metadata: { name: "DeGod #100" } },
+          grouping: [
+            { group_key: "collection", group_value: COLLECTION_DEGODS },
+          ],
+        },
+      ]),
+    );
+    const { getNftPortfolio } = await import("../src/modules/nft/index.ts");
+    const r = await getNftPortfolio({ solanaWallet: SOLANA_WALLET });
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0].contractAddress).toBe(COLLECTION_DEGODS);
+  });
+
+  it("client-side filters out fungible tokens that slip through", async () => {
+    const { _setFetchForTests } = await import(
+      "../src/modules/nft/helius-das.js"
+    );
+    _setFetchForTests(
+      makeHeliusFetch([
+        {
+          id: "fungible1",
+          interface: "FungibleToken",
+          content: { metadata: { name: "USDC" } },
+          grouping: [
+            { group_key: "collection", group_value: "FakeCollectionForUSDC" },
+          ],
+        },
+        {
+          id: "asset2",
+          interface: "V1_NFT",
+          content: { metadata: { name: "DeGod" } },
+          grouping: [
+            { group_key: "collection", group_value: COLLECTION_DEGODS },
+          ],
+        },
+      ]),
+    );
+    const { getNftPortfolio } = await import("../src/modules/nft/index.ts");
+    const r = await getNftPortfolio({ solanaWallet: SOLANA_WALLET });
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0].contractAddress).toBe(COLLECTION_DEGODS);
+  });
+
+  it("flags truncated when total > items returned", async () => {
+    const { _setFetchForTests } = await import(
+      "../src/modules/nft/helius-das.js"
+    );
+    _setFetchForTests(
+      makeHeliusFetch(
+        [
+          {
+            id: "asset1",
+            interface: "V1_NFT",
+            content: { metadata: { name: "DeGod" } },
+            grouping: [
+              { group_key: "collection", group_value: COLLECTION_DEGODS },
+            ],
+          },
+        ],
+        { total: 1500 },
+      ),
+    );
+    const { getNftPortfolio } = await import("../src/modules/nft/index.ts");
+    const r = await getNftPortfolio({ solanaWallet: SOLANA_WALLET });
+    expect(r.notes.some((n) => /more than 1000 assets/i.test(n))).toBe(true);
+  });
+});
+
+describe("get_nft_portfolio — input validation + Helius config (#433)", () => {
+  afterEach(async () => {
+    const { _setFetchForTests } = await import(
+      "../src/modules/nft/helius-das.js"
+    );
+    _setFetchForTests(null);
+    const { _resetRuntimeRpcOverridesForTests } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    _resetRuntimeRpcOverridesForTests();
+  });
+
+  it("rejects calls without wallet or solanaWallet", async () => {
+    const { getNftPortfolio } = await import("../src/modules/nft/index.ts");
+    await expect(getNftPortfolio({})).rejects.toThrow(/at least one of/i);
+  });
+
+  it("surfaces a setup-hint note when only the public Solana endpoint is configured", async () => {
+    const { _resetRuntimeRpcOverridesForTests } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    _resetRuntimeRpcOverridesForTests();
+    const { getNftPortfolio } = await import("../src/modules/nft/index.ts");
+    const r = await getNftPortfolio({ solanaWallet: SOLANA_WALLET });
+    expect(r.coverage.find((c) => c.chain === "solana")?.errored).toBe(true);
+    expect(
+      r.coverage.find((c) => c.chain === "solana")?.reason,
+    ).toBe("helius_not_configured");
+    expect(
+      r.notes.some((n) => /Helius DAS requires a Helius API key/i.test(n)),
+    ).toBe(true);
+  });
+});

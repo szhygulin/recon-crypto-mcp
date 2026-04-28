@@ -1,8 +1,11 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
-import { EVM_ADDRESS } from "../../shared/address-patterns.js";
+import { EVM_ADDRESS, SOLANA_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
+const solanaWalletSchema = z
+  .string()
+  .regex(SOLANA_ADDRESS, "must be a base58 Solana address (43–44 chars)");
 
 /**
  * `get_nft_portfolio` — list NFTs the wallet owns across one or more
@@ -20,9 +23,23 @@ export const getNftPortfolioInput = z.object({
   wallet: z
     .string()
     .regex(EVM_ADDRESS)
+    .optional()
     .describe(
       "EVM wallet to enumerate. Reservoir is the source of truth; the " +
-        "tool fans out one HTTP call per requested chain in parallel.",
+        "tool fans out one HTTP call per requested chain in parallel. " +
+        "Optional iff `solanaWallet` is provided — at least one of " +
+        "`wallet` / `solanaWallet` must be supplied.",
+    ),
+  solanaWallet: solanaWalletSchema
+    .optional()
+    .describe(
+      "Issue #433 — Solana wallet to enumerate via the Helius DAS " +
+        "`getAssetsByOwner` method. Requires a Helius API key (free tier " +
+        "is enough); falls back to a structured setup hint when only the " +
+        "public Solana mainnet endpoint is configured (DAS is not exposed " +
+        "there). v1 returns per-collection rows without floor pricing — " +
+        "Magic Eden / Tensor floor is a separate follow-up. Optional iff " +
+        "`wallet` is provided.",
     ),
   chains: z
     .array(chainEnum)
@@ -33,7 +50,8 @@ export const getNftPortfolioInput = z.object({
       "Subset of supported EVM chains to scan (ethereum / arbitrum / " +
         "polygon / base / optimism). Omit to scan all five. Per-chain " +
         "errors degrade rather than abort the whole call — the response's " +
-        "`coverage` field flags which chains errored.",
+        "`coverage` field flags which chains errored. Ignored when only " +
+        "`solanaWallet` is set.",
     ),
   minFloorEth: z
     .number()
@@ -42,7 +60,9 @@ export const getNftPortfolioInput = z.object({
     .describe(
       "Drop NFTs whose collection floor is below this value (in the " +
         "chain's native asset). Useful for filtering out airdrop / spam / " +
-        "scam collections that pollute the headline. Default: no filter.",
+        "scam collections that pollute the headline. Default: no filter. " +
+        "Solana rows have no floor pricing in v1 (#433 deferred), so this " +
+        "filter only affects EVM rows.",
     ),
   collections: z
     .array(z.string().regex(EVM_ADDRESS))
@@ -52,7 +72,7 @@ export const getNftPortfolioInput = z.object({
       "Whitelist a specific set of collection contract addresses. When " +
         "supplied, ALL other collections are dropped. Useful for spot-" +
         "checking a particular collection. Mutually composable with " +
-        "`minFloorEth` (both filters apply).",
+        "`minFloorEth` (both filters apply). EVM-only.",
     ),
 });
 
@@ -139,7 +159,14 @@ export interface NftPortfolioRow {
 }
 
 export interface NftPortfolioResult {
+  /**
+   * EVM wallet that was scanned. Empty string when only `solanaWallet`
+   * was supplied — `solanaWallet` carries the Solana address in that
+   * case. Issue #433.
+   */
   wallet: string;
+  /** Solana wallet that was scanned (when supplied). Issue #433. */
+  solanaWallet?: string;
   chains: string[];
   /** Total floor value across every row, in USD (when priced). */
   totalFloorUsd: number;
