@@ -4689,6 +4689,23 @@ async function main() {
 // `process.exit(1)` would propagate as an unhandled rejection that
 // vitest reports as a CI failure even though every test asserted
 // passed.
+// Diagnostic crash-loggers — turn silent server deaths into stderr lines that
+// Claude Code captures in mcp-logs-vaultpilot-mcp/. Without these, an
+// unhandled rejection or uncaught exception under Node 22's default
+// `--unhandled-rejections=throw` exits the process with no stack trace, and
+// MCP clients only surface `-32000: Connection closed` — see periodic
+// crashes captured 2026-04-24 and 2026-04-28 with no stderr to chase.
+// Logging only; the process is still allowed to exit on uncaughtException
+// per the Node default, so we don't paper over a corrupted state.
+if (!process.env.VITEST) {
+  process.on("unhandledRejection", (reason) => {
+    console.error("[vaultpilot-mcp] unhandledRejection:", reason);
+  });
+  process.on("uncaughtException", (err) => {
+    console.error("[vaultpilot-mcp] uncaughtException:", err?.stack ?? err);
+  });
+}
+
 if (!process.env.VITEST) {
   main().catch((err) => {
     console.error("[vaultpilot-mcp] fatal:", err);
