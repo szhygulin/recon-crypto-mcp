@@ -22,6 +22,11 @@ import {
   type ReservoirUserTokensResponse,
   type ReservoirUsersActivityResponse,
 } from "./reservoir.js";
+import {
+  getAssetsByOwner,
+  HeliusNotConfiguredError,
+  HeliusRateLimitedError,
+} from "./helius-das.js";
 import type {
   GetNftCollectionArgs,
   GetNftHistoryArgs,
@@ -132,22 +137,122 @@ function projectToken(
   };
 }
 
+/**
+ * Issue #433 — Solana branch via Helius DAS `getAssetsByOwner`. Returns
+ * one row per collection (collected from `grouping.group_key === "collection"`)
+ * with `tokenCount` aggregated. Floor pricing intentionally absent in
+ * v1 — Magic Eden / Tensor integration is a separate follow-up issue
+ * per the deferred-scope plan.
+ *
+ * Spam / mint-bombed collection filtering is left to the user via the
+ * Helius `displayOptions.showFungible: false` server-side filter (which
+ * we send) plus the `interface !== "FungibleToken"` client-side guard.
+ * That covers the bulk of obvious noise without needing a paid-tier
+ * scam classifier.
+ */
+type SolanaScanResult =
+  | { ok: true; rows: NftPortfolioRow[]; truncated: boolean }
+  | { ok: false; reason: string; setupHint?: boolean };
+
+async function scanSolana(solanaWallet: string): Promise<SolanaScanResult> {
+  try {
+    const res = await getAssetsByOwner({
+      ownerAddress: solanaWallet,
+      page: 1,
+      limit: 1000,
+    });
+    const byCollection = new Map<string, NftPortfolioRow>();
+    for (const a of res.items) {
+      // Server-side filter SHOULD have dropped fungible tokens, but be
+      // defensive — Helius occasionally surfaces ambiguous interface
+      // labels on programmable assets.
+      if (
+        a.interface === "FungibleToken" ||
+        a.interface === "FungibleAsset"
+      ) {
+        continue;
+      }
+      const collectionGroup = a.grouping?.find(
+        (g) => g.group_key === "collection",
+      );
+      const collectionId = collectionGroup?.group_value;
+      if (!collectionId) {
+        // Non-grouped 1/1 piece — skip the per-collection rollup. Could
+        // surface as a synthetic "(ungrouped)" row, but the agent
+        // already treats `tokenCount` as the salient field and an
+        // ungrouped 1/1 doesn't need its own row in the rollup.
+        continue;
+      }
+      const existing = byCollection.get(collectionId);
+      if (existing) {
+        existing.tokenCount += 1;
+      } else {
+        byCollection.set(collectionId, {
+          chain: "solana",
+          contractAddress: collectionId,
+          ...(a.content?.metadata?.name
+            ? { collectionName: a.content.metadata.name }
+            : {}),
+          ...(a.content?.metadata?.symbol
+            ? { collectionSlug: a.content.metadata.symbol }
+            : {}),
+          ...(a.content?.links?.image
+            ? { collectionImage: a.content.links.image }
+            : {}),
+          tokenCount: 1,
+        });
+      }
+    }
+    const rows = Array.from(byCollection.values());
+    const truncated = res.total > res.items.length;
+    return { ok: true, rows, truncated };
+  } catch (e) {
+    if (e instanceof HeliusNotConfiguredError) {
+      return { ok: false, reason: "helius_not_configured", setupHint: true };
+    }
+    if (e instanceof HeliusRateLimitedError) {
+      return { ok: false, reason: "rate_limited" };
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, reason: msg };
+  }
+}
+
 export async function getNftPortfolio(
   args: GetNftPortfolioArgs,
 ): Promise<NftPortfolioResult> {
+  if (!args.wallet && !args.solanaWallet) {
+    throw new Error(
+      "get_nft_portfolio requires at least one of `wallet` (EVM) or " +
+        "`solanaWallet` (Solana base58).",
+    );
+  }
   const wallet = args.wallet;
-  const chains = (args.chains ?? SUPPORTED_CHAINS) as SupportedChain[];
+  // EVM scan only fires when the user supplied an EVM wallet.
+  const evmChains = wallet
+    ? ((args.chains ?? SUPPORTED_CHAINS) as SupportedChain[])
+    : [];
 
-  const results = await Promise.allSettled(
-    chains.map((c) => scanChain(c, wallet)),
-  );
+  const evmResultsPromise = wallet
+    ? Promise.allSettled(evmChains.map((c) => scanChain(c, wallet)))
+    : Promise.resolve([] as PromiseSettledResult<ChainScanOk | ChainScanErr>[]);
+  const solanaResultPromise = args.solanaWallet
+    ? scanSolana(args.solanaWallet)
+    : null;
+
+  const [evmResults, solanaResult] = await Promise.all([
+    evmResultsPromise,
+    solanaResultPromise,
+  ]);
 
   const rows: NftPortfolioRow[] = [];
   const coverage: NftPortfolioResult["coverage"] = [];
   let rateLimitedAny = false;
-  for (let i = 0; i < results.length; i++) {
-    const c = chains[i];
-    const r = results[i];
+  let solanaSetupHint = false;
+  let solanaTruncated = false;
+  for (let i = 0; i < evmResults.length; i++) {
+    const c = evmChains[i];
+    const r = evmResults[i];
     if (r.status === "rejected") {
       const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
       coverage.push({ chain: c, errored: true, reason });
@@ -161,30 +266,54 @@ export async function getNftPortfolio(
     coverage.push({ chain: c, errored: false });
     rows.push(...r.value.rows);
   }
+  if (solanaResult) {
+    if (solanaResult.ok) {
+      coverage.push({ chain: "solana", errored: false });
+      rows.push(...solanaResult.rows);
+      solanaTruncated = solanaResult.truncated;
+    } else {
+      coverage.push({
+        chain: "solana",
+        errored: true,
+        reason: solanaResult.reason,
+      });
+      if (solanaResult.setupHint) solanaSetupHint = true;
+    }
+  }
 
-  // Apply filters.
+  // Apply filters. EVM-only — Solana rows have no floor pricing in v1
+  // (#433 deferred), so `minFloorEth` would always drop them; skip
+  // Solana rows from the floor filter and from the EVM-collection
+  // whitelist (which uses EVM contract addresses).
   let filtered = rows;
   if (typeof args.minFloorEth === "number") {
-    filtered = filtered.filter(
-      (r) =>
-        typeof r.floorEth === "number" && r.floorEth >= args.minFloorEth!,
-    );
+    filtered = filtered.filter((r) => {
+      if (r.chain === "solana") return true;
+      return typeof r.floorEth === "number" && r.floorEth >= args.minFloorEth!;
+    });
   }
   if (args.collections && args.collections.length > 0) {
     const allow = new Set(args.collections.map((a) => a.toLowerCase()));
-    filtered = filtered.filter((r) =>
-      allow.has(r.contractAddress.toLowerCase()),
-    );
+    filtered = filtered.filter((r) => {
+      if (r.chain === "solana") return true;
+      return allow.has(r.contractAddress.toLowerCase());
+    });
   }
 
   // Sort by total floor USD descending — biggest-exposure-first matches
-  // the security-audit / portfolio-rollup framing.
+  // the security-audit / portfolio-rollup framing. Solana rows (no
+  // floor) tail-sort.
   filtered.sort((a, b) => (b.totalFloorUsd ?? 0) - (a.totalFloorUsd ?? 0));
 
   const totalFloorUsd = round2(
     filtered.reduce((sum, r) => sum + (r.totalFloorUsd ?? 0), 0),
   );
   const totalTokenCount = filtered.reduce((sum, r) => sum + r.tokenCount, 0);
+
+  const allChains = [
+    ...evmChains.map((c) => c as string),
+    ...(args.solanaWallet ? ["solana"] : []),
+  ];
 
   const notes: string[] = [];
   notes.push(
@@ -194,6 +323,30 @@ export async function getNftPortfolio(
       "percent below floor) or accepting a sweep at a discount; treat the " +
       "total as 'best case before slippage', not 'what I'd net selling now'.",
   );
+  if (args.solanaWallet && (solanaResult?.ok || solanaSetupHint)) {
+    notes.push(
+      "Solana rows have no floor pricing in v1 — Magic Eden / Tensor " +
+        "integration is tracked as a follow-up to #433. `tokenCount` and " +
+        "collection metadata are accurate; `totalFloorUsd` only reflects " +
+        "EVM exposure.",
+    );
+  }
+  if (solanaSetupHint) {
+    notes.push(
+      "Solana branch refused: Helius DAS requires a Helius API key. The " +
+        "public Solana mainnet endpoint does not expose DAS. Set a key via " +
+        "`set_helius_api_key({ apiKey: \"<uuid>\" })` (demo mode) or " +
+        "`vaultpilot-mcp-setup` (persisted). Free tier is enough — see " +
+        "https://dashboard.helius.dev/.",
+    );
+  }
+  if (solanaTruncated) {
+    notes.push(
+      "Solana wallet has more than 1000 assets — only the first page was " +
+        "fetched. v2 pagination is a follow-up; for now, the per-collection " +
+        "rollup may undercount very large wallets.",
+    );
+  }
   if (rateLimitedAny) {
     notes.push(RESERVOIR_SETUP_HINT);
   }
@@ -206,15 +359,16 @@ export async function getNftPortfolio(
     } else {
       notes.push(
         "No NFTs found for this wallet on the requested chain(s). Either " +
-          "the wallet doesn't hold any, or all per-chain Reservoir reads " +
-          "errored — check `coverage[]`.",
+          "the wallet doesn't hold any, or per-chain reads errored — check " +
+          "`coverage[]`.",
       );
     }
   }
 
   return {
-    wallet,
-    chains: chains as string[],
+    wallet: wallet ?? "",
+    ...(args.solanaWallet ? { solanaWallet: args.solanaWallet } : {}),
+    chains: allChains,
     totalFloorUsd,
     collectionCount: filtered.length,
     totalTokenCount,
