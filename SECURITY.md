@@ -18,6 +18,26 @@ rewritten swap route, a smuggled approval — produces a visible mismatch
 on your Ledger screen, giving you the chance to reject before anything
 is signed.
 
+The agent's "compromise" includes both adversarial cases (prompt
+injection, rogue subagent in a delegation chain, malicious skill,
+deliberately rogue agent) **and honest-model-error cases**: a safety-
+tuned, non-injected agent can still produce harmful behavior through
+hallucinated addresses or chain IDs, stale knowledge of deprecated /
+upgraded contracts, post-training-cutoff protocols missing entirely,
+long-context attention drift across multi-step flows, sycophancy under
+user pressure (the user insists, the agent stops pushing back),
+cross-tool reasoning gaps (e.g. forgetting that an unwrap is a
+different surface than a swap), numeric mistakes (off-by-decimal,
+wrong-chain decimals), and tool-name confusion (calling the wrong
+`prepare_*` for the user's stated intent). Threat-model-wise these
+are functionally equivalent to a narrow compromise: the agent emits
+bytes / advice / tool args that don't match user intent, with no
+adversarial intent required. The same defenses apply (PREPARE
+RECEIPT verbatim args + Ledger device display + skill invariants);
+the user-facing implication is that a benign-looking response should
+not be trusted any more than an explicitly adversarial one — the
+trust anchor is the Ledger screen, not the model's confidence.
+
 In practice: the agent relays a hash it computed locally, the MCP relays
 the bytes it intends to broadcast, and the Ledger re-derives its own hash
 from the bytes it actually receives. You compare the two on the device's
@@ -100,6 +120,18 @@ TRON's surface is deliberately narrower than EVM's or Solana's because the Ledge
 
 - **Prompt injection / malicious skill / compromised subagent (narrow):** `PREPARE RECEIPT` surfaces the args that hit MCP, bypassing the agent's natural-language retelling. For native sends, the Ledger device's `To` / `Value` display backstops even if the receipt is dropped. For contract calls (swaps, supplies, approvals) the calldata remains unverifiable on-device in blind-sign — the agent's auto-run ABI decode at `preview_send` is the next line of defense, with the swiss-knife URL as a manual fallback when the agent's ABI knowledge is low-confidence.
 - **Fully-corrupted agent that coordinates on BOTH arg manipulation AND output filtering:** No protection. The user's entire view flows through the agent; there is no non-agent display channel for calldata in blind-sign mode. Conceded honestly — this threat is only reachable with a non-agent display channel (a hardware wallet with full clear-signing for the target calldata), which we do not have yet for most contract calls.
+- **Honest model error (no adversary, no injection):** Functionally equivalent to a narrow agent compromise — the agent emits bytes / advice / args that don't match user intent without any attacker in the loop. Sub-classes and what catches each:
+  - **Hallucinated address** (recipient, contract, validator, spender) — `PREPARE RECEIPT` surfaces the verbatim arg; the Ledger device displays `To` directly for native sends; Inv #1.a outer dispatch-target allowlist refuses non-canonical contracts on supported actions; Inv #15 mandates a non-MCP authority for durable bindings (validator vote pubkey, MarginFi bank, LP `tokenId`, multisig xpub).
+  - **Hallucinated chain ID / wrong-chain selection** — Inv #2.5 chain-must-be-explicit refuses any `prepare_*` until the user names exactly ONE chain by canonical name; Inv #2 chainId assertion compares prepared bytes against the user-named chain.
+  - **Stale knowledge of deprecated / upgraded contracts** — Inv #1.a allowlist is regression-tested against `src/config/contracts.ts` (single source of truth); a model relying on a deprecated proxy address mismatches the canonical entry and refuses.
+  - **Post-training-cutoff protocol entirely missing** — the agent doesn't know what it doesn't know. The defense is structural: VaultPilot only ships `prepare_*` for protocols with built-in handlers, so a missing protocol surfaces as "no tool for this" rather than a free-form `prepare_custom_call` with hallucinated calldata. When the user routes through `prepare_custom_call` anyway, the `acknowledgeNonProtocolTarget` flag is the explicit user-acknowledgment that they're operating outside the protocol-aware safety net.
+  - **Long-context attention drift across multi-step flows** — `previewToken` + `userDecision` schema gate forces the agent to re-read the prepared tuple at `send_transaction` time; the Ledger device display is the final attention reset because it shows decoded values regardless of how distracted the agent's chat output became.
+  - **Sycophancy under user pressure** ("just send it, I trust you") — Skill v0.6.0+ §16 (EIP-7702 refuse-all), Inv #14 (full enumeration verbatim), and Inv #12.5 (mandatory second-LLM on hard-trigger ops) are unconditional refusals the agent cannot drop in response to pushback. The skill rules are written as `DO NOT SIGN` halts, not "consider whether to proceed" — the imperative shape is intentional cover for the user-pressure case.
+  - **Cross-tool reasoning gaps** (calling `prepare_swap` for an ETH→WETH wrap; `prepare_native_send` for what should be a contract call) — `PREPARE RECEIPT` surfaces the tool name + args verbatim; the user reads the tool name in chat and catches mismatches before send. Inv #1.a backstops by refusing non-canonical outer `to` for the named action class.
+  - **Numeric mistakes** (off-by-decimal, wrong-chain decimals, USDC's 6 vs ETH's 18) — `PREPARE RECEIPT` surfaces the exact `value` / amount; the Ledger device displays `Value` for native sends with full decimal expansion; agent-side ABI decode (CHECK 1) at `preview_send` re-decodes the calldata amount and surfaces it in `CHECKS PERFORMED` independently of the agent's prose summary.
+  - **Tool-name confusion** (calling `prepare_aave_supply` when user said "borrow"; `prepare_lido_unwrap` for an unstake) — `PREPARE RECEIPT` names the tool. Inv #1.a + the canonical-dispatch table refuse when the tool's outer `to` doesn't match the action the bytes actually perform.
+
+  None of these subclasses require an adversary; the same defenses that catch narrow injection catch them. The user-facing implication is that a benign-looking, high-confidence agent response should not be trusted any more than an explicitly suspicious one — the Ledger screen and the skill's bytes-level invariants are the trust anchors, not the model's confidence.
 - **Compromised MCP (lies about hash, swaps bytes at send-time):** `LEDGER BLIND-SIGN HASH` catches bytes-tampering between MCP and device — the device recomputes from received bytes, and the user matches the agent-relayed value against the device-displayed one. The agent's auto-run pair-consistency hash recompute (reported in `CHECKS PERFORMED`) gives an honest agent a first-line check before the device is involved.
 - **Compromised Ledger Live or WalletConnect relay (middle-layer MITM):** `LEDGER BLIND-SIGN HASH` — the device is the source of truth; any substitution between MCP and the device produces a divergent on-device hash.
 - **WalletConnect peer impersonation (adversary pairs with the MCP while the user believes they paired Ledger Live):** WC session-topic cross-check — the user verifies in Ledger Live → Settings → Connected Apps that a session exists whose topic matches the one the MCP holds. The peer's self-reported name/URL alone is not a trusted identity (any peer can claim "Ledger Wallet @ wc.apps.ledger.com").
