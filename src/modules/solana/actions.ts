@@ -182,6 +182,15 @@ export interface PreparedSolanaTx {
   estimatedFeeLamports?: number;
   /** Surfaced on native_send / spl_send / nonce_close so the summary can show "Nonce: <addr>". */
   nonceAccount?: string;
+  /**
+   * Invariant #14 — durable-binding source-of-truth verification
+   * (issue #460). Populated by builders for ops that bind funds to a
+   * durable on-chain object selected from a multi-candidate set
+   * (validator vote pubkey, MarginFi bank). Absent for ops where the
+   * recipient/destination IS the durable identifier and Inv #1 already
+   * covers it.
+   */
+  durableBindings?: import("../../security/durable-binding.js").DurableBinding[];
 }
 
 /**

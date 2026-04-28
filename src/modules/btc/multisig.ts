@@ -255,6 +255,15 @@ export interface RegisterBitcoinMultisigWalletResult {
   appVersion: string;
   /** Index of the user's slot in `cosigners` (0-indexed). */
   ourKeyIndex: number;
+  /**
+   * Invariant #14 — one durable-binding entry per cosigner xpub.
+   * The skill renders these in the verification block before the
+   * user confirms the device-side wallet-policy registration; per
+   * Inv #14 the user re-verifies each xpub against its origin
+   * device's backup card (b098 attack class — attacker xpub
+   * embedded as 'co-signer'). Issue #460.
+   */
+  durableBindings: import("../../security/durable-binding.js").DurableBinding[];
 }
 
 export async function registerBitcoinMultisigWallet(
@@ -417,7 +426,14 @@ export async function registerBitcoinMultisigWallet(
     multisigByName.set(args.name, wallet);
     persistMultisig();
 
-    result = { wallet, appVersion: appInfo.version, ourKeyIndex };
+    const { makeDurableBinding } = await import(
+      "../../security/durable-binding.js"
+    );
+    const durableBindings = validatedCosigners.map((c) =>
+      makeDurableBinding("btc-multisig-cosigner-xpub", c.xpub),
+    );
+
+    result = { wallet, appVersion: appInfo.version, ourKeyIndex, durableBindings };
   } finally {
     await transport.close().catch(() => {});
   }

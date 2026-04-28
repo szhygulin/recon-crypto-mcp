@@ -3,6 +3,7 @@ import { cometAbi } from "../../abis/compound-comet.js";
 import { getClient } from "../../data/rpc.js";
 import { buildApprovalTx, chainApproval, resolveApprovalCap } from "../shared/approval.js";
 import { resolveTokenMeta } from "../shared/token-meta.js";
+import { makeDurableBinding } from "../../security/durable-binding.js";
 import type {
   PrepareCompoundSupplyArgs,
   PrepareCompoundWithdrawArgs,
@@ -91,6 +92,7 @@ export async function buildCompoundSupply(p: PrepareCompoundSupplyArgs): Promise
     from: wallet,
     description: `Supply ${p.amount} ${meta.symbol} to Compound V3 ${market} on ${chain}`,
     decoded: { functionName: "supply", args: { asset, amount: p.amount, market } },
+    durableBindings: [makeDurableBinding("compound-comet-address", market)],
   };
   return chainApproval(approval, supplyTx);
 }
@@ -115,6 +117,7 @@ export async function buildCompoundWithdraw(p: PrepareCompoundWithdrawArgs): Pro
     from: wallet,
     description: `Withdraw ${p.amount === "max" ? "all" : p.amount} ${meta.symbol} from Compound V3 ${market} on ${chain}`,
     decoded: { functionName: "withdraw", args: { asset, amount: p.amount, market } },
+    durableBindings: [makeDurableBinding("compound-comet-address", market)],
   };
 }
 
@@ -139,6 +142,7 @@ export async function buildCompoundBorrow(p: PrepareCompoundBorrowArgs): Promise
     from: wallet,
     description: `Borrow ${p.amount} ${meta.symbol} from Compound V3 ${market} on ${chain}`,
     decoded: { functionName: "withdraw(base)", args: { asset: baseToken, amount: p.amount, market } },
+    durableBindings: [makeDurableBinding("compound-comet-address", market)],
   };
 }
 
@@ -182,6 +186,7 @@ export async function buildCompoundRepay(p: PrepareCompoundRepayArgs): Promise<U
     from: wallet,
     description: `Repay ${p.amount === "max" ? "all" : p.amount} ${meta.symbol} on Compound V3 ${market} on ${chain}`,
     decoded: { functionName: "supply(base)", args: { asset: baseToken, amount: p.amount, market } },
+    durableBindings: [makeDurableBinding("compound-comet-address", market)],
   };
   return chainApproval(approval, repayTx);
 }

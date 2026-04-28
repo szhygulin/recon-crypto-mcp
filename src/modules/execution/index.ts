@@ -2663,6 +2663,9 @@ export async function prepareRevokeApproval(
   const spenderDisplay = knownLabel ? `${knownLabel} (${spender})` : spender;
   const currentFormatted = formatUnits(currentAllowance, meta.decimals);
 
+  const { makeDurableBinding } = await import(
+    "../../security/durable-binding.js"
+  );
   return enrichTx({
     chain,
     to: token,
@@ -2686,6 +2689,11 @@ export async function prepareRevokeApproval(
         ...(knownLabel ? { spenderLabel: knownLabel } : {}),
       },
     },
+    // Inv #14 (#460) — the spender selected from the user's allowance
+    // set is the durable object the user must re-verify. Complements the
+    // existing set-level enumeration check (Inv #13 / #450 which already
+    // ensures the user picks a row, not the agent).
+    durableBindings: [makeDurableBinding("approval-spender-address", spender)],
   });
 }
 

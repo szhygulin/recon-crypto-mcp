@@ -814,6 +814,12 @@ export interface PreparedMarginfiTx {
    * the real cost to the user BEFORE they blind-sign (issue #103).
    */
   rentLamports?: number;
+  /**
+   * Invariant #14 — bank pubkey on supply/withdraw/borrow/repay; absent
+   * on `marginfi_init` (no candidate-set selection — only one MarginfiAccount
+   * PDA per (wallet, group)). Issue #460.
+   */
+  durableBindings?: import("../../security/durable-binding.js").DurableBinding[];
 }
 
 export interface MarginfiInitParams {
@@ -1266,6 +1272,9 @@ async function wrapWithNonce(
   };
 
   const { handle } = issueSolanaDraftHandle(draft);
+  const { makeDurableBinding } = await import(
+    "../../security/durable-binding.js"
+  );
   return {
     handle,
     action: actionAction,
@@ -1275,6 +1284,9 @@ async function wrapWithNonce(
     decoded: draft.meta.decoded,
     nonceAccount: nonceAccountStr,
     marginfiAccount: marginfiAccountStr,
+    durableBindings: [
+      makeDurableBinding("marginfi-bank-pubkey", ctx.bank.address.toBase58()),
+    ],
   };
 }
 

@@ -34,6 +34,7 @@ import {
   mintAmountsWithSlippage,
   type PoolState,
 } from "./position-math.js";
+import { makeDurableBinding } from "../../../security/durable-binding.js";
 import type { SupportedChain, UnsignedTx } from "../../../types/index.js";
 
 const SUPPORTED_FEE_TIERS = [100, 500, 3000, 10000] as const;
@@ -487,6 +488,7 @@ export async function buildUniswapIncrease(
         deadline: deadline.toString(),
       },
     },
+    durableBindings: [makeDurableBinding("uniswap-v3-lp-token-id", p.tokenId)],
   };
 
   // 5. Approvals — one per nonzero side; reuse the chain machinery.
@@ -786,6 +788,7 @@ export async function buildUniswapDecrease(
         deadline: deadline.toString(),
       },
     },
+    durableBindings: [makeDurableBinding("uniswap-v3-lp-token-id", p.tokenId)],
   };
 }
 
@@ -859,6 +862,7 @@ export async function buildUniswapCollect(
         amount1Max: "uint128.max",
       },
     },
+    durableBindings: [makeDurableBinding("uniswap-v3-lp-token-id", p.tokenId)],
   };
 }
 
@@ -922,6 +926,7 @@ export async function buildUniswapBurn(
       functionName: "burn",
       args: { tokenId: p.tokenId },
     },
+    durableBindings: [makeDurableBinding("uniswap-v3-lp-token-id", p.tokenId)],
   };
 }
 
@@ -1210,6 +1215,7 @@ export async function buildUniswapRebalance(
         slippageBps: String(slippageBps),
       },
     },
+    durableBindings: [makeDurableBinding("uniswap-v3-lp-token-id", p.tokenId)],
   };
 
   // Approvals — after collect routes the tokens back to the wallet, the
