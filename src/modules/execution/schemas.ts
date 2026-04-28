@@ -88,6 +88,17 @@ export const prepareSolanaNativeSendInput = z.object({
       'Human-readable SOL amount (up to 9 decimals). Example: "0.5" for 0.5 SOL. ' +
         'Pass "max" to send the full balance minus tx fee and a small safety buffer.'
     ),
+  memo: z
+    .string()
+    .min(1)
+    .max(256)
+    .optional()
+    .describe(
+      "Optional UTF-8 memo (max 256 bytes after encode). When set, the tx appends an SPL Memo " +
+        "program instruction (`MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`) carrying the bytes. " +
+        "The Ledger Solana app clear-signs Memo program calls, so no on-device support change " +
+        "is needed. Common use: invoice / payment-reference strings."
+    ),
 });
 
 export const prepareSolanaSplSendInput = z.object({

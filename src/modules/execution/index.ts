@@ -486,6 +486,7 @@ export async function prepareSolanaNativeSend(
     wallet: args.wallet,
     to: args.to,
     amount: args.amount,
+    ...(args.memo !== undefined ? { memo: args.memo } : {}),
   });
 }
 

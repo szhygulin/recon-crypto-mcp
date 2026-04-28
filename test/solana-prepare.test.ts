@@ -117,6 +117,48 @@ describe("buildSolanaNativeSend", () => {
     ).rejects.toThrow(/Insufficient SOL/);
   });
 
+  it("appends Memo program ix when memo is set, and surfaces it in description + decoded.args", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    const tx = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.5",
+      memo: "invoice 4421",
+    });
+    expect(tx.decoded.functionName).toBe("solana.system.transfer+memo");
+    expect(tx.decoded.args.memo).toBe("invoice 4421");
+    expect(tx.description).toContain('memo: "invoice 4421"');
+  });
+
+  it("does NOT add a memo ix or memo arg when memo is omitted (existing behavior preserved)", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    const tx = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.5",
+    });
+    expect(tx.decoded.functionName).toBe("solana.system.transfer");
+    expect(tx.decoded.args.memo).toBeUndefined();
+    expect(tx.description).not.toContain("memo:");
+  });
+
+  it("rejects memos whose UTF-8 encoding exceeds 256 bytes", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    // Each "✓" is 3 UTF-8 bytes; 100 of them is 300 bytes — past the cap.
+    const overcap = "✓".repeat(100);
+    await expect(
+      buildSolanaNativeSend({
+        wallet: WALLET,
+        to: RECIPIENT,
+        amount: "0.5",
+        memo: overcap,
+      }),
+    ).rejects.toThrow(/memo too long.*256-byte cap/);
+  });
+
   it("injects priority fee when getRecentPrioritizationFees p50 is above threshold", async () => {
     connectionStub.getBalance.mockResolvedValue(5_000_000_000);
     // Return samples with p50 = 10_000 μlamports/CU (above the 5_000 threshold).
