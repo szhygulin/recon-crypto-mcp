@@ -16,6 +16,7 @@ import type { SupportedChain, AnyChain } from "../../types/index.js";
 import { readAaveYields } from "./adapters/aave.js";
 import { readCompoundYields } from "./adapters/compound.js";
 import { readLidoYields } from "./adapters/lido.js";
+import { readDefiLlamaYields } from "./adapters/defillama.js";
 import {
   resolveAsset,
   expandStables,
@@ -43,29 +44,9 @@ const DEFERRED_PROTOCOLS: ReadonlyArray<{
   reason: string;
 }> = [
   {
-    protocol: "morpho-blue",
-    chain: "ethereum",
-    reason: "Morpho Blue per-market reader not yet split out from the wallet-aware getMorphoPositions — follow-up.",
-  },
-  {
     protocol: "marginfi",
     chain: "solana",
-    reason: "MarginFi wallet-less reader not yet split out from getMarginfiPositions — follow-up.",
-  },
-  {
-    protocol: "kamino",
-    chain: "solana",
-    reason: "Kamino wallet-less reader not yet split out from getKaminoPositions — follow-up.",
-  },
-  {
-    protocol: "marinade",
-    chain: "solana",
-    reason: "Marinade has no APY reader exposed in src/modules/solana/marinade.ts — follow-up.",
-  },
-  {
-    protocol: "jito",
-    chain: "solana",
-    reason: "Jito has no APY reader exposed in src/modules/solana/jito.ts — follow-up.",
+    reason: "MarginFi borrow-lend isn't published on DefiLlama yields (only marginfi-lst); on-chain wallet-less bank reader is the follow-up — issue #288.",
   },
   {
     protocol: "eigenlayer",
@@ -128,6 +109,7 @@ async function compareYieldsImpl(args: CompareYieldsArgs): Promise<CompareYields
       readAaveYields(sub, evmChains),
       readCompoundYields(sub, evmChains),
       readLidoYields(sub),
+      readDefiLlamaYields(sub, requestedChains),
     ]);
     for (const r of settled) {
       if (r.status === "fulfilled") {

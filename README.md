@@ -105,10 +105,9 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 - **`check_liquidation_risk`** — per-asset "ETH drops X% triggers liquidation" math across Aave V3 / Compound V3 / Morpho Blue. Replaces today's raw-HF-number output with actionable price deltas. ([plan](./claude-work/plan-health-factor-monitoring.md))
 - **`get_pnl_summary`** — wallet-level net PnL over preset periods across EVM / TRON / Solana. Balance-delta minus net user contribution, priced via DefiLlama historical. ([plan](./claude-work/plan-pnl-summary-tool.md))
 
-**`compare_yields` adapter expansion** — v1 covers Aave V3 + Compound V3 + Lido (PR #282). The remaining seven protocols on the original plan ship as separate adapters; full scope, ordering, and bundling rationale in [plan-yields-v2-followups.md](./claude-work/plan-yields-v2-followups.md).
+**`compare_yields` adapter expansion** — v1 covers Aave V3 + Compound V3 + Lido (PR #282); v2 bundles Marinade + Jito + Kamino-lend + Morpho-Blue via DefiLlama. The remaining three protocols ship as separate adapters; full scope and rationale in [plan-yields-v2-followups.md](./claude-work/plan-yields-v2-followups.md).
 
-- **Marinade + Jito APY readers** — bundled, ~150 LoC, mirror `getLidoApr()`'s DefiLlama path. The quick-win.
-- **MarginFi + Kamino + Morpho Blue lending adapters** — wallet-less reader split-out from the existing wallet-aware position readers. Same shape `getCompoundMarketInfo` already establishes.
+- **MarginFi lending adapter** — DefiLlama doesn't carry MarginFi borrow-lend (only their LST product); needs an on-chain wallet-less bank reader split out from `getMarginfiPositions`. Same shape `getCompoundMarketInfo` already establishes.
 - **EigenLayer + Solana native-stake adapters** — structurally different (per-operator / per-validator rows, not per-protocol APR); each needs its own plan file before implementation.
 
 **Wallet integrations**
@@ -129,7 +128,7 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 
 **Recently shipped** (previously on this list)
 
-- **`compare_yields`** — ranked supply-side yield comparison across integrated lending / staking protocols. v1 covers Aave V3 (5 EVM chains), Compound V3 (5 EVM chains, multi-market), and Lido stETH. Surfaces data, doesn't pick — the user decides. Adapter expansion for the other 7 protocols on the roadmap above (#282).
+- **`compare_yields`** — ranked supply-side yield comparison across integrated lending / staking protocols. Covers Aave V3 (5 EVM chains), Compound V3 (5 EVM chains, multi-market), Lido stETH, plus DefiLlama-backed Marinade / Jito / Kamino-lend / Morpho-Blue curated vaults. Surfaces data, doesn't pick — the user decides. Remaining adapters (MarginFi on-chain, EigenLayer, Solana native-stake) on the roadmap above (#282 v1, #431 v2 bundle).
 - **Nonce-aware dropped-tx polling** (Solana) — on-chain nonce is the authoritative signal for whether a durable-nonce tx can still land; replaces the `lastValidBlockHeight` path that's meaningless for nonce-protected sends (#137).
 - **Solana liquid + native staking** — Marinade / Jito / native stake-account reads (#141, portfolio fold-in #143), Marinade writes (#145), native SOL delegate / deactivate / withdraw (#149).
 - **LiFi cross-chain EVM ↔ Solana routing** (#153, #155).
