@@ -23,6 +23,7 @@ import { decodeEventLog, type Hex, type Log } from "viem";
 import { erc20Abi } from "../../../abis/erc20.js";
 import { getClient } from "../../../data/rpc.js";
 import { resolveSelectors } from "../../history/decode.js";
+import { decodeCallArgs } from "../decode-call.js";
 import { getTokenPrice } from "../../../data/prices.js";
 import { NATIVE_SYMBOL } from "../../../config/contracts.js";
 import { formatUnits } from "../../../data/format.js";
@@ -178,16 +179,26 @@ export async function evmPostmortem(
   const status: "success" | "failed" =
     receipt.status === "success" ? "success" : "failed";
 
-  // Decode top-level method, when there's calldata.
+  // Decode top-level method, when there's calldata. Two parallel
+  // requests against 4byte: `resolveSelectors` for the cached method
+  // name + ambiguity flag we use in step labels and the summary, and
+  // `decodeCallArgs` for the full lossless arg decode surfaced under
+  // `decodedCall`. Both sit on the same 24h cache so a repeat call on
+  // the same selector pays one HTTP round-trip total.
   const input = (tx.input ?? "0x") as Hex;
   const selector = input.length >= 10 ? input.slice(0, 10).toLowerCase() : null;
   let methodName: string | undefined;
   let methodAmbiguous = false;
+  let decodedCall: Awaited<ReturnType<typeof decodeCallArgs>> = undefined;
   if (selector) {
-    const resolved = await resolveSelectors([selector]);
+    const [resolved, decoded] = await Promise.all([
+      resolveSelectors([selector]),
+      decodeCallArgs(input),
+    ]);
     const r = resolved.get(selector);
     methodName = r?.methodName;
     methodAmbiguous = r?.ambiguous ?? false;
+    decodedCall = decoded;
   }
 
   // Decode logs.
@@ -461,6 +472,8 @@ export async function evmPostmortem(
     approvalChanges,
     heuristics: [],
     notes: [],
+    rawInput: input,
+    ...(decodedCall ? { decodedCall } : {}),
   };
 }
 

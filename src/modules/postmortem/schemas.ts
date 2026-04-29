@@ -118,6 +118,42 @@ export interface ExplainTxBalanceChange {
   valueUsd?: number;
 }
 
+/**
+ * Decoded top-level call. Surfaces calldata in a form replay-style flows
+ * can consume: timelock `execute(...)` after a prior `schedule(...)`,
+ * Safe re-broadcast, custom-call recovery, post-mortem reproduction.
+ *
+ * `signature` and `args` populate only when 4byte.directory resolves the
+ * selector AND viem's `decodeFunctionData` round-trips losslessly
+ * against the calldata. When the selector is unregistered or no
+ * candidate decodes cleanly, only `selector` is set; the caller falls
+ * back to the parent envelope's `rawInput`.
+ *
+ * `args` is JSON-friendly: bigints stringified as decimal, addresses
+ * preserved as `0x` hex, fixed/dynamic bytes as `0x` hex, tuples as
+ * arrays / nested objects. Order matches the parameter order in
+ * `signature`. EVM-only in v1.
+ */
+export interface ExplainTxDecodedCall {
+  /** 4-byte selector with `0x` prefix, e.g. `0x01d5062a`. */
+  selector: string;
+  /**
+   * Canonical signature, e.g.
+   * `schedule(address,uint256,bytes,bytes32,bytes32,uint256)`. Absent
+   * when 4byte returned nothing or no candidate round-tripped.
+   */
+  signature?: string;
+  /** Decoded arguments, JSON-friendly. Absent when `signature` is absent. */
+  args?: unknown[];
+  /**
+   * True when 4byte returned more than one candidate. The chosen
+   * signature is the first that round-tripped, but selector collisions
+   * exist (registry spam + genuinely identical layouts), so surface
+   * the uncertainty.
+   */
+  ambiguous?: boolean;
+}
+
 /** Approval change for an ERC-20 / TRC-20 owner → spender pair. */
 export interface ExplainTxApprovalChange {
   symbol?: string;
@@ -184,6 +220,19 @@ export interface ExplainTxResult {
   heuristics: ExplainTxHeuristic[];
   /** Free-form scope reminders / partial-data flags. */
   notes: string[];
+  /**
+   * Raw transaction input calldata. EVM only — `0x` for native sends
+   * with no data, full hex for contract calls. Surfaced verbatim so
+   * replay-style flows (timelock `execute()` after `schedule()`,
+   * Safe re-broadcast, custom-call recovery) have something to fall
+   * back to when `decodedCall.signature` is absent.
+   */
+  rawInput?: string;
+  /**
+   * Decoded top-level call. EVM only. Absent for native sends with no
+   * calldata and for non-EVM chains.
+   */
+  decodedCall?: ExplainTxDecodedCall;
   /** Pre-rendered narrative string. Absent when `format === "structured"`. */
   narrative?: string;
 }
