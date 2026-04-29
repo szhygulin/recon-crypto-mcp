@@ -21,6 +21,7 @@ const resolveSelectorsMock = vi.fn();
 const fetchWithTimeoutMock = vi.fn();
 const getDefillamaCoinPriceMock = vi.fn();
 const solanaGetParsedTransactionMock = vi.fn();
+const fetch4byteSignaturesMock = vi.fn();
 
 vi.mock("../src/data/rpc.js", () => ({
   getClient: () => ({
@@ -45,6 +46,10 @@ vi.mock("../src/data/prices.js", async (importOriginal) => {
 
 vi.mock("../src/modules/history/decode.js", () => ({
   resolveSelectors: (...a: unknown[]) => resolveSelectorsMock(...a),
+}));
+
+vi.mock("../src/data/apis/fourbyte.js", () => ({
+  fetch4byteSignatures: (...a: unknown[]) => fetch4byteSignaturesMock(...a),
 }));
 
 vi.mock("../src/data/http.js", async (importOriginal) => {
@@ -81,7 +86,7 @@ function encUint(n: bigint): `0x${string}` {
   return `0x${n.toString(16).padStart(64, "0")}` as `0x${string}`;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   evmGetTransactionMock.mockReset();
   evmGetTransactionReceiptMock.mockReset();
   evmGetBlockMock.mockReset();
@@ -91,9 +96,11 @@ beforeEach(() => {
   fetchWithTimeoutMock.mockReset();
   getDefillamaCoinPriceMock.mockReset();
   solanaGetParsedTransactionMock.mockReset();
+  fetch4byteSignaturesMock.mockReset();
 
-  // Default: no method resolves, no prices.
+  // Default: no method resolves, no prices, no 4byte signatures.
   resolveSelectorsMock.mockResolvedValue(new Map());
+  fetch4byteSignaturesMock.mockResolvedValue([]);
   getTokenPriceMock.mockResolvedValue(undefined);
   evmGetBlockMock.mockResolvedValue({ timestamp: 1714128000n });
   // ERC-20 metadata defaults: USDC.
@@ -103,6 +110,12 @@ beforeEach(() => {
     throw new Error(`unexpected readContract: ${call.functionName}`);
   });
   getDefillamaCoinPriceMock.mockResolvedValue(undefined);
+
+  // Clear the in-memory cache so 4byte-sig results don't leak across
+  // tests (selector→signatures persists for 24h via the module-level
+  // TTL cache).
+  const { cache } = await import("../src/data/cache.js");
+  cache.clear();
 });
 
 afterEach(() => {
@@ -395,6 +408,183 @@ describe("explainTx — Solana happy path", () => {
     expect(usdc).toBeDefined();
     expect(usdc.delta).toBe("-5");
     expect(r.steps.find((s) => s.kind === "instruction")).toBeDefined();
+  });
+});
+
+describe("explainTx — decoded call args (#603)", () => {
+  it("returns rawInput + decodedCall.args for an OZ TimelockController schedule()", async () => {
+    // schedule(address target, uint256 value, bytes data, bytes32 predecessor, bytes32 salt, uint256 delay)
+    // Selector: 0x01d5062a
+    const selector = "0x01d5062a";
+    const target = "0x1111111111111111111111111111111111111111";
+    const value = 0n;
+    // payload bytes for the inner call (whatever — opaque to us, just round-trip)
+    const innerData = "0xabcdef";
+    const predecessor =
+      "0x0000000000000000000000000000000000000000000000000000000000000000";
+    const salt =
+      "0x000000000000000000000000000000000000000000000000000000000000beef";
+    const delay = 86400n;
+
+    // Encode the calldata for real so the decode path has something
+    // legitimate to round-trip. Borrow viem locally so the test mirrors
+    // production behavior bit-exactly.
+    const { encodeFunctionData, parseAbiItem } = await import("viem");
+    const sig =
+      "schedule(address,uint256,bytes,bytes32,bytes32,uint256)";
+    const calldata = encodeFunctionData({
+      abi: [parseAbiItem(`function ${sig}`)],
+      functionName: "schedule",
+      args: [target, value, innerData, predecessor, salt, delay],
+    });
+
+    evmGetTransactionMock.mockResolvedValue({
+      from: WALLET,
+      to: RECIPIENT,
+      value: 0n,
+      input: calldata,
+    });
+    evmGetTransactionReceiptMock.mockResolvedValue({
+      status: "success",
+      blockNumber: 19_000_000n,
+      gasUsed: 100_000n,
+      effectiveGasPrice: 10_000_000_000n,
+      from: WALLET,
+      to: RECIPIENT,
+      logs: [],
+    });
+    resolveSelectorsMock.mockResolvedValue(
+      new Map([[selector, { methodName: "schedule" }]]),
+    );
+    fetch4byteSignaturesMock.mockResolvedValue([sig]);
+
+    const { explainTx } = await import("../src/modules/postmortem/index.ts");
+    const r = await explainTx({
+      hash: TX_HASH,
+      chain: "ethereum",
+      format: "structured",
+    });
+
+    expect(r.rawInput).toBe(calldata);
+    expect(r.decodedCall).toBeDefined();
+    expect(r.decodedCall!.selector).toBe(selector);
+    expect(r.decodedCall!.signature).toBe(sig);
+    expect(r.decodedCall!.ambiguous).toBeUndefined();
+    expect(r.decodedCall!.args).toEqual([
+      target,
+      "0", // bigint stringified
+      innerData,
+      predecessor,
+      salt,
+      "86400",
+    ]);
+  });
+
+  it("marks ambiguous=true when 4byte returns multiple candidates", async () => {
+    const sig =
+      "schedule(address,uint256,bytes,bytes32,bytes32,uint256)";
+    const { encodeFunctionData, parseAbiItem } = await import("viem");
+    const calldata = encodeFunctionData({
+      abi: [parseAbiItem(`function ${sig}`)],
+      functionName: "schedule",
+      args: [
+        "0x1111111111111111111111111111111111111111",
+        0n,
+        "0xabcdef",
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "0x000000000000000000000000000000000000000000000000000000000000beef",
+        86400n,
+      ],
+    });
+
+    evmGetTransactionMock.mockResolvedValue({
+      from: WALLET,
+      to: RECIPIENT,
+      value: 0n,
+      input: calldata,
+    });
+    evmGetTransactionReceiptMock.mockResolvedValue({
+      status: "success",
+      blockNumber: 19_000_000n,
+      gasUsed: 100_000n,
+      effectiveGasPrice: 10_000_000_000n,
+      from: WALLET,
+      to: RECIPIENT,
+      logs: [],
+    });
+    // Two candidates registered for the selector — the first decodes,
+    // ambiguous flag fires.
+    fetch4byteSignaturesMock.mockResolvedValue([
+      sig,
+      "spam_collision_0x01d5062a()",
+    ]);
+
+    const { explainTx } = await import("../src/modules/postmortem/index.ts");
+    const r = await explainTx({
+      hash: TX_HASH,
+      chain: "ethereum",
+      format: "structured",
+    });
+
+    expect(r.decodedCall!.ambiguous).toBe(true);
+    expect(r.decodedCall!.signature).toBe(sig);
+  });
+
+  it("returns selector-only when 4byte has no entry", async () => {
+    evmGetTransactionMock.mockResolvedValue({
+      from: WALLET,
+      to: RECIPIENT,
+      value: 0n,
+      input: "0xdeadbeef" + "00".repeat(32),
+    });
+    evmGetTransactionReceiptMock.mockResolvedValue({
+      status: "success",
+      blockNumber: 19_000_000n,
+      gasUsed: 50_000n,
+      effectiveGasPrice: 10_000_000_000n,
+      from: WALLET,
+      to: RECIPIENT,
+      logs: [],
+    });
+    fetch4byteSignaturesMock.mockResolvedValue([]);
+
+    const { explainTx } = await import("../src/modules/postmortem/index.ts");
+    const r = await explainTx({
+      hash: TX_HASH,
+      chain: "ethereum",
+      format: "structured",
+    });
+
+    expect(r.rawInput).toBe("0xdeadbeef" + "00".repeat(32));
+    expect(r.decodedCall).toEqual({ selector: "0xdeadbeef" });
+  });
+
+  it("omits decodedCall and reports rawInput=0x for native sends with no calldata", async () => {
+    evmGetTransactionMock.mockResolvedValue({
+      from: WALLET,
+      to: RECIPIENT,
+      value: 1_000_000_000_000_000n,
+      input: "0x",
+    });
+    evmGetTransactionReceiptMock.mockResolvedValue({
+      status: "success",
+      blockNumber: 19_000_000n,
+      gasUsed: 21_000n,
+      effectiveGasPrice: 10_000_000_000n,
+      from: WALLET,
+      to: RECIPIENT,
+      logs: [],
+    });
+
+    const { explainTx } = await import("../src/modules/postmortem/index.ts");
+    const r = await explainTx({
+      hash: TX_HASH,
+      chain: "ethereum",
+      format: "structured",
+    });
+
+    expect(r.rawInput).toBe("0x");
+    expect(r.decodedCall).toBeUndefined();
   });
 });
 
