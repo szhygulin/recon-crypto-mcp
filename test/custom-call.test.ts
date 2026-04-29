@@ -312,6 +312,86 @@ describe("buildCustomCall — encoding", () => {
   });
 });
 
+// Minimal ERC-20 fragment — only `approve` is needed for the burn-address gate.
+const ERC20_APPROVE_ABI = [
+  {
+    type: "function",
+    name: "approve",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+] as const;
+
+const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as const;
+const UINT256_MAX = (1n << 256n) - 1n;
+
+describe("buildCustomCall — burn-address unlimited-approval refusal (issue #556)", () => {
+  it.each([
+    ["0xdead000000000000000000000000000000000000"], // leading dead — what triggered the bug
+    ["0x000000000000000000000000000000000000dead"], // trailing dead
+    ["0x0000000000000000000000000000000000000000"], // zero
+    ["0xffffffffffffffffffffffffffffffffffffffff"], // max
+  ])("refuses unlimited approve to canonical burn address %s", async (burn) => {
+    await expect(
+      buildCustomCall({
+        wallet: WALLET,
+        chain: "ethereum",
+        contract: USDC,
+        fn: "approve",
+        args: [burn, UINT256_MAX.toString()],
+        value: "0",
+        abi: ERC20_APPROVE_ABI as unknown as readonly unknown[],
+      }),
+    ).rejects.toThrow(/BURN_ADDRESS_UNLIMITED_APPROVAL/);
+  });
+
+  it("allows unlimited approve to burn address when acknowledgeBurnApproval=true", async () => {
+    const tx = await buildCustomCall({
+      wallet: WALLET,
+      chain: "ethereum",
+      contract: USDC,
+      fn: "approve",
+      args: ["0xdead000000000000000000000000000000000000", UINT256_MAX.toString()],
+      value: "0",
+      abi: ERC20_APPROVE_ABI as unknown as readonly unknown[],
+      acknowledgeBurnApproval: true,
+    });
+    expect(tx.data.startsWith("0x095ea7b3")).toBe(true);
+  });
+
+  it("allows non-unlimited approve to burn address (only the unlimited variant refuses)", async () => {
+    // approve(burn, 0) is the revoke pattern — must remain expressible.
+    const tx = await buildCustomCall({
+      wallet: WALLET,
+      chain: "ethereum",
+      contract: USDC,
+      fn: "approve",
+      args: ["0xdead000000000000000000000000000000000000", "0"],
+      value: "0",
+      abi: ERC20_APPROVE_ABI as unknown as readonly unknown[],
+    });
+    expect(tx.data.startsWith("0x095ea7b3")).toBe(true);
+  });
+
+  it("allows unlimited approve to non-burn spender", async () => {
+    const tx = await buildCustomCall({
+      wallet: WALLET,
+      chain: "ethereum",
+      contract: USDC,
+      fn: "approve",
+      args: ["0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45", UINT256_MAX.toString()],
+      value: "0",
+      abi: ERC20_APPROVE_ABI as unknown as readonly unknown[],
+    });
+    expect(tx.data.startsWith("0x095ea7b3")).toBe(true);
+  });
+
+});
+
 describe("canonical-dispatch wiring (#483 / PR #489)", () => {
   it("is a no-op for prepare_custom_call regardless of `to`", () => {
     // The wired txHandler walks to the action leg and asserts canonical

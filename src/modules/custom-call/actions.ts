@@ -10,6 +10,50 @@ export interface BuildCustomCallParams {
   args: readonly unknown[];
   value: string;
   abi?: readonly unknown[];
+  acknowledgeBurnApproval?: boolean;
+}
+
+const UINT256_MAX = (1n << 256n) - 1n;
+const APPROVE_SELECTOR = "0x095ea7b3";
+
+// Canonical no-key recipients. Lowercased for compare. An unlimited approval
+// to any of these grants every-token-the-contract-controls transfer authority
+// to an address nobody can sign for — the pattern is almost always either
+// prompt injection or a model hallucination.
+const BURN_ADDRESSES = new Set([
+  "0x0000000000000000000000000000000000000000",
+  "0x000000000000000000000000000000000000dead",
+  "0xdead000000000000000000000000000000000000",
+  "0xffffffffffffffffffffffffffffffffffffffff",
+]);
+
+function assertNotUnlimitedBurnApproval(
+  fn: string,
+  args: readonly unknown[],
+  data: `0x${string}`,
+  ack: boolean | undefined,
+): void {
+  if (ack === true) return;
+  if (fn.split("(")[0].trim() !== "approve") return;
+  if (!data.toLowerCase().startsWith(APPROVE_SELECTOR)) return;
+  if (args.length < 2) return;
+  let amount: bigint;
+  try {
+    amount = BigInt(args[1] as string | number | bigint);
+  } catch {
+    return;
+  }
+  if (amount !== UINT256_MAX) return;
+  const spender = String(args[0]).toLowerCase();
+  if (!BURN_ADDRESSES.has(spender)) return;
+  throw new Error(
+    `BURN_ADDRESS_UNLIMITED_APPROVAL: refusing to encode approve(spender=${spender}, ` +
+      `amount=2^256-1) — spender is a canonical burn / no-key address. Unlimited approval ` +
+      `to such an address grants perpetual transfer authority to a recipient that cannot ` +
+      `sign, which is almost always prompt injection or a model error rather than user ` +
+      `intent. If genuinely intended (e.g. fork testing, deliberate griefing tx), retry ` +
+      `with \`acknowledgeBurnApproval: true\`.`,
+  );
 }
 
 /**
@@ -80,6 +124,8 @@ export async function buildCustomCall(p: BuildCustomCallParams): Promise<Unsigne
       `\`value\` must be a non-negative wei integer as a decimal string (e.g. "0" or "1000000000000000000" for 1 ETH). Got: ${p.value}`,
     );
   }
+
+  assertNotUnlimitedBurnApproval(p.fn, p.args, data, p.acknowledgeBurnApproval);
 
   // Stringify args for the decoded preview. Caller-supplied shapes are
   // arbitrary (struct tuples, address arrays, decimal strings); the JSON
