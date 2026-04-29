@@ -1,5 +1,5 @@
 import { encodeFunctionData, type Abi } from "viem";
-import { getContractInfo } from "../../data/apis/etherscan.js";
+import { resolveContractAbi } from "../../shared/contract-abi.js";
 import { lookupKnownSpender } from "../../security/known-spenders.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
 import { assertNotUnlimitedBurnApproval } from "../shared/approval.js";
@@ -56,50 +56,10 @@ function assertApproveRoutedToDedicatedTool(
   );
 }
 
-/**
- * Resolve the ABI to use for encoding. Caller-supplied `abi` wins; otherwise
- * fetch via Etherscan V2 (`getsourcecode`, already wrapped + cached). Refuses
- * on unverified contracts, on parse failures, and on proxies whose
- * implementation ABI we can't reach — the user can always pass `abi` inline
- * to bypass any of those refusals when they have a trusted ABI source.
- *
- * Why we never fall back to raw-bytecode encoding: the whole point of
- * `prepare_custom_call` is that the user is bypassing the canonical-dispatch
- * allowlist; the verified-ABI gate is the agent-side anchor that the
- * function selector + args actually correspond to a real, source-published
- * function rather than arbitrary bytes the caller hopes will work.
- */
-async function resolveCallAbi(
-  contract: `0x${string}`,
-  chain: SupportedChain,
-): Promise<Abi> {
-  const info = await getContractInfo(contract, chain);
-  if (!info.isVerified) {
-    throw new Error(
-      `Contract ${contract} on ${chain} is not Etherscan-verified — refusing to encode calldata against unverified bytecode. Pass the ABI inline via the \`abi\` arg if you have it from another trusted source (e.g. the project's published artifacts).`,
-    );
-  }
-  if (info.isProxy && info.implementation) {
-    const impl = await getContractInfo(info.implementation, chain);
-    if (impl.isVerified && impl.abi && impl.abi.length > 0) {
-      return impl.abi as Abi;
-    }
-    throw new Error(
-      `Contract ${contract} on ${chain} is a proxy whose implementation ${info.implementation} couldn't be ABI-fetched (unverified or parse failure). Pass the ABI inline via the \`abi\` arg.`,
-    );
-  }
-  if (!info.abi || info.abi.length === 0) {
-    throw new Error(
-      `Etherscan returned no parseable ABI for ${contract} on ${chain} (verified, but ABI was empty or invalid). Pass the ABI inline via the \`abi\` arg.`,
-    );
-  }
-  return info.abi as Abi;
-}
-
 export async function buildCustomCall(p: BuildCustomCallParams): Promise<UnsignedTx> {
   const abi: Abi = p.abi
     ? (p.abi as Abi)
-    : await resolveCallAbi(p.contract, p.chain);
+    : (await resolveContractAbi(p.contract, p.chain)).abi;
 
   let data: `0x${string}`;
   try {
