@@ -130,6 +130,32 @@ describe("C2+M10: WalletConnect peer identity", () => {
     expect(topicHits).toBeGreaterThanOrEqual(2);
   });
 
+  it("pair_ledger_* runtime instructions mandate per-address device verification (issue #577 / Inv #18)", async () => {
+    // Threat: a rogue MCP returns an attacker-controlled address as 'primary'
+    // from pair_ledger_*; the agent's prose framing surfaces it without the
+    // user noticing the device shows a different address. The actual rogue-MCP
+    // defense lives skill-side (forced user-echo of device-displayed chars);
+    // this MCP-side instructions text is defense-in-depth for the cooperating-
+    // MCP case so the agent's first response after pairing reminds the user
+    // to verify against the device screen. If anyone softens the verification
+    // mandate to plain "address paired, you can now send" prose, the rogue-
+    // MCP attack regresses to "user trusts whatever the agent surfaced."
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(
+      new URL("../src/modules/execution/index.ts", import.meta.url),
+      "utf8",
+    );
+    // One instance per pair_ledger_* tool (btc, ltc, tron, solana, live).
+    const verifyHits = src.match(/VERIFY BEFORE FIRST USE/g)?.length ?? 0;
+    expect(verifyHits).toBeGreaterThanOrEqual(5);
+    // Each must call out the FULL address (no truncation) requirement.
+    const fullHits = src.match(/FULL (string|address)/g)?.length ?? 0;
+    expect(fullHits).toBeGreaterThanOrEqual(5);
+    // Each must instruct the agent to abort on mismatch.
+    const abortHits = src.match(/On any mismatch, abort/g)?.length ?? 0;
+    expect(abortHits).toBeGreaterThanOrEqual(5);
+  });
+
   it("isKnownLedgerPeer gates the warning — Ledger hosts pass, everything else trips", async () => {
     // Only when the peer URL is NOT a ledger.com host does the server ship the
     // warning. This keeps the common case (pairing with real Ledger Live) quiet
