@@ -10,6 +10,7 @@ import {
 } from "../src/signing/verification.js";
 import { decodeCalldata } from "../src/signing/decode-calldata.js";
 import {
+  renderCostPreviewBlock,
   renderPostSendPollBlock,
   renderTronAgentTaskBlock,
   renderTronVerificationBlock,
@@ -377,6 +378,148 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     expect(rendered).not.toContain(longHex);
     // Instead we get a head…tail (N bytes) preview.
     expect(rendered).toMatch(/0x(?:ab)+…(?:ab)+ \(1024 bytes\)/);
+  });
+});
+
+describe("renderCostPreviewBlock — issue #636 fee-shock abort signal", () => {
+  it("renders ~$ + native amount when both fields are populated", () => {
+    const out = renderCostPreviewBlock({
+      chain: "ethereum",
+      gasCostUsd: 3.42,
+      gasCostNative: "0.00114",
+    });
+    expect(out).toBe("Estimated network fee: ~$3.42 (≈ 0.00114 ETH)");
+  });
+
+  it("falls back to native-only when USD price was unavailable", () => {
+    const out = renderCostPreviewBlock({
+      chain: "ethereum",
+      gasCostNative: "0.00114",
+    });
+    expect(out).toBe("Estimated network fee: ≈ 0.00114 ETH (USD price unavailable)");
+  });
+
+  it("uses the chain's native symbol (POL on polygon)", () => {
+    const out = renderCostPreviewBlock({
+      chain: "polygon",
+      gasCostUsd: 0.02,
+      gasCostNative: "0.04",
+    });
+    // NATIVE_SYMBOL.polygon currently spells the asset MATIC; the test
+    // pins whatever the central map declares so the cost block stays in
+    // sync if/when that flips to POL.
+    expect(out).toMatch(/Estimated network fee: ~\$0\.02 \(≈ 0\.04 (MATIC|POL)\)/);
+  });
+
+  it("returns null when gas estimation failed (no native field)", () => {
+    expect(
+      renderCostPreviewBlock({
+        chain: "ethereum",
+      }),
+    ).toBeNull();
+  });
+
+  it("trims trailing zeros and picks fractional precision by magnitude", () => {
+    // Mid-range fee (0.001 ≤ n < 0.1): 6 fractional digits, trailing zeros trimmed.
+    const mid = renderCostPreviewBlock({
+      chain: "ethereum",
+      gasCostUsd: 41.5,
+      gasCostNative: "0.012000",
+    });
+    expect(mid).toContain("0.012 ETH");
+    // Tiny fee (n < 0.001): 8 fractional digits to keep significant precision.
+    const small = renderCostPreviewBlock({
+      chain: "arbitrum",
+      gasCostUsd: 0.05,
+      gasCostNative: "0.0000234",
+    });
+    expect(small).toContain("0.0000234 ETH");
+    // Big fee (n ≥ 0.1): 4 fractional digits, trailing zeros trimmed.
+    const big = renderCostPreviewBlock({
+      chain: "ethereum",
+      gasCostUsd: 1234.5,
+      gasCostNative: "0.5000",
+    });
+    expect(big).toContain("0.5 ETH");
+  });
+});
+
+describe("collectVerificationBlocks — cost preview prepended (issue #636)", () => {
+  it("renders cost as the FIRST block when gasCostNative is populated", async () => {
+    const supply: UnsignedTx = {
+      chain: "ethereum",
+      to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
+      data: "0x617ba0370000" as `0x${string}`,
+      value: "0",
+      from: SENDER,
+      description: "Aave supply",
+      gasEstimate: "150000",
+      gasCostUsd: 3.42,
+      gasCostNative: "0.00114",
+    };
+    const stamped = issueHandles(supply);
+    const blocks = await collectVerificationBlocks(stamped, { verify: stubVerify });
+    // 4 blocks now: cost preview + verification + cross-check + agent task.
+    expect(blocks).toHaveLength(4);
+    expect(blocks[0]).toMatch(/^Estimated network fee:/);
+    expect(blocks[1]).toContain("VERIFY BEFORE SIGNING");
+    expect(blocks[2]).toContain("[CROSS-CHECK SUMMARY");
+    expect(blocks[3]).toContain("[AGENT TASK");
+  });
+
+  it("omits the cost block when enrichTx couldn't estimate gas", async () => {
+    const supply: UnsignedTx = {
+      chain: "ethereum",
+      to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
+      data: "0x617ba0370000" as `0x${string}`,
+      value: "0",
+      from: SENDER,
+      description: "Aave supply",
+      // Deliberately no gasCostNative — enrichTx swallowed the failure.
+    };
+    const stamped = issueHandles(supply);
+    const blocks = await collectVerificationBlocks(stamped, { verify: stubVerify });
+    // Same 3-block shape as before issue #636 — defends against double-counting.
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]).toContain("VERIFY BEFORE SIGNING");
+  });
+
+  it("approve→action chain: cost block fires for the action node only", async () => {
+    const swap: UnsignedTx = {
+      chain: "ethereum",
+      to: getAddress("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"),
+      data: "0x2c57e88400000000" as `0x${string}`,
+      value: "0",
+      from: SENDER,
+      description: "LiFi swap",
+      gasCostUsd: 12.5,
+      gasCostNative: "0.004",
+    };
+    const approve: UnsignedTx = {
+      chain: "ethereum",
+      to: USDC,
+      data: encodeFunctionData({
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [getAddress("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"), 100_000_000n],
+      }),
+      value: "0",
+      from: SENDER,
+      description: "Approve USDC to LiFi",
+      // Approve also has a cost in reality, but the verification block is
+      // suppressed for clear-sign-only approves and we keep cost paired
+      // with verification for a quiet response shape.
+      gasCostUsd: 1.2,
+      gasCostNative: "0.0004",
+      next: swap,
+    };
+    const stamped = issueHandles(approve);
+    const blocks = await collectVerificationBlocks(stamped, { verify: stubVerify });
+    expect(blocks).toHaveLength(4);
+    expect(blocks[0]).toMatch(/^Estimated network fee:/);
+    expect(blocks[0]).toContain("12.50");
+    expect(blocks[1]).toContain("VERIFY BEFORE SIGNING");
+    expect(blocks[1]).toContain("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE");
   });
 });
 

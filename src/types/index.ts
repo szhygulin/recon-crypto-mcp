@@ -1222,6 +1222,16 @@ export interface UnsignedTx {
   /** Estimated gas cost in USD. */
   gasCostUsd?: number;
   /**
+   * Estimated gas cost denominated in the chain's native asset (ETH on
+   * ethereum/arbitrum/base/optimism, MATIC/POL on polygon), as a string
+   * formatted at 18 decimals. Stored alongside `gasCostUsd` so the cost
+   * preview block (issue #636) can render the native fee even when the
+   * USD price lookup degrades (no network / DefiLlama miss). Both halves
+   * are populated by `enrichTx` when gas estimation succeeds; both stay
+   * undefined when it fails.
+   */
+  gasCostNative?: string;
+  /**
    * Result of an eth_call simulation against the current chain state. `ok:false`
    * with a revertReason is expected on the follow-up tx of an approve→action
    * pair at prepare time (the approve hasn't been mined yet). At sign time, the
