@@ -1,6 +1,7 @@
 import { encodeFunctionData, type Abi } from "viem";
 import { resolveContractAbi } from "../../shared/contract-abi.js";
 import { lookupKnownSpender } from "../../security/known-spenders.js";
+import { applyCustomCallClassifier } from "../../security/custom-call-classifier.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
 import { assertNotUnlimitedBurnApproval } from "../shared/approval.js";
 
@@ -14,6 +15,7 @@ export interface BuildCustomCallParams {
   abi?: readonly unknown[];
   acknowledgeBurnApproval?: boolean;
   acknowledgeRawApproveBypass?: boolean;
+  acknowledgeKnownExfilPattern?: boolean;
 }
 
 const APPROVE_SELECTOR = "0x095ea7b3";
@@ -113,6 +115,33 @@ export async function buildCustomCall(p: BuildCustomCallParams): Promise<Unsigne
     }
   }
 
+  // Issue #652 — selector classifier for known value-exfil patterns
+  // (transfer / transferFrom / NFT-transfer / setApprovalForAll). The
+  // approve(...) selector is intentionally OUT of the classifier's
+  // ruleset because the dedicated check above already gates it with
+  // protocol-spender resolution. The classifier handles the OTHER
+  // selectors that the user-side defenses (swiss-knife URL, on-device
+  // blind-sign hash) can't meaningfully gate when the user has been
+  // social-engineered into the call themselves.
+  //
+  // `transferFrom` with `from == wallet` is value-exfil via a
+  // pre-existing approval and is refused outright with no bypass —
+  // there's no legitimate flow where the user wants to pull their own
+  // tokens through allowance-spending machinery (use prepare_token_send
+  // instead, which doesn't require an approval).
+  let transferFromSelfAsFrom = false;
+  if (data.toLowerCase().startsWith("0x23b872dd") && p.args.length >= 1) {
+    const fromArg = String(p.args[0] ?? "").toLowerCase();
+    if (fromArg === p.wallet.toLowerCase()) {
+      transferFromSelfAsFrom = true;
+    }
+  }
+  const classifierVerdict = applyCustomCallClassifier(
+    data,
+    p.acknowledgeKnownExfilPattern,
+    transferFromSelfAsFrom,
+  );
+
   // Stringify args for the decoded preview. Caller-supplied shapes are
   // arbitrary (struct tuples, address arrays, decimal strings); the JSON
   // form is the most faithful agent-readable rendering without losing
@@ -123,6 +152,11 @@ export async function buildCustomCall(p: BuildCustomCallParams): Promise<Unsigne
   );
   const argsPreview = argsJson.length > 4096 ? `${argsJson.slice(0, 4096)}…` : argsJson;
 
+  const decodedArgs: Record<string, string> = { args: argsPreview };
+  if (classifierVerdict.annotation) {
+    decodedArgs._classifierWarning = classifierVerdict.annotation;
+  }
+
   return {
     chain: p.chain,
     to: p.contract,
@@ -132,7 +166,7 @@ export async function buildCustomCall(p: BuildCustomCallParams): Promise<Unsigne
     description: `Custom call: ${p.fn} on ${p.contract} (${p.chain})`,
     decoded: {
       functionName: p.fn,
-      args: { args: argsPreview },
+      args: decodedArgs,
     },
   };
 }
