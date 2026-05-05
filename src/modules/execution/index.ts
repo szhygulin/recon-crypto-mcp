@@ -260,7 +260,17 @@ export async function pairLedgerLive(): Promise<{
   return {
     uri,
     qr,
-    instructions: ledgerLivePairingInstructions(cachedVersion),
+    instructions:
+      ledgerLivePairingInstructions(cachedVersion) +
+      " VERIFY BEFORE FIRST USE: once pairing completes, the EVM addresses " +
+      "Ledger Live shares are exposed via `get_ledger_status`. Before any " +
+      "`prepare_*` uses one of those addresses, surface its FULL string (no " +
+      "truncation) and have the user cross-check it against (a) Ledger Live " +
+      "→ Settings → Connected Apps (the WC session entry shows the shared " +
+      "accounts), and (b) the on-device 'Display address' screen for the " +
+      "matching account in the Ethereum / chain-specific app. " +
+      "On any mismatch, abort — a compromised middle layer may have " +
+      "substituted addresses.",
     waitingForApproval: true,
   };
 }
@@ -308,7 +318,11 @@ export async function pairLedgerTron(args: PairLedgerTronArgs = {}): Promise<{
       "TRON account paired. You can now call `prepare_tron_*` with this address and " +
       "forward the handle via `send_transaction`. Keep the Ledger plugged in with the " +
       "TRON app open — each sign re-opens USB and re-verifies the device address. " +
-      "To pair a different slot, call `pair_ledger_tron` again with another `accountIndex`.",
+      "To pair a different slot, call `pair_ledger_tron` again with another `accountIndex`. " +
+      "VERIFY BEFORE FIRST USE: surface this FULL address (no truncation) and have " +
+      "the user verify it character-by-character against the device's 'Receive' / " +
+      "'Show address' screen on the TRON app. On any mismatch, abort — a " +
+      "compromised middle layer may have substituted the address.",
   };
 }
 
@@ -437,7 +451,13 @@ export async function pairLedgerBitcoin(args: PairLedgerBitcoinArgs = {}): Promi
       "`get_btc_account_balance({ accountIndex })` to sum across the cached set " +
       "for this account, or `get_btc_balance` against any single cached address. " +
       "Re-run `pair_ledger_btc` to refresh the cache; previously-cached entries " +
-      "for this accountIndex are dropped before the new scan persists.",
+      "for this accountIndex are dropped before the new scan persists. " +
+      "VERIFY BEFORE FIRST USE: before any `prepare_btc_*_send` or " +
+      "`send_transaction` uses one of these addresses, surface its FULL string " +
+      "(no truncation) and have the user verify it character-by-character against " +
+      "the device's 'Display address' screen (Bitcoin app → Display address → " +
+      "select the matching BIP path). On any mismatch, abort — a compromised " +
+      "middle layer may have substituted addresses.",
   };
 }
 
@@ -480,7 +500,12 @@ export async function pairLedgerSolana(
       "'Message Hash' instead of decoded fields. For SPL: (1) enable 'Allow " +
       "blind signing' in Solana app → Settings, (2) match the Message Hash " +
       "surfaced in the preview against the on-device value. To pair another " +
-      "slot, call `pair_ledger_solana` again with a different `accountIndex`.",
+      "slot, call `pair_ledger_solana` again with a different `accountIndex`. " +
+      "VERIFY BEFORE FIRST USE: surface this FULL address (no truncation) " +
+      "and have the user verify it character-by-character against the " +
+      "device's 'Public Key' / 'Show address' screen on the Solana app. " +
+      "On any mismatch, abort — a compromised middle layer may have " +
+      "substituted the address.",
   };
 }
 
@@ -1508,7 +1533,13 @@ export async function pairLedgerLitecoin(
       gapLimit +
       " consecutive empty addresses were observed. Use `get_ltc_balance` against " +
       "any cached address. Re-run `pair_ledger_ltc` to refresh; previously-cached " +
-      "entries for this accountIndex are dropped before the new scan persists." +
+      "entries for this accountIndex are dropped before the new scan persists. " +
+      "VERIFY BEFORE FIRST USE: before any `prepare_litecoin_*_send` or " +
+      "`send_transaction` uses one of these addresses, surface its FULL string " +
+      "(no truncation) and have the user verify it character-by-character " +
+      "against the device's 'Display address' screen (Litecoin app → Display " +
+      "address → select the matching BIP path). On any mismatch, abort — a " +
+      "compromised middle layer may have substituted addresses." +
       skippedNote,
   };
 }
