@@ -193,6 +193,9 @@ describe("preview_send runs guards and pins fees; send_transaction consumes the 
       maxFeePerGas: 22_000_000_000n.toString(),
       maxPriorityFeePerGas: 2_000_000_000n.toString(),
       gas: 21_000n.toString(),
+      // Issue #650 — live base fee surfaced for the preview-time cost
+      // breakdown. The mock returns baseFeePerGas: 10 gwei.
+      baseFeePerGas: 10_000_000_000n.toString(),
     });
     expect(preview.previewToken).toMatch(/^[0-9a-f-]{36}$/);
 

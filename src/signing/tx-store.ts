@@ -35,6 +35,15 @@ export interface StashedPin {
   maxFeePerGas: bigint;
   maxPriorityFeePerGas: bigint;
   gas: bigint;
+  /**
+   * Live base fee from `latestBlock.baseFeePerGas` at pin time. Stored so the
+   * preview-time cost block (issue #650) can render the EIP-1559 breakdown
+   * (`base fee X gwei · priority Y gwei`) without re-querying the chain on a
+   * cached re-pin. Not used by `send_transaction` — it's purely a UX field
+   * for the cost-preview render. `0n` when the chain doesn't expose a base
+   * fee (pre-London, but we reject those at simulation time anyway).
+   */
+  baseFeePerGas: bigint;
   preSignHash: `0x${string}`;
   pinnedAt: number;
   /**

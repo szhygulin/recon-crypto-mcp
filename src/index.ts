@@ -533,6 +533,7 @@ import {
   renderCostPreviewBlock,
   renderLitecoinVerificationBlock,
   renderPrepareReceiptBlock,
+  renderPreviewCostBlock,
   renderPreviewVerifyAgentTaskBlock,
   renderSolanaAgentTaskBlock,
   renderSolanaPrepareAgentTaskBlock,
@@ -1317,7 +1318,10 @@ export function previewSendHandler(
       maxFeePerGas: string;
       maxPriorityFeePerGas: string;
       gas: string;
+      baseFeePerGas?: string;
     };
+    gasCostNative?: string;
+    gasCostUsd?: number;
     previewToken: string;
     decoderUrl?: string;
     clearSignOnly?: boolean;
@@ -1329,6 +1333,23 @@ export function previewSendHandler(
       const content: { type: "text"; text: string }[] = [
         { type: "text", text: JSON.stringify(result, bigintReplacer, 2) },
       ];
+      // Pinned-cost preview (issue #650) — surfaced FIRST among the human-
+      // readable blocks so a fee-spike since prepare time aborts the flow
+      // before the user spends attention on the hash-match + CHECKS PERFORMED
+      // surfaces. Returns null when the cost fields are absent (older
+      // envelope shape, or computePreviewCost was skipped); we silently
+      // omit rather than fabricate.
+      if (result.pinned.baseFeePerGas !== undefined) {
+        const cost = renderPreviewCostBlock({
+          chain: result.chain,
+          ...(result.gasCostNative ? { gasCostNative: result.gasCostNative } : {}),
+          ...(result.gasCostUsd !== undefined ? { gasCostUsd: result.gasCostUsd } : {}),
+          baseFeePerGas: result.pinned.baseFeePerGas,
+          maxPriorityFeePerGas: result.pinned.maxPriorityFeePerGas,
+          gas: result.pinned.gas,
+        });
+        if (cost) content.push({ type: "text", text: cost });
+      }
       const warning = missingPreflightSkillWarning();
       if (warning) content.push({ type: "text", text: warning });
       const demoNotice = missingDemoWalletNotice();
