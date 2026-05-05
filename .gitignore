@@ -1,4 +1,7 @@
 node_modules/
+# Repo uses npm; pnpm-lock is only created by tools that default to pnpm
+# (e.g. glama). package-lock.json is the source of truth — don't commit a sibling.
+pnpm-lock.yaml
 dist/
 !vendor/**/dist/
 release/
