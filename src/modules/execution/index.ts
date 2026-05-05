@@ -2840,6 +2840,7 @@ export async function prepareCustomCall(
     abi: args.abi,
     acknowledgeBurnApproval: args.acknowledgeBurnApproval,
     acknowledgeRawApproveBypass: args.acknowledgeRawApproveBypass,
+    acknowledgeKnownExfilPattern: args.acknowledgeKnownExfilPattern,
   });
   // Stamp the affirmative-ack on the tx so `assertTransactionSafe`
   // (preview/send time) recognizes this handle as the explicit

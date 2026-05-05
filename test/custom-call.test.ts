@@ -426,3 +426,322 @@ describe("canonical-dispatch wiring (#483 / PR #489)", () => {
     expect(() => assertCanonicalDispatchOnTxChain("prepare_custom_call", tx)).not.toThrow();
   });
 });
+
+// ------- Selector classifier (issue #652) -------
+// Defense in depth on the prepare_custom_call escape hatch — refuses
+// obvious value-exfil selectors and routes the agent to the safer
+// protocol-specific tool. Approve(0x095ea7b3) is intentionally NOT in
+// the classifier (already handled by the dedicated #556 check above).
+
+const ERC20_TRANSFER_ABI = [
+  {
+    type: "function",
+    name: "transfer",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+] as const;
+
+const ERC20_TRANSFER_FROM_ABI = [
+  {
+    type: "function",
+    name: "transferFrom",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "from", type: "address" },
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+] as const;
+
+const ERC721_SAFE_TRANSFER_FROM_ABI = [
+  {
+    type: "function",
+    name: "safeTransferFrom",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "from", type: "address" },
+      { name: "to", type: "address" },
+      { name: "tokenId", type: "uint256" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+const ERC721_SET_APPROVAL_FOR_ALL_ABI = [
+  {
+    type: "function",
+    name: "setApprovalForAll",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "operator", type: "address" },
+      { name: "approved", type: "bool" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+const ATTACKER = "0x000000000000000000000000000000000000dEaD" as const;
+const ANOTHER_WALLET = "0x1111111111111111111111111111111111111111" as const;
+
+describe("buildCustomCall — selector classifier (issue #652)", () => {
+  it("refuses ERC-20 transfer(...) and points at prepare_token_send", async () => {
+    await expect(
+      buildCustomCall({
+        wallet: WALLET,
+        chain: "ethereum",
+        contract: USDC,
+        fn: "transfer",
+        args: [ATTACKER, "1000000"],
+        value: "0",
+        abi: ERC20_TRANSFER_ABI as unknown as readonly unknown[],
+      }),
+    ).rejects.toThrow(/CUSTOM_CALL_REFUSED[\s\S]*transfer\(address,uint256\)[\s\S]*prepare_token_send/);
+  });
+
+  it("refuses ERC-20 transferFrom(...) and points at the safer flow", async () => {
+    await expect(
+      buildCustomCall({
+        wallet: WALLET,
+        chain: "ethereum",
+        contract: USDC,
+        fn: "transferFrom",
+        args: [ANOTHER_WALLET, ATTACKER, "1000000"],
+        value: "0",
+        abi: ERC20_TRANSFER_FROM_ABI as unknown as readonly unknown[],
+      }),
+    ).rejects.toThrow(/CUSTOM_CALL_REFUSED[\s\S]*transferFrom/);
+  });
+
+  it("refuses transferFrom(self, ...) outright with NO bypass available", async () => {
+    // Self-as-from is pull-style draining via a pre-existing approval —
+    // there's no legitimate flow where the user wants this through the
+    // escape hatch (use prepare_token_send instead, which doesn't need
+    // an allowance). The ack flag MUST NOT downgrade this verdict.
+    await expect(
+      buildCustomCall({
+        wallet: WALLET,
+        chain: "ethereum",
+        contract: USDC,
+        fn: "transferFrom",
+        args: [WALLET, ATTACKER, "1000000"],
+        value: "0",
+        abi: ERC20_TRANSFER_FROM_ABI as unknown as readonly unknown[],
+        acknowledgeKnownExfilPattern: true,
+      }),
+    ).rejects.toThrow(/NOT[\s\S]*bypassable/);
+  });
+
+  it("self-as-from comparison is case-insensitive on the wallet hex", async () => {
+    // Wallet is a checksummed 0xC0f5… address; from-arg is the same
+    // hex lowercased. The check must canonicalize both sides.
+    await expect(
+      buildCustomCall({
+        wallet: WALLET,
+        chain: "ethereum",
+        contract: USDC,
+        fn: "transferFrom",
+        args: [WALLET.toLowerCase(), ATTACKER, "1000000"],
+        value: "0",
+        abi: ERC20_TRANSFER_FROM_ABI as unknown as readonly unknown[],
+        acknowledgeKnownExfilPattern: true,
+      }),
+    ).rejects.toThrow(/NOT[\s\S]*bypassable/);
+  });
+
+  it("acknowledgeKnownExfilPattern=true downgrades transfer refusal to a warn annotation", async () => {
+    const tx = await buildCustomCall({
+      wallet: WALLET,
+      chain: "ethereum",
+      contract: USDC,
+      fn: "transfer",
+      args: [ATTACKER, "1000000"],
+      value: "0",
+      abi: ERC20_TRANSFER_ABI as unknown as readonly unknown[],
+      acknowledgeKnownExfilPattern: true,
+    });
+    expect(tx.data.startsWith("0xa9059cbb")).toBe(true);
+    expect(tx.decoded?.args._classifierWarning).toBeDefined();
+    expect(tx.decoded?.args._classifierWarning).toMatch(/exfil-pattern bypassed/);
+  });
+
+  it("acknowledgeKnownExfilPattern=true downgrades transferFrom(other, ...) refusal", async () => {
+    // Other-as-from is rare-but-legitimate (pulling someone else's
+    // pre-existing allowance to yourself). Bypass IS allowed here.
+    const tx = await buildCustomCall({
+      wallet: WALLET,
+      chain: "ethereum",
+      contract: USDC,
+      fn: "transferFrom",
+      args: [ANOTHER_WALLET, WALLET, "1000000"],
+      value: "0",
+      abi: ERC20_TRANSFER_FROM_ABI as unknown as readonly unknown[],
+      acknowledgeKnownExfilPattern: true,
+    });
+    expect(tx.data.startsWith("0x23b872dd")).toBe(true);
+    expect(tx.decoded?.args._classifierWarning).toMatch(/exfil-pattern bypassed/);
+  });
+
+  it("attaches a soft-warn annotation to ERC-721 safeTransferFrom (no refusal)", async () => {
+    const tx = await buildCustomCall({
+      wallet: WALLET,
+      chain: "ethereum",
+      contract: USDC, // contract addr is irrelevant — selector match is the gate
+      fn: "safeTransferFrom",
+      args: [WALLET, ANOTHER_WALLET, "42"],
+      value: "0",
+      abi: ERC721_SAFE_TRANSFER_FROM_ABI as unknown as readonly unknown[],
+    });
+    expect(tx.data.startsWith("0x42842e0e")).toBe(true);
+    expect(tx.decoded?.args._classifierWarning).toMatch(/\[warning\][\s\S]*safeTransferFrom/);
+  });
+
+  it("attaches a soft-warn annotation to setApprovalForAll (no refusal)", async () => {
+    const tx = await buildCustomCall({
+      wallet: WALLET,
+      chain: "ethereum",
+      contract: USDC,
+      fn: "setApprovalForAll",
+      args: [ANOTHER_WALLET, true],
+      value: "0",
+      abi: ERC721_SET_APPROVAL_FOR_ALL_ABI as unknown as readonly unknown[],
+    });
+    expect(tx.data.startsWith("0xa22cb465")).toBe(true);
+    expect(tx.decoded?.args._classifierWarning).toMatch(/\[warning\][\s\S]*setApprovalForAll/);
+  });
+
+  it("does not attach a warning for unrelated selectors (Timelock schedule)", async () => {
+    const tx = await buildCustomCall({
+      wallet: WALLET,
+      chain: "ethereum",
+      contract: TIMELOCK,
+      fn: "schedule",
+      args: [
+        "0x0000000000000000000000000000000000000001",
+        "0",
+        "0x",
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "172800",
+      ],
+      value: "0",
+      abi: TIMELOCK_ABI as unknown as readonly unknown[],
+    });
+    expect(tx.data.startsWith("0x01d5062a")).toBe(true);
+    expect(tx.decoded?.args._classifierWarning).toBeUndefined();
+  });
+});
+
+describe("classifier rule selectors (#652) — bit-exact against viem", () => {
+  // Verify the hard-coded selectors in CUSTOM_CALL_CLASSIFIER_RULES
+  // match what viem encodes for the canonical signatures. Per the
+  // project rule on verifying cryptographic constants independently.
+  it("ERC-20 transfer", () => {
+    const data = encodeFunctionData({
+      abi: ERC20_TRANSFER_ABI,
+      functionName: "transfer",
+      args: ["0x0000000000000000000000000000000000000001", 0n],
+    });
+    expect(data.slice(0, 10)).toBe("0xa9059cbb");
+  });
+
+  it("ERC-20 transferFrom", () => {
+    const data = encodeFunctionData({
+      abi: ERC20_TRANSFER_FROM_ABI,
+      functionName: "transferFrom",
+      args: [
+        "0x0000000000000000000000000000000000000001",
+        "0x0000000000000000000000000000000000000002",
+        0n,
+      ],
+    });
+    expect(data.slice(0, 10)).toBe("0x23b872dd");
+  });
+
+  it("ERC-721 safeTransferFrom (3-arg)", () => {
+    const data = encodeFunctionData({
+      abi: ERC721_SAFE_TRANSFER_FROM_ABI,
+      functionName: "safeTransferFrom",
+      args: [
+        "0x0000000000000000000000000000000000000001",
+        "0x0000000000000000000000000000000000000002",
+        0n,
+      ],
+    });
+    expect(data.slice(0, 10)).toBe("0x42842e0e");
+  });
+
+  it("ERC-721 setApprovalForAll", () => {
+    const data = encodeFunctionData({
+      abi: ERC721_SET_APPROVAL_FOR_ALL_ABI,
+      functionName: "setApprovalForAll",
+      args: ["0x0000000000000000000000000000000000000001", true],
+    });
+    expect(data.slice(0, 10)).toBe("0xa22cb465");
+  });
+
+  it("ERC-721 safeTransferFrom (4-arg with bytes)", () => {
+    const ABI_WITH_BYTES = [
+      {
+        type: "function",
+        name: "safeTransferFrom",
+        stateMutability: "nonpayable",
+        inputs: [
+          { name: "from", type: "address" },
+          { name: "to", type: "address" },
+          { name: "tokenId", type: "uint256" },
+          { name: "data", type: "bytes" },
+        ],
+        outputs: [],
+      },
+    ] as const;
+    const data = encodeFunctionData({
+      abi: ABI_WITH_BYTES,
+      functionName: "safeTransferFrom",
+      args: [
+        "0x0000000000000000000000000000000000000001",
+        "0x0000000000000000000000000000000000000002",
+        0n,
+        "0x",
+      ],
+    });
+    expect(data.slice(0, 10)).toBe("0xb88d4fde");
+  });
+});
+
+describe("prepareCustomCallInput schema — acknowledgeKnownExfilPattern (#652)", () => {
+  it("accepts boolean true / false / undefined", () => {
+    const ok1 = prepareCustomCallInput.parse({
+      wallet: WALLET,
+      contract: TIMELOCK,
+      fn: "schedule",
+      args: [],
+      acknowledgeNonProtocolTarget: true,
+      acknowledgeKnownExfilPattern: true,
+    });
+    expect(ok1.acknowledgeKnownExfilPattern).toBe(true);
+    const ok2 = prepareCustomCallInput.parse({
+      wallet: WALLET,
+      contract: TIMELOCK,
+      fn: "schedule",
+      args: [],
+      acknowledgeNonProtocolTarget: true,
+      acknowledgeKnownExfilPattern: false,
+    });
+    expect(ok2.acknowledgeKnownExfilPattern).toBe(false);
+    const ok3 = prepareCustomCallInput.parse({
+      wallet: WALLET,
+      contract: TIMELOCK,
+      fn: "schedule",
+      args: [],
+      acknowledgeNonProtocolTarget: true,
+    });
+    expect(ok3.acknowledgeKnownExfilPattern).toBeUndefined();
+  });
+});

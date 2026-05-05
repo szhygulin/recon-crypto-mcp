@@ -1123,6 +1123,21 @@ export const prepareCustomCallInput = z.object({
         "non-ERC-20 contract that exposes `approve(address,uint256)` for an unrelated " +
         "purpose (rare governance hooks, DAO-specific approvals). Do NOT default to true."
     ),
+  acknowledgeKnownExfilPattern: z
+    .boolean()
+    .optional()
+    .describe(
+      "Override flag for the CUSTOM_CALL_REFUSED selector classifier (issue #652). The " +
+        "classifier hard-refuses obvious ERC-20 value-exfil selectors routed through this " +
+        "escape hatch — `transfer(address,uint256)` and `transferFrom(address,address,uint256)` " +
+        "— and points the agent at the safer protocol-specific tool (`prepare_token_send`, " +
+        "etc.). Set to true only when the user has explicitly asked for the raw selector " +
+        "via this escape hatch (e.g. testing a non-standard ERC-20 fork, calling through a " +
+        "contract whose `transfer` is unrelated to ERC-20). Pulling your own wallet via " +
+        "`transferFrom` (from = self) is refused outright and is NOT bypassable through " +
+        "this flag — use `prepare_token_send` instead. Do NOT default to true silently — " +
+        "the agent must surface the trade-off to the user before setting it."
+    ),
 });
 
 export const sendTransactionInput = z.object({
