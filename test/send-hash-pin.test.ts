@@ -607,6 +607,75 @@ describe("previewSendHandler — LEDGER BLIND-SIGN HASH gating", () => {
     ).length;
     expect(hashBlockCount).toBe(1);
   });
+
+  // Issue #650 — preview-time pinned-cost block surfaced as the FIRST
+  // human-readable block (right after the JSON dump) so a fee-spike
+  // since prepare aborts the flow before the user invests attention in
+  // the LEDGER BLIND-SIGN HASH + CHECKS PERFORMED surfaces.
+  it("prepends the Pinned network fee block when cost fields are present (issue #650)", async () => {
+    const fakePreview = async () => ({
+      handle: "h",
+      chain: "ethereum" as const,
+      to: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as `0x${string}`,
+      valueWei: "0",
+      preSignHash:
+        "0xdeadbeefcafef00dbabe0123456789abcdef0123456789abcdef0123456789ab" as `0x${string}`,
+      pinned: {
+        nonce: 1,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "100000",
+        baseFeePerGas: "10000000000",
+      },
+      gasCostNative: "0.0012",
+      gasCostUsd: 4.2,
+      previewToken: "tok",
+    });
+    const out = await previewSendHandler(fakePreview)({ handle: "h" });
+    // content[0] is the JSON dump; the cost block sits at content[1].
+    expect(out.content.length).toBeGreaterThanOrEqual(3);
+    const costBlock = out.content[1].text;
+    expect(costBlock).toMatch(/^Pinned network fee: ~\$4\.20 \(≈ 0\.0012 ETH\)/);
+    expect(costBlock).toContain(
+      "base fee 10 gwei · priority 2 gwei · gas 100000 units",
+    );
+    // Must come BEFORE the LEDGER BLIND-SIGN HASH block.
+    const texts = out.content.map((c) => c.text);
+    const costIdx = texts.findIndex((t) => /^Pinned network fee:/.test(t));
+    const hashIdx = texts.findIndex((t) =>
+      /LEDGER BLIND-SIGN HASH — RELAY VERBATIM TO USER/.test(t),
+    );
+    expect(costIdx).toBeGreaterThanOrEqual(0);
+    expect(hashIdx).toBeGreaterThanOrEqual(0);
+    expect(costIdx).toBeLessThan(hashIdx);
+  });
+
+  // Back-compat: older envelope shape (no baseFeePerGas / gasCost*) must
+  // not regress — the handler should silently omit the cost block rather
+  // than throw or render a half-populated line.
+  it("omits the cost block when baseFeePerGas is absent (envelope back-compat)", async () => {
+    const fakePreview = async () => ({
+      handle: "h",
+      chain: "ethereum" as const,
+      to: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as `0x${string}`,
+      valueWei: "0",
+      preSignHash:
+        "0xdeadbeefcafef00dbabe0123456789abcdef0123456789abcdef0123456789ab" as `0x${string}`,
+      pinned: {
+        nonce: 1,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "100000",
+        // baseFeePerGas deliberately omitted (older envelope shape)
+      },
+      previewToken: "tok",
+    });
+    const out = await previewSendHandler(fakePreview)({ handle: "h" });
+    const texts = out.content.map((c) => c.text);
+    for (const t of texts) {
+      expect(t).not.toMatch(/^Pinned network fee:/);
+    }
+  });
 });
 
 describe("preview_send surfaces pin + hash; send_transaction consumes them", () => {

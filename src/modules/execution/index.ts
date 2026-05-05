@@ -2948,6 +2948,13 @@ async function pinSendFields(
   maxFeePerGas: bigint;
   maxPriorityFeePerGas: bigint;
   gas: bigint;
+  /**
+   * Live base fee from `latestBlock.baseFeePerGas`. Threaded out so the
+   * preview-time cost block (issue #650) can render `base fee X gwei`
+   * separately from the priority fee — recovering it from `maxFeePerGas`
+   * arithmetic would silently drift if `BASE_FEE_MULTIPLIER` ever changes.
+   */
+  baseFeePerGas: bigint;
 }> {
   const rpcClient = getClient(chain);
   const [nonceRaw, latestBlock, priorityEstimate, gasLimit] = await Promise.all([
@@ -2970,6 +2977,7 @@ async function pinSendFields(
     maxFeePerGas,
     maxPriorityFeePerGas,
     gas: gasLimit,
+    baseFeePerGas: baseFee,
   };
 }
 
@@ -3071,7 +3079,30 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     maxFeePerGas: string;
     maxPriorityFeePerGas: string;
     gas: string;
+    /**
+     * Live base fee from `latestBlock.baseFeePerGas` at pin time. Surfaced
+     * for the preview-time cost block's EIP-1559 breakdown (issue #650);
+     * not part of what `send_transaction` forwards to WalletConnect — the
+     * tx is signed against `maxFeePerGas` + `maxPriorityFeePerGas`.
+     */
+    baseFeePerGas: string;
   };
+  /**
+   * Native-currency cost computed at preview time from the pinned tuple
+   * (`gas * (baseFee + priority)` — the realistic-case cost; worst-case
+   * is bounded by `gas * maxFeePerGas`). Lets the preview-time render
+   * surface a fee-spike that happened between prepare and preview, without
+   * scrolling back through the verification + cross-check + agent-task
+   * surfaces. Always present on success — derived from values already in
+   * scope, no separate failure path. Issue #650.
+   */
+  gasCostNative: string;
+  /**
+   * USD-denominated equivalent of `gasCostNative`. Undefined when the
+   * native-token price lookup (DefiLlama) degraded. The render block falls
+   * back to native-only in that case rather than fabricating a number.
+   */
+  gasCostUsd?: number;
   previewToken: string;
   refreshed?: boolean;
   /**
@@ -3106,6 +3137,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
   const clearSignOnly = isClearSignOnlyTx(tx);
   const existing = getPinnedGas(args.handle);
   if (existing && !args.refresh) {
+    const cost = await computePreviewCost(tx.chain, existing);
     return {
       handle: args.handle,
       chain: tx.chain,
@@ -3117,7 +3149,10 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
         maxFeePerGas: existing.maxFeePerGas.toString(),
         maxPriorityFeePerGas: existing.maxPriorityFeePerGas.toString(),
         gas: existing.gas.toString(),
+        baseFeePerGas: existing.baseFeePerGas.toString(),
       },
+      gasCostNative: cost.native,
+      ...(cost.usd !== undefined ? { gasCostUsd: cost.usd } : {}),
       previewToken: existing.previewToken,
       ...(decoderUrl ? { decoderUrl } : {}),
       ...(clearSignOnly ? { clearSignOnly: true } : {}),
@@ -3161,11 +3196,13 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     maxFeePerGas: pinned.maxFeePerGas,
     maxPriorityFeePerGas: pinned.maxPriorityFeePerGas,
     gas: pinned.gas,
+    baseFeePerGas: pinned.baseFeePerGas,
     preSignHash,
     pinnedAt: Date.now(),
     previewToken,
   };
   attachPinnedGas(args.handle, pin);
+  const cost = await computePreviewCost(tx.chain, pin);
   return {
     handle: args.handle,
     chain: tx.chain,
@@ -3177,12 +3214,42 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
       maxFeePerGas: pinned.maxFeePerGas.toString(),
       maxPriorityFeePerGas: pinned.maxPriorityFeePerGas.toString(),
       gas: pinned.gas.toString(),
+      baseFeePerGas: pinned.baseFeePerGas.toString(),
     },
+    gasCostNative: cost.native,
+    ...(cost.usd !== undefined ? { gasCostUsd: cost.usd } : {}),
     previewToken,
     ...(existing ? { refreshed: true } : {}),
     ...(decoderUrl ? { decoderUrl } : {}),
     ...(clearSignOnly ? { clearSignOnly: true } : {}),
   };
+}
+
+/**
+ * Realistic-case fee estimate from a pinned EIP-1559 tuple. Uses
+ * `gas * (baseFee + priority)` rather than `gas * maxFeePerGas` because
+ * `maxFeePerGas` is `baseFee * 2 + priority` (a 4-block-rise headroom cap),
+ * not what the user actually pays. The on-chain effectiveGasPrice is
+ * `min(maxFeePerGas, baseFeeAtInclusion + priority)` — over the ~12s
+ * inclusion window `baseFeeAtInclusion` rarely diverges far from `baseFee`,
+ * so this is the right number to anchor abort decisions.
+ *
+ * Native is always returned (we have all the inputs); USD is undefined when
+ * DefiLlama price lookup degrades. Issue #650.
+ */
+async function computePreviewCost(
+  chain: SupportedChain,
+  pin: StashedPin,
+): Promise<{ native: string; usd?: number }> {
+  const effectiveGasPrice = pin.baseFeePerGas + pin.maxPriorityFeePerGas;
+  const gasWei = pin.gas * effectiveGasPrice;
+  const native = formatUnits(gasWei, 18);
+  const price = await getTokenPrice(chain, "native");
+  if (price === undefined) {
+    return { native };
+  }
+  const usd = round(Number(native) * price, 2);
+  return { native, usd };
 }
 
 /**

@@ -138,6 +138,69 @@ export function renderCostPreviewBlock(
   return `Estimated network fee: ≈ ${nativeFmt} ${symbol} (USD price unavailable)`;
 }
 
+/**
+ * Trim a wei-denominated fee to a short gwei string. Single source of
+ * truth so the preview-cost breakdown line keeps consistent precision
+ * across base fee (typically 1–100 gwei) and priority fee (typically
+ * 0.01–5 gwei).
+ *
+ *   - n ≥ 10:    rounded to integer gwei (e.g. "18")
+ *   - 1 ≤ n < 10: 1 fractional digit, trailing 0 trimmed (e.g. "1.5")
+ *   - n < 1:     2 fractional digits, trailing zeros trimmed (e.g. "0.05")
+ *
+ * Number(BigInt) is safe here — typical gwei wei values are well under
+ * 2^53 (1000 gwei = 1e12 wei).
+ */
+function weiToGweiShort(wei: string): string {
+  const n = Number(BigInt(wei)) / 1e9;
+  if (!Number.isFinite(n) || n < 0) return wei;
+  if (n >= 10) return n.toFixed(0);
+  if (n >= 1) return n.toFixed(1).replace(/\.0$/, "");
+  return n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+/**
+ * Preview-time cost block (issue #650). Surfaced as the FIRST content of
+ * every successful EVM `preview_send` so the user can abort on a fee spike
+ * that happened between prepare and preview, without scrolling back through
+ * the LEDGER BLIND-SIGN HASH + agent-task surfaces below.
+ *
+ * Differs from prepare-time `renderCostPreviewBlock`:
+ *   - values come from the SERVER-PINNED tuple (the exact maxFeePerGas /
+ *     maxPriorityFeePerGas / gas that go on-chain, not a prepare-time
+ *     estimate that may now be stale),
+ *   - adds a breakdown line (`base fee X gwei · priority Y gwei · gas N
+ *     units`) so the user sees what changed if the cost spiked,
+ *   - leads with "Pinned" rather than "Estimated" to communicate the
+ *     commitment — these are the values the user is signing for.
+ *
+ * Returns null when `gasCostNative` is missing — better silent than a
+ * fabricated number adjacent to a real device prompt. Native + breakdown
+ * always shown together when present; USD line is degraded silently when
+ * the price lookup failed.
+ */
+export function renderPreviewCostBlock(args: {
+  chain: SupportedChain;
+  gasCostNative?: string;
+  gasCostUsd?: number;
+  baseFeePerGas: string;
+  maxPriorityFeePerGas: string;
+  gas: string;
+}): string | null {
+  if (!args.gasCostNative) return null;
+  const symbol = NATIVE_SYMBOL[args.chain];
+  const nativeFmt = formatNativeShort(args.gasCostNative);
+  const headline =
+    args.gasCostUsd !== undefined
+      ? `Pinned network fee: ~$${args.gasCostUsd.toFixed(2)} (≈ ${nativeFmt} ${symbol})`
+      : `Pinned network fee: ≈ ${nativeFmt} ${symbol} (USD price unavailable)`;
+  const breakdown =
+    `  base fee ${weiToGweiShort(args.baseFeePerGas)} gwei` +
+    ` · priority ${weiToGweiShort(args.maxPriorityFeePerGas)} gwei` +
+    ` · gas ${args.gas} units`;
+  return `${headline}\n${breakdown}`;
+}
+
 function truncateHex(data: string, bytelenLabel: boolean): string {
   const normalized = data.startsWith("0x") ? data : `0x${data}`;
   if (normalized.length <= 26) return normalized;

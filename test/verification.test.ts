@@ -12,6 +12,7 @@ import { decodeCalldata } from "../src/signing/decode-calldata.js";
 import {
   renderCostPreviewBlock,
   renderPostSendPollBlock,
+  renderPreviewCostBlock,
   renderTronAgentTaskBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
@@ -441,6 +442,72 @@ describe("renderCostPreviewBlock — issue #636 fee-shock abort signal", () => {
       gasCostNative: "0.5000",
     });
     expect(big).toContain("0.5 ETH");
+  });
+});
+
+describe("renderPreviewCostBlock — issue #650 preview-time fee surface", () => {
+  it("renders headline + EIP-1559 breakdown when all fields are populated", () => {
+    const out = renderPreviewCostBlock({
+      chain: "ethereum",
+      gasCostUsd: 4.12,
+      gasCostNative: "0.00195",
+      // 18 gwei base fee, 1.5 gwei priority, 100k gas
+      baseFeePerGas: "18000000000",
+      maxPriorityFeePerGas: "1500000000",
+      gas: "100000",
+    });
+    expect(out).toBe(
+      "Pinned network fee: ~$4.12 (≈ 0.00195 ETH)\n" +
+        "  base fee 18 gwei · priority 1.5 gwei · gas 100000 units",
+    );
+  });
+
+  it("falls back to native-only when USD price was unavailable", () => {
+    const out = renderPreviewCostBlock({
+      chain: "ethereum",
+      gasCostNative: "0.00195",
+      baseFeePerGas: "18000000000",
+      maxPriorityFeePerGas: "1500000000",
+      gas: "100000",
+    });
+    expect(out).toMatch(/^Pinned network fee: ≈ 0\.00195 ETH \(USD price unavailable\)/);
+    expect(out).toContain("base fee 18 gwei · priority 1.5 gwei · gas 100000 units");
+  });
+
+  it("returns null when gasCostNative is missing (silent over fabricated)", () => {
+    expect(
+      renderPreviewCostBlock({
+        chain: "ethereum",
+        baseFeePerGas: "18000000000",
+        maxPriorityFeePerGas: "1500000000",
+        gas: "100000",
+      }),
+    ).toBeNull();
+  });
+
+  it("formats sub-gwei priority fees with 2 fractional digits trimmed", () => {
+    // 0.5 gwei priority fee floor — still readable.
+    const out = renderPreviewCostBlock({
+      chain: "arbitrum",
+      gasCostUsd: 0.05,
+      gasCostNative: "0.0000234",
+      baseFeePerGas: "100000000",
+      maxPriorityFeePerGas: "500000000", // 0.5 gwei
+      gas: "200000",
+    });
+    expect(out).toContain("base fee 0.1 gwei · priority 0.5 gwei · gas 200000 units");
+  });
+
+  it("uses the chain's native symbol (POL/MATIC on polygon)", () => {
+    const out = renderPreviewCostBlock({
+      chain: "polygon",
+      gasCostUsd: 0.02,
+      gasCostNative: "0.04",
+      baseFeePerGas: "30000000000",
+      maxPriorityFeePerGas: "30000000000",
+      gas: "21000",
+    });
+    expect(out).toMatch(/Pinned network fee: ~\$0\.02 \(≈ 0\.04 (MATIC|POL)\)/);
   });
 });
 
