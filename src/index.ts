@@ -528,6 +528,7 @@ import {
   renderPostBroadcastBlock,
   renderPostSendPollBlock,
   renderBitcoinVerificationBlock,
+  renderCostPreviewBlock,
   renderLitecoinVerificationBlock,
   renderPrepareReceiptBlock,
   renderPreviewVerifyAgentTaskBlock,
@@ -820,6 +821,13 @@ export async function collectVerificationBlocks(
     // ERC-20 approvals clear-sign on Ledger's Ethereum app — skip rendering
     // (the send-time payload-hash guard still runs, using tx.verification).
     if (shouldRenderVerificationBlock(tx)) {
+      // Estimated network fee (issue #636) — surfaced FIRST so the user can
+      // abort on fee shock before reading the verification + cross-check +
+      // agent-task surfaces. `renderCostPreviewBlock` returns null when
+      // `enrichTx` couldn't estimate gas (network blip / sim revert), in
+      // which case we silently omit rather than fabricate a number.
+      const cost = renderCostPreviewBlock(tx);
+      if (cost) blocks.push(cost);
       blocks.push(renderVerificationBlock(tx));
       // Auto-emit the independent 4byte.directory cross-check. If the network
       // call fails, verifyEvmCalldata returns an "error" summary — we still

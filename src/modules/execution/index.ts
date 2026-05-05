@@ -2249,6 +2249,11 @@ async function enrichTx(tx: UnsignedTx): Promise<UnsignedTx> {
 
     const gasPrice = await client.getGasPrice();
     const gasWei = gas * gasPrice;
+    // Always populate the native-fee field (issue #636) — the cost preview
+    // block can render even when USD pricing degrades, which keeps the
+    // fee-shock abort signal alive on cold chains and during DefiLlama
+    // outages.
+    tx.gasCostNative = formatUnits(gasWei, 18);
     const ethPrice = await getTokenPrice(tx.chain, "native");
     if (ethPrice) {
       const gasEth = Number(formatUnits(gasWei, 18));

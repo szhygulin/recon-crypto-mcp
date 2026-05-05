@@ -8,6 +8,7 @@ import type {
   UnsignedTronTx,
   UnsignedTx,
 } from "../types/index.js";
+import { NATIVE_SYMBOL } from "../config/contracts.js";
 import { solanaLedgerMessageHash } from "./verification.js";
 
 /**
@@ -88,6 +89,53 @@ export function isClearSignOnlyTx(tx: Pick<UnsignedTx, "data">): boolean {
   if (data.startsWith(ERC20_APPROVE_SELECTOR)) return true;
   if (data.startsWith(ERC20_TRANSFER_SELECTOR)) return true;
   return false;
+}
+
+/**
+ * Trim a native-fee decimal string ("0.00114523000…") to a small number of
+ * significant fractional digits without trailing zeros. Cheap UX layer over
+ * `formatUnits(_, 18)`; not meant for accounting accuracy. The thresholds
+ * track typical L1/L2 gas magnitudes (~$0.01–$50 of gas → 1e-7 to 1e-2 of
+ * native).
+ */
+function formatNativeShort(native: string): string {
+  const n = Number(native);
+  if (!Number.isFinite(n) || n <= 0) return native;
+  const fixed = n < 0.001 ? n.toFixed(8) : n < 0.1 ? n.toFixed(6) : n.toFixed(4);
+  return fixed.replace(/0+$/, "").replace(/\.$/, "");
+}
+
+/**
+ * One-line "Estimated network fee" header emitted ahead of every EVM
+ * VERIFY-BEFORE-SIGNING block (issue #636). Lets the user abort on fee shock
+ * before they spend attention on the verification + cross-check + agent-task
+ * surfaces below — a $40 gas estimate should kill the flow without further
+ * scrutiny.
+ *
+ * Returns `null` when `enrichTx` couldn't estimate gas (the field stays
+ * undefined). Better silent than fabricated: a wrong number rendered next
+ * to a real device prompt is a worse failure mode than no number.
+ *
+ * USD half is omitted when the native price lookup degraded; the native half
+ * is always shown when the field is present so the user still has a
+ * comparison anchor against their wallet balance.
+ *
+ * Scope: EVM only. TRON / Solana / BTC / LTC carry no equivalent
+ * precomputed cost field today (different fee models — bandwidth/energy,
+ * lamports + priority, sat/vB × vsize). Tracked as a follow-up.
+ */
+export function renderCostPreviewBlock(
+  tx: Pick<UnsignedTx, "chain" | "gasCostUsd" | "gasCostNative">,
+): string | null {
+  const native = tx.gasCostNative;
+  if (!native) return null;
+  const symbol = NATIVE_SYMBOL[tx.chain];
+  const nativeFmt = formatNativeShort(native);
+  const usd = tx.gasCostUsd;
+  if (usd !== undefined) {
+    return `Estimated network fee: ~$${usd.toFixed(2)} (≈ ${nativeFmt} ${symbol})`;
+  }
+  return `Estimated network fee: ≈ ${nativeFmt} ${symbol} (USD price unavailable)`;
 }
 
 function truncateHex(data: string, bytelenLabel: boolean): string {
