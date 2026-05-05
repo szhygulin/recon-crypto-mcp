@@ -98,6 +98,50 @@ export const getNftCollectionInput = z.object({
 export type GetNftCollectionArgs = z.infer<typeof getNftCollectionInput>;
 
 /**
+ * `get_nft_listings` — issue #569. Ranked individual asks (currently
+ * active listings) for a single EVM collection on a single chain,
+ * sorted floor-ascending. Distinct from `get_nft_collection` which
+ * exposes only collection-level metadata (floor / volume / holders)
+ * and so cannot ground a "show me the N cheapest" question.
+ *
+ * Read-only display tool. VaultPilot does not yet expose an NFT-buy
+ * preparation flow (Seaport / blur / etc. all require EIP-712 typed-
+ * data signing, which is gated on the typed-data clear-sign defenses
+ * tracked at #453). Surface the rows for research / planning; the
+ * agent must NOT fabricate a buy preparation off this output. Page
+ * size is capped at 10 by schema — small enough that the agent can
+ * validate every row exists in the response before referencing it,
+ * which is the smoke-test fabrication-resistance guard the issue's
+ * suggested-fix called out.
+ */
+export const getNftListingsInput = z.object({
+  contractAddress: z
+    .string()
+    .regex(EVM_ADDRESS)
+    .describe("EVM contract address of the NFT collection."),
+  chain: chainEnum
+    .default("ethereum")
+    .describe(
+      "EVM chain the collection is deployed on. Defaults to ethereum.",
+    ),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(10)
+    .default(5)
+    .describe(
+      "Max ranked listings to return (cheapest-first). Capped at 10 — " +
+        "small enough that the agent can validate every row index against " +
+        "the response before referencing it. The issue (#569) explicitly " +
+        "calls out the small cap as part of the fabrication-resistance " +
+        "defense.",
+    ),
+});
+
+export type GetNftListingsArgs = z.infer<typeof getNftListingsInput>;
+
+/**
  * `get_nft_history` — recent NFT activity for the wallet (mints, buys,
  * sells, transfers, listings). Mirrors the EVM `get_transaction_history`
  * shape but limited to NFT-relevant events.
@@ -177,6 +221,50 @@ export interface NftPortfolioResult {
   rows: NftPortfolioRow[];
   /** Per-chain coverage — `errored` flags which chains failed. */
   coverage: Array<{ chain: string; errored: boolean; reason?: string }>;
+  notes: string[];
+}
+
+/**
+ * One ranked listing row for `get_nft_listings`. Fields chosen to
+ * match what the issue (#569) calls out: token_id + price +
+ * listing_source + maker_address. `validUntil` is added because
+ * "active listing" is a moving target — the row is meaningful only
+ * until that timestamp.
+ */
+export interface NftListingRow {
+  /** Reservoir order id — opaque, useful for dedup / deep links. */
+  orderId: string;
+  /** EVM contract address of the NFT (echoed for explicit-display). */
+  contractAddress: string;
+  /** Token id within the collection. Absent on collection-bid criteria (filtered out). */
+  tokenId?: string;
+  /** Price in the listing's native currency (typically ETH). */
+  priceEth?: number;
+  /** Price in USD via Reservoir's pricing. */
+  priceUsd?: number;
+  /** Currency symbol — e.g. "ETH" / "WETH" / "USDC". */
+  priceCurrency?: string;
+  /** Marketplace domain — "opensea.io" / "blur.io" / "x2y2.io" etc. Useful provenance. */
+  listingSource?: string;
+  /** Friendly source name when Reservoir provides one. */
+  listingSourceName?: string;
+  /** Seller address. */
+  makerAddress: string;
+  /** Unix-seconds expiry of the order. */
+  validUntil?: number;
+  /** ISO mirror of `validUntil` for chat display. */
+  validUntilIso?: string;
+  /** Order kind — "seaport-v1.6" / "blur" / "x2y2" / etc. */
+  orderKind?: string;
+}
+
+export interface NftListingsResult {
+  chain: string;
+  contractAddress: string;
+  /** Ranked floor-ascending. Length is bounded by the schema-capped `limit`. */
+  rows: NftListingRow[];
+  /** True when Reservoir has more active asks beyond the requested limit. */
+  truncated: boolean;
   notes: string[];
 }
 

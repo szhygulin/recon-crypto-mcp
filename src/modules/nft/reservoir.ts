@@ -230,3 +230,53 @@ export interface ReservoirUsersActivityResponse {
   activities: ReservoirActivityItem[];
   continuation?: string;
 }
+
+/**
+ * `/orders/asks/v5` — active sell orders. Issue #569.
+ *
+ * `criteria.data.token.tokenId` carries the token id for single-token
+ * asks; collection-criteria asks (rare) leave it absent and the
+ * handler filters them out so per-row display always names a concrete
+ * tokenId.
+ */
+export interface ReservoirAskOrder {
+  id: string;
+  kind?: string;
+  side: "sell";
+  status?: string;
+  contract?: string;
+  maker: string;
+  taker?: string;
+  price?: {
+    currency?: { contract?: string; name?: string; symbol?: string; decimals?: number };
+    amount?: { raw?: string; decimal?: number; usd?: number; native?: number };
+    netAmount?: { raw?: string; decimal?: number; usd?: number; native?: number };
+  };
+  validFrom?: number;
+  validUntil?: number;
+  quantityFilled?: string;
+  quantityRemaining?: string;
+  criteria?: {
+    kind?: string;
+    data?: {
+      token?: { tokenId?: string };
+      collection?: { id?: string };
+    };
+  };
+  source?: {
+    id?: string;
+    domain?: string;
+    name?: string;
+    icon?: string;
+    url?: string;
+  };
+  feeBps?: number;
+  expiration?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ReservoirOrdersAsksResponse {
+  orders: ReservoirAskOrder[];
+  continuation?: string;
+}

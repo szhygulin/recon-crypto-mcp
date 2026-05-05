@@ -370,11 +370,13 @@ import { renderSetLevelEnumeration } from "./security/set-level-enumeration.js";
 import {
   getNftCollection,
   getNftHistory,
+  getNftListings,
   getNftPortfolio,
 } from "./modules/nft/index.js";
 import {
   getNftCollectionInput,
   getNftHistoryInput,
+  getNftListingsInput,
   getNftPortfolioInput,
 } from "./modules/nft/schemas.js";
 import {
@@ -5057,6 +5059,26 @@ async function main() {
       },
     },
     handler(getNftCollection)
+  );
+
+  registerTool(server,
+    "get_nft_listings",
+    {
+      description:
+        "Issue #569. Ranked individual listings (currently active asks) for a single EVM NFT collection on a single chain, sorted floor-ascending. Distinct from `get_nft_collection`, which exposes only collection-level metadata (floor / volume / holders) and so cannot ground a 'show me the N cheapest' question. Source: Reservoir `/orders/asks/v5?status=active&sortBy=price&sortDirection=asc`. " +
+        "Returns rows with `tokenId`, `priceEth` / `priceUsd`, `priceCurrency`, `listingSource` (marketplace domain — opensea.io / blur.io / x2y2.io / etc.), `makerAddress` (seller), `validUntil` (expiry), and `orderKind` (seaport-v1.6 / blur / etc.). Page size schema-capped at 10 (default 5) — small enough that the agent can validate every referenced row exists in the response. Single-token criteria only; collection-bid criteria orders are filtered out so every row names a concrete `tokenId`. " +
+        "SCOPE: read-only display tool. VaultPilot does NOT yet expose an NFT-buy preparation flow — Seaport / blur / x2y2 marketplace fills require EIP-712 typed-data signing, gated on the typed-data clear-sign defenses tracked at #453. Use these rows for research / candidate selection; execute any actual buy via the listing's marketplace UI (`listingSource` field) until the prepare flow lands. " +
+        "AGENT BEHAVIOR: do NOT extrapolate beyond `rows.length`. Validate that any `rows[i]` referenced in the answer actually exists in this response. The small page cap is the fabrication-resistance guard called out in #569. EVM-only in v1; Solana NFT marketplaces (Magic Eden / Tensor) deferred. Read-only.",
+      inputSchema: getNftListingsInput.shape,
+      annotations: {
+        title: "Get NFT Listings",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    handler(getNftListings)
   );
 
   registerTool(server,

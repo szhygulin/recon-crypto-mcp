@@ -421,6 +421,196 @@ describe("get_nft_collection", () => {
   });
 });
 
+describe("get_nft_listings (issue #569)", () => {
+  it("returns ranked listings sorted floor-ascending with tokenId / price / source / maker", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      // Verify the request shape — caller must hit /orders/asks/v5
+      // with status=active, sortBy=price, sortDirection=asc.
+      expect(url).toContain("/orders/asks/v5");
+      expect(url).toContain("status=active");
+      expect(url).toContain("sortBy=price");
+      expect(url).toContain("sortDirection=asc");
+      return fakeResponse({
+        status: 200,
+        body: {
+          orders: [
+            {
+              id: "order-1",
+              kind: "seaport-v1.6",
+              side: "sell",
+              status: "active",
+              contract: BAYC,
+              maker: "0xseller1",
+              price: {
+                currency: { symbol: "ETH" },
+                amount: { decimal: 24.5, usd: 63700 },
+              },
+              validUntil: 1_800_000_000,
+              criteria: { kind: "token", data: { token: { tokenId: "100" } } },
+              source: { domain: "opensea.io", name: "OpenSea" },
+            },
+            {
+              id: "order-2",
+              kind: "blur",
+              side: "sell",
+              status: "active",
+              contract: BAYC,
+              maker: "0xseller2",
+              price: {
+                currency: { symbol: "ETH" },
+                amount: { decimal: 25.1, usd: 65260 },
+              },
+              validUntil: 1_800_100_000,
+              criteria: { kind: "token", data: { token: { tokenId: "200" } } },
+              source: { domain: "blur.io", name: "Blur" },
+            },
+          ],
+        },
+      });
+    });
+
+    const { getNftListings } = await import("../src/modules/nft/index.ts");
+    const r = await getNftListings({
+      contractAddress: BAYC,
+      chain: "ethereum",
+      limit: 5,
+    });
+
+    expect(r.chain).toBe("ethereum");
+    expect(r.contractAddress).toBe(BAYC);
+    expect(r.rows).toHaveLength(2);
+
+    expect(r.rows[0]).toMatchObject({
+      orderId: "order-1",
+      tokenId: "100",
+      priceEth: 24.5,
+      priceUsd: 63700,
+      priceCurrency: "ETH",
+      listingSource: "opensea.io",
+      listingSourceName: "OpenSea",
+      makerAddress: "0xseller1",
+      orderKind: "seaport-v1.6",
+    });
+    expect(r.rows[0].validUntilIso).toMatch(/^20/);
+
+    expect(r.rows[1]).toMatchObject({
+      tokenId: "200",
+      listingSource: "blur.io",
+      orderKind: "blur",
+    });
+
+    // Read-only / no-buy-flow note must always be surfaced — the agent
+    // needs to know not to attempt a Seaport/blur fill prep off this
+    // output.
+    expect(r.notes.some((n) => /read-only display tool/i.test(n))).toBe(true);
+    expect(r.notes.some((n) => /#453/.test(n))).toBe(true);
+    // Fabrication-resistance reminder must be present.
+    expect(r.notes.some((n) => /fabrication-resistance|do NOT extrapolate/i.test(n))).toBe(true);
+  });
+
+  it("filters out collection-bid criteria orders (no concrete tokenId)", async () => {
+    fetchMock.mockImplementation(async () =>
+      fakeResponse({
+        status: 200,
+        body: {
+          orders: [
+            {
+              id: "order-collection",
+              kind: "seaport-v1.6",
+              side: "sell",
+              status: "active",
+              contract: BAYC,
+              maker: "0xseller-x",
+              price: { currency: { symbol: "ETH" }, amount: { decimal: 24, usd: 62400 } },
+              criteria: { kind: "collection", data: { collection: { id: BAYC } } },
+              source: { domain: "opensea.io" },
+            },
+            {
+              id: "order-token",
+              kind: "seaport-v1.6",
+              side: "sell",
+              status: "active",
+              contract: BAYC,
+              maker: "0xseller-y",
+              price: { currency: { symbol: "ETH" }, amount: { decimal: 25, usd: 65000 } },
+              validUntil: 1_800_000_000,
+              criteria: { kind: "token", data: { token: { tokenId: "300" } } },
+              source: { domain: "opensea.io" },
+            },
+          ],
+        },
+      }),
+    );
+    const { getNftListings } = await import("../src/modules/nft/index.ts");
+    const r = await getNftListings({
+      contractAddress: BAYC,
+      chain: "ethereum",
+      limit: 5,
+    });
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0].tokenId).toBe("300");
+  });
+
+  it("flags an empty-listings collection in notes", async () => {
+    fetchMock.mockResolvedValue(
+      fakeResponse({ status: 200, body: { orders: [] } }),
+    );
+    const { getNftListings } = await import("../src/modules/nft/index.ts");
+    const r = await getNftListings({
+      contractAddress: BAYC,
+      chain: "ethereum",
+      limit: 5,
+    });
+    expect(r.rows).toHaveLength(0);
+    expect(r.notes.some((n) => /no active listings/i.test(n))).toBe(true);
+  });
+
+  it("flags truncated:true when Reservoir signals a continuation", async () => {
+    fetchMock.mockResolvedValue(
+      fakeResponse({
+        status: 200,
+        body: {
+          orders: [
+            {
+              id: "o1",
+              kind: "seaport-v1.6",
+              side: "sell",
+              status: "active",
+              contract: BAYC,
+              maker: "0xseller",
+              price: { currency: { symbol: "ETH" }, amount: { decimal: 25, usd: 65000 } },
+              criteria: { kind: "token", data: { token: { tokenId: "1" } } },
+              source: { domain: "opensea.io" },
+            },
+          ],
+          continuation: "next-page-cursor",
+        },
+      }),
+    );
+    const { getNftListings } = await import("../src/modules/nft/index.ts");
+    const r = await getNftListings({
+      contractAddress: BAYC,
+      chain: "ethereum",
+      limit: 5,
+    });
+    expect(r.truncated).toBe(true);
+  });
+
+  it("re-throws a structured rate-limit error with the setup hint", async () => {
+    fetchMock.mockResolvedValue(
+      fakeResponse({ status: 429, body: { message: "Rate limited" } }),
+    );
+    const { getNftListings } = await import("../src/modules/nft/index.ts");
+    await expect(
+      getNftListings({
+        contractAddress: BAYC,
+        chain: "ethereum",
+        limit: 5,
+      }),
+    ).rejects.toThrow(/RESERVOIR_API_KEY/);
+  });
+});
+
 describe("get_nft_history", () => {
   it("merges 2-chain activity, sorts desc by timestamp, caps at limit", async () => {
     fetchMock.mockImplementation(async (url: string) => {

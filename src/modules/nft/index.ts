@@ -16,8 +16,10 @@ import {
   ReservoirRateLimitedError,
   RESERVOIR_SETUP_HINT,
   type ReservoirActivityItem,
+  type ReservoirAskOrder,
   type ReservoirCollection,
   type ReservoirCollectionsResponse,
+  type ReservoirOrdersAsksResponse,
   type ReservoirUserToken,
   type ReservoirUserTokensResponse,
   type ReservoirUsersActivityResponse,
@@ -30,11 +32,14 @@ import {
 import type {
   GetNftCollectionArgs,
   GetNftHistoryArgs,
+  GetNftListingsArgs,
   GetNftPortfolioArgs,
   NftCollectionInfo,
   NftHistoryItem,
   NftHistoryItemType,
   NftHistoryResult,
+  NftListingRow,
+  NftListingsResult,
   NftPortfolioResult,
   NftPortfolioRow,
 } from "./schemas.js";
@@ -475,6 +480,121 @@ export async function getNftCollection(
     );
   }
   return info;
+}
+
+// ---- get_nft_listings (issue #569) ---------------------------------
+
+function projectAsk(
+  chain: SupportedChain,
+  contractAddress: string,
+  o: ReservoirAskOrder,
+): NftListingRow | null {
+  const tokenId = o.criteria?.data?.token?.tokenId;
+  if (!tokenId) {
+    // Collection-bid criteria (no concrete tokenId) — drop. The "buy
+    // N cheapest" question only makes sense against single-token asks,
+    // and surfacing collection-criteria orders without a tokenId would
+    // give the agent rows it can't reference unambiguously.
+    return null;
+  }
+  const priceEth = o.price?.amount?.decimal;
+  const priceUsd = o.price?.amount?.usd;
+  const validUntil = o.validUntil;
+  return {
+    orderId: o.id,
+    contractAddress,
+    tokenId,
+    ...(typeof priceEth === "number" ? { priceEth } : {}),
+    ...(typeof priceUsd === "number" ? { priceUsd: round2(priceUsd) } : {}),
+    ...(o.price?.currency?.symbol ? { priceCurrency: o.price.currency.symbol } : {}),
+    ...(o.source?.domain ? { listingSource: o.source.domain } : {}),
+    ...(o.source?.name ? { listingSourceName: o.source.name } : {}),
+    makerAddress: o.maker,
+    ...(typeof validUntil === "number" ? { validUntil } : {}),
+    ...(typeof validUntil === "number"
+      ? { validUntilIso: new Date(validUntil * 1000).toISOString() }
+      : {}),
+    ...(o.kind ? { orderKind: o.kind } : {}),
+  };
+}
+
+export async function getNftListings(
+  args: GetNftListingsArgs,
+): Promise<NftListingsResult> {
+  const chain = args.chain as SupportedChain;
+  const contractAddress = args.contractAddress;
+  const limit = args.limit;
+
+  // Over-fetch by 1 so we can detect truncation when collection-bid
+  // criteria orders get filtered out: ask for `limit + 1` raw, return
+  // up to `limit` valid rows, mark `truncated` if Reservoir said there
+  // was more OR we filtered any out at the boundary.
+  const rawLimit = Math.min(limit + 1, 50);
+
+  let res: ReservoirOrdersAsksResponse;
+  try {
+    res = await reservoirFetch<ReservoirOrdersAsksResponse>({
+      chain,
+      path: `/orders/asks/v5`,
+      query: {
+        contracts: contractAddress,
+        status: "active",
+        sortBy: "price",
+        sortDirection: "asc",
+        limit: rawLimit,
+      },
+    });
+  } catch (e) {
+    if (e instanceof ReservoirRateLimitedError) {
+      throw new Error(
+        `Reservoir rate-limited the listings lookup. ${RESERVOIR_SETUP_HINT}`,
+      );
+    }
+    throw e;
+  }
+
+  const projected: NftListingRow[] = [];
+  for (const o of res.orders) {
+    const row = projectAsk(chain, contractAddress, o);
+    if (row) projected.push(row);
+    if (projected.length >= limit) break;
+  }
+
+  const truncated =
+    !!res.continuation || res.orders.length > projected.length;
+
+  const notes: string[] = [];
+  if (projected.length === 0) {
+    notes.push(
+      "No active listings for this collection on " +
+        chain +
+        ". The collection may exist on-chain but currently have no asks " +
+        "(Reservoir's `/orders/asks/v5` filtered to status=active returned 0 rows). " +
+        "Re-check after listings repopulate, or use `get_nft_collection` for " +
+        "collection-level vitals (floor / volume / holders) instead.",
+    );
+  }
+  notes.push(
+    "Read-only display tool. VaultPilot does not yet expose an NFT-buy " +
+      "preparation flow — Seaport / blur / x2y2 marketplace fills require " +
+      "EIP-712 typed-data signing, gated on the typed-data clear-sign " +
+      "defenses tracked at #453. Use these rows for research / candidate " +
+      "selection; execute the buy via the listing's marketplace UI " +
+      "(`listingSource` field) until the prepare flow lands.",
+  );
+  notes.push(
+    "Page size is schema-capped at 10. Validate that any `rows[i]` you " +
+      "reference exists in this response — do NOT extrapolate beyond " +
+      "`rows.length`. Issue #569 fabrication-resistance guard.",
+  );
+
+  return {
+    chain,
+    contractAddress,
+    rows: projected,
+    truncated,
+    notes,
+  };
 }
 
 // ---- get_nft_history -----------------------------------------------
