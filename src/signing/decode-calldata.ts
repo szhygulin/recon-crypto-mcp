@@ -369,6 +369,119 @@ function signatureOf(item: AbiFunction): string {
   return `${item.name}(${inputs})`;
 }
 
+/**
+ * High-risk standard selectors we still try to decode positionally even
+ * when the destination is absent from the curated `CONTRACTS` map.
+ *
+ * Threat that motivates this fallback: a C.2 collude attack routes an
+ * NFT operator-approval (`setApprovalForAll(operator, true)`) to an
+ * uncurated marketplace/aggregator while the cooperating MCP narrates
+ * "Seaport-only". With `source:'none'` the attacker-controlled operator
+ * address never surfaces in CHECKS PERFORMED, so Inv #1 sees opaque bytes
+ * and cannot flag the label/calldata mismatch — the user-facing prose
+ * passes while the bytes hand a hostile contract permission to move every
+ * NFT in the collection. (Issue #573, smoke-test batch-3 finding
+ * `expert-x104-C.2`.)
+ *
+ * The fallback returns `source:'local-abi-partial'` rather than
+ * `'local-abi'`: we KNOW the standard ABI shape but we DO NOT know that
+ * the destination is a real ERC-721/1155 — anyone can ship a contract
+ * with a matching selector. The partial label tells the cross-check NOT
+ * to compare function names against 4byte (4byte's signature for this
+ * selector IS canonical, so the re-encode check still anchors the args
+ * — matching the existing LiFi-bridge partial-decode pattern).
+ *
+ * Scope is intentionally narrow: standardized selectors whose blast
+ * radius justifies decoding even on contracts we don't know. Adding
+ * more selectors here is fine; using this list as an allowlist for
+ * destination trust is NOT — the partial source label IS the warning.
+ *
+ * Each entry's `abi` is a single-function ABI tuple ready for
+ * `decodeFunctionData`. We assert the selector matches at module load
+ * (see `assertSelectorMatches` below) so a mistyped selector or signature
+ * fails fast at server startup instead of silently mis-decoding.
+ */
+interface HighRiskSelector {
+  selector: `0x${string}`;
+  signature: string;
+  abi: AbiFunction;
+}
+
+const HIGH_RISK_STANDARD_SELECTORS: readonly HighRiskSelector[] = [
+  {
+    // ERC-721 / ERC-1155 setApprovalForAll(address operator, bool approved).
+    // A single signed call grants/revokes operator authority for ALL tokens
+    // of the collection — highest blast radius outside typed-data signing.
+    selector: "0xa22cb465",
+    signature: "setApprovalForAll(address,bool)",
+    abi: {
+      type: "function",
+      name: "setApprovalForAll",
+      stateMutability: "nonpayable",
+      inputs: [
+        { name: "operator", type: "address" },
+        { name: "approved", type: "bool" },
+      ],
+      outputs: [],
+    },
+  },
+];
+
+function decodeHighRiskStandardSelector(
+  data: `0x${string}`,
+): HumanDecode | null {
+  if (data.length < 10) return null;
+  const selector = data.slice(0, 10).toLowerCase() as `0x${string}`;
+  const entry = HIGH_RISK_STANDARD_SELECTORS.find((e) => e.selector === selector);
+  if (!entry) return null;
+
+  // ABI sanity: every standard selector listed here takes a fixed-size
+  // head with no dynamic tails (address + bool packs to exactly 64 bytes
+  // = 128 hex chars after the 4-byte selector). Reject calldata of the
+  // wrong length to avoid surfacing a spuriously-decoded args list when
+  // a different function with a coincidentally-matching selector prefix
+  // was intended.
+  const expectedHexLen = 10 + entry.abi.inputs.length * 64;
+  if (data.length !== expectedHexLen) return null;
+
+  let decoded: { functionName: string; args?: readonly unknown[] };
+  try {
+    decoded = decodeFunctionData({ abi: [entry.abi], data });
+  } catch {
+    return null;
+  }
+
+  const rawArgs = decoded.args ?? [];
+  const args: DecodedArg[] = entry.abi.inputs.map((input, idx) => {
+    const raw = rawArgs[idx];
+    const base: DecodedArg = {
+      name: input.name ?? `arg${idx}`,
+      type: input.type,
+      value: stringifyArg(raw),
+    };
+    if (input.type === "address" && typeof raw === "string") {
+      try {
+        base.value = getAddress(raw);
+      } catch {
+        // Keep raw string if checksum fails.
+      }
+    }
+    return base;
+  });
+
+  return {
+    functionName: entry.abi.name,
+    signature: entry.signature,
+    args,
+    // Partial: we know the standard ABI shape, but we DO NOT know the
+    // destination is a real ERC-721/1155 — name-equality with 4byte is
+    // not safe to claim from this side (the destination could be an
+    // attacker contract that re-uses the selector). The cross-check's
+    // re-encode anchor still validates the args.
+    source: "local-abi-partial",
+  };
+}
+
 export function decodeCalldata(
   chain: SupportedChain,
   to: `0x${string}`,
@@ -381,6 +494,12 @@ export function decodeCalldata(
 
   const dest = classifyDestination(chain, to);
   if (!dest || !dest.abi) {
+    // Before giving up on `source:'none'`, attempt a selector-only
+    // partial decode for high-risk standard selectors (ERC-721/1155
+    // operator approvals, etc.). Surfaces operator/spender addresses in
+    // CHECKS PERFORMED so Inv #1 can flag a label/calldata mismatch.
+    const partial = decodeHighRiskStandardSelector(data);
+    if (partial) return partial;
     return {
       functionName: "unknown",
       args: [],
