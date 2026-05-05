@@ -4171,7 +4171,7 @@ async function main() {
         "READ-ONLY — report what the server knows about its local config without revealing any " +
         "secret values. Returns the config-file path + existence, server version, per-chain RPC " +
         "URL source classification (env-var / provider-key / custom-url / public-fallback), " +
-        "API-key presence + source per service (Etherscan, 1inch, TronGrid, WalletConnect — " +
+        "API-key presence + source per service (Etherscan, 1inch, Safe, TronGrid, WalletConnect — " +
         "boolean + source enum, never values), counts of paired Ledger accounts (Solana / TRON), " +
         "the WC session-topic SUFFIX (last 8 chars only — same convention as get_ledger_status), " +
         "the agent-side preflight-skill install state, a `setupHints` array (each entry has a " +
