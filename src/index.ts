@@ -2113,11 +2113,13 @@ async function main() {
   );
 
   // ---- Module 2: Security ----
-  registerTool(server, 
+  registerTool(server,
     "check_contract_security",
     {
       description:
-        "Check Etherscan verification status, EIP-1967 proxy pattern, implementation/admin slots, and the presence of dangerous admin functions (mint, pause, upgradeTo, etc.) for a given contract.",
+        "Check Etherscan verification status, EIP-1967 proxy pattern, implementation/admin slots, and the presence of dangerous admin functions (mint, pause, upgradeTo, etc.) for a given contract. " +
+        "SCOPE: surfaces verification + admin-surface findings — protocol/contract safety only. It does NOT measure token upside, price direction, or investment merit. \"No dangerous functions detected\" means the admin surface is clean; it says NOTHING about whether the underlying token will appreciate. " +
+        "AGENT BEHAVIOR: this tool surfaces data; it does NOT pick. Do NOT use a clean security report as token-pick validation. Refuse speculative-pick prompts (\"what coin will 100x\", \"should I buy X\", \"which token will moon\") even when this tool was called; surface the security findings for due-diligence only. Issue #599.",
       inputSchema: checkContractSecurityInput.shape,
       annotations: {
         title: "Check Contract Security",
@@ -2130,11 +2132,13 @@ async function main() {
     handler((a) => checkContractSecurityHandler(a))
   );
 
-  registerTool(server, 
+  registerTool(server,
     "check_permission_risks",
     {
       description:
-        "Enumerate privileged roles on a contract (Ownable.owner, AccessControl hints) and classify holders as EOA, Gnosis Safe multisig, or TimelockController.",
+        "Enumerate privileged roles on a contract (Ownable.owner, AccessControl hints) and classify holders as EOA, Gnosis Safe multisig, or TimelockController. " +
+        "SCOPE: surfaces governance posture (who controls the contract, how hard would it be to rug). It does NOT measure token upside, price direction, or investment merit. A timelock-governed contract is harder to rug than an EOA-owned one — that's a safety floor, NOT an upside signal. " +
+        "AGENT BEHAVIOR: this tool surfaces data; it does NOT pick. Do NOT cite \"governed by a multisig / timelock\" as token-pick validation. Refuse speculative-pick prompts (\"what coin will 100x\", \"should I buy X\", \"which token will moon\") even when this tool was called; surface the permission findings for due-diligence only. Issue #599.",
       inputSchema: checkPermissionRisksInput.shape,
       annotations: {
         title: "Check Permission Risks",
@@ -2151,7 +2155,9 @@ async function main() {
     "get_protocol_risk_score",
     {
       description:
-        "Return a 0-100 risk score for a DeFi protocol, combining TVL size, 30-day TVL trend, contract age, audit count (DefiLlama), and Immunefi bug-bounty status. Higher = safer. The `protocol` argument is the DefiLlama slug — works for any chain DefiLlama covers, not just EVM (Solana: `marinade-finance`, `jito`, `kamino`, `marginfi`, `drift`; Tron: `justlend`, `sun-io`; EVM: `aave-v3`, `uniswap-v3`, etc.). Issue #243.",
+        "Return a 0-100 risk score for a DeFi protocol, combining TVL size, 30-day TVL trend, contract age, audit count (DefiLlama), and Immunefi bug-bounty status. Higher = safer. The `protocol` argument is the DefiLlama slug — works for any chain DefiLlama covers, not just EVM (Solana: `marinade-finance`, `jito`, `kamino`, `marginfi`, `drift`; Tron: `justlend`, `sun-io`; EVM: `aave-v3`, `uniswap-v3`, etc.). Issue #243. " +
+        "SCOPE: this score measures PROTOCOL-LEVEL contract safety, governance, and audit posture (will-the-protocol-rug risk). It does NOT measure individual token upside, price direction, future returns, or 'will this 100x' potential. A high score means the protocol is unlikely to be hacked or exit-scam; it says NOTHING about whether tokens custodied by, traded through, governed by, or related to the protocol will appreciate in price. " +
+        "AGENT BEHAVIOR: this tool surfaces data; it does NOT pick. Use it ONLY for protocol due-diligence (\"is Aave V3 safer than Compound V3 to deposit into?\"). Do NOT use it to ground speculative token-pick answers — \"what coin will 100x\", \"best memecoin\", \"should I buy X\", \"which token will moon\". Refuse speculative-pick prompts even when this tool was called; do not present a high score as upside, endorsement, or investment recommendation. Issue #599.",
       inputSchema: getProtocolRiskScoreInput.shape,
       annotations: {
         title: "Get Protocol Risk Score",
@@ -5066,7 +5072,9 @@ async function main() {
     "get_token_price",
     {
       description:
-        "Fetch the USD price of a token via DefiLlama. Pass `token: \"native\"` for the chain's native asset (ETH on ethereum/arbitrum, MATIC on polygon) or an ERC-20 contract address. Prefer this over get_swap_quote for pure price lookups — no wallet or liquidity simulation needed. EVM-only — for non-EVM natives (BTC, LTC, SOL, XMR, etc.) or any well-known coin without an EVM contract address, use `get_coin_price` instead.",
+        "Fetch the USD price of a token via DefiLlama. Pass `token: \"native\"` for the chain's native asset (ETH on ethereum/arbitrum, MATIC on polygon) or an ERC-20 contract address. Prefer this over get_swap_quote for pure price lookups — no wallet or liquidity simulation needed. EVM-only — for non-EVM natives (BTC, LTC, SOL, XMR, etc.) or any well-known coin without an EVM contract address, use `get_coin_price` instead. " +
+        "SCOPE: returns the current spot USD price — a snapshot, not a forecast. It is NOT a buy/sell signal, price prediction, target, or token-pick endorsement. " +
+        "AGENT BEHAVIOR: this tool surfaces data; it does NOT pick. Current price says nothing about future direction. Do NOT use the price to ground \"what coin will 100x\", \"should I buy X\", \"best memecoin\", or any other speculative-pick answer; refuse those prompts even when this tool was called. Issue #599.",
       inputSchema: getTokenPriceInput.shape,
       annotations: {
         title: "Get Token Price",
@@ -5087,7 +5095,9 @@ async function main() {
         "(a) `symbol` — case-insensitive ticker from a curated allowlist (~120 entries covering top market-cap coins, all native chain currencies VaultPilot supports, major LSTs, top stablecoins, top DeFi governance tokens, and high-question-volume memecoins). The allowlist hardcodes the canonical CoinGecko ID per ticker so scam-token collisions can't poison the result. " +
         "(b) `coingeckoId` — escape hatch for long-tail assets. Pass the URL slug from coingecko.com/en/coins/<id>. " +
         "Returns: { symbol, priceUsd, source: \"defillama-coingecko\", resolvedKey, asOf, confidence }. The `confidence` field is DefiLlama's 0–1 thin-liquidity score; surface it to the user when it's below 0.9. " +
-        "When the agent sees a portfolio response with `priceMissing: true` for a non-EVM asset, this is the tool to call.",
+        "When the agent sees a portfolio response with `priceMissing: true` for a non-EVM asset, this is the tool to call. " +
+        "SCOPE: returns the current spot USD price — a snapshot, not a forecast. It is NOT a buy/sell signal, price prediction, target, or token-pick endorsement. " +
+        "AGENT BEHAVIOR: this tool surfaces data; it does NOT pick. Current price says nothing about future direction. Do NOT use the price to ground \"what coin will 100x\", \"should I buy X\", \"best memecoin\", or any other speculative-pick answer; refuse those prompts even when this tool was called. Issue #599.",
       inputSchema: getCoinPriceInput.shape,
       annotations: {
         title: "Get Coin Price",
