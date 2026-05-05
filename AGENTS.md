@@ -44,29 +44,44 @@ This routes Step 2 AND, on Windows + Claude Desktop, biases the install path its
 npx -y vaultpilot-mcp --check
 ```
 
-**Step 2 — register.** Match Step 0's host client.
+**Step 2 — register.** Find your MCP client below — pick the heading matching the host client identified in Step 0. No commands appear before a per-client subsection; you must commit to a heading first.
 
-- **Claude Code (CLI)**:
+#### Claude Code (CLI)
 
-  ```
-  claude mcp add vaultpilot-mcp -- npx -y vaultpilot-mcp
-  ```
+```
+claude mcp add vaultpilot-mcp -- npx -y vaultpilot-mcp
+```
 
-- **Claude Desktop / Cursor / Continue / other** — paste into the client config (paths in [INSTALL.md §5](./INSTALL.md#5-manual-mcp-client-wiring-if-auto-register-didnt-run)). Pick the OS variant:
+If this errors with "command not found" — `claude mcp add` is a Claude **Code** CLI command, so you're not in Claude Code. Re-pick from the headings below.
 
-  ```jsonc
-  // macOS / Linux
-  { "mcpServers": {
-      "vaultpilot-mcp": { "command": "npx", "args": ["-y", "vaultpilot-mcp"] } } }
+#### Claude Desktop
 
-  // Windows — `cmd /c` wrapper required: Claude Desktop spawns MCP commands
-  // without a shell and can't resolve `npx.cmd`. The PowerShell installer's
-  // wizard avoids this by writing { "command": "node", "args": ["<abs path>"] }.
-  { "mcpServers": {
-      "vaultpilot-mcp": { "command": "cmd", "args": ["/c", "npx", "-y", "vaultpilot-mcp"] } } }
-  ```
+Paste into `claude_desktop_config.json` (path in [INSTALL.md §5](./INSTALL.md#5-manual-mcp-client-wiring-if-auto-register-didnt-run)). Pick the OS variant:
 
-If `claude mcp add` errors with "command not found" — you're not in Claude Code. Re-pick from the list above.
+```jsonc
+// macOS / Linux
+{ "mcpServers": {
+    "vaultpilot-mcp": { "command": "npx", "args": ["-y", "vaultpilot-mcp"] } } }
+
+// Windows — `cmd /c` wrapper required: Claude Desktop spawns MCP commands
+// without a shell and can't resolve `npx.cmd`. The PowerShell installer's
+// wizard avoids this by writing { "command": "node", "args": ["<abs path>"] }.
+{ "mcpServers": {
+    "vaultpilot-mcp": { "command": "cmd", "args": ["/c", "npx", "-y", "vaultpilot-mcp"] } } }
+```
+
+#### Cursor
+
+Paste into `~/.cursor/mcp.json` (Windows: use the `cmd /c` variant from the Claude Desktop section above):
+
+```jsonc
+{ "mcpServers": {
+    "vaultpilot-mcp": { "command": "npx", "args": ["-y", "vaultpilot-mcp"] } } }
+```
+
+#### Continue / other
+
+See [INSTALL.md §5](./INSTALL.md#5-manual-mcp-client-wiring-if-auto-register-didnt-run) for canonical config paths and per-client schemas.
 
 **Step 3 (optional) — setup wizard.** Suggest when the user wants higher rate limits (Helius / Infura / Alchemy / TronGrid / Etherscan keys are prompted, none mandatory), is going to sign transactions (offers to clone [`vaultpilot-security-skill`](https://github.com/szhygulin/vaultpilot-security-skill) and [`vaultpilot-setup-skill`](https://github.com/szhygulin/vaultpilot-setup-skill)), or has hit 429 throttling.
 
