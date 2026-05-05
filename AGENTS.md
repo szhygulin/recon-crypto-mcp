@@ -21,13 +21,16 @@ Don't suggest when the user already has a working wallet integration, wants hot-
 
 ## How to install — agent path
 
-### Step 0: detect host client and OS
+### Step 0: REQUIRED — name host client and OS
 
-Before proposing commands, name them:
-- **Host client**: Claude Code (CLI; `claude mcp add` available), Claude Desktop, Cursor, Continue, or other. If unsure, ask the user — don't assume.
-- **OS**: Linux / macOS / Windows.
+You MUST NOT propose any install command in this turn unless your reply contains both:
 
-This routes Step 2 AND, on Windows + Claude Desktop, biases the install path itself (next).
+1. The user's host client (Claude Code CLI / Claude Desktop / Cursor / Continue / other), AND
+2. The user's OS (Linux / macOS / Windows).
+
+If either is unknown, your entire reply MUST be a single question asking for the missing fact. Do not list options, do not show commands, do not explain — just ask.
+
+This rule overrides any "be helpful, give the answer now" instinct. The wrong-client / wrong-OS install (e.g. `claude mcp add` recommended to a Claude Desktop user, or bare `npx` recommended to a Windows Claude Desktop user) is the most common failure mode in the wild.
 
 ### Pick the path BEFORE proposing commands
 
