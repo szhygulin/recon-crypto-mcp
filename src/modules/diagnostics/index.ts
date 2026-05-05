@@ -112,6 +112,7 @@ interface VaultPilotConfigStatus {
   apiKeys: {
     etherscan: { set: boolean; source: ApiKeySource };
     oneInch: { set: boolean; source: ApiKeySource };
+    safe: { set: boolean; source: ApiKeySource };
     tronGrid: { set: boolean; source: ApiKeySource };
     walletConnectProjectId: { set: boolean; source: ApiKeySource };
   };
@@ -268,6 +269,7 @@ export function getVaultPilotConfigStatus(_args: Record<string, never> = {}): Va
   // pointing the user at a feature they're already in.
   const etherscanKey = classifyApiKey("ETHERSCAN_API_KEY", cfg?.etherscanApiKey);
   const oneInchKey = classifyApiKey("ONEINCH_API_KEY", cfg?.oneInchApiKey);
+  const safeKey = classifyApiKey("SAFE_API_KEY", cfg?.safeApiKey);
   const wcProjectKey = classifyApiKey(
     "WALLETCONNECT_PROJECT_ID",
     cfg?.walletConnect?.projectId,
@@ -275,6 +277,7 @@ export function getVaultPilotConfigStatus(_args: Record<string, never> = {}): Va
   const noKeys =
     !etherscanKey.set &&
     !oneInchKey.set &&
+    !safeKey.set &&
     !tronGridKey.set &&
     !wcProjectKey.set;
   const noPairings =
@@ -317,6 +320,7 @@ export function getVaultPilotConfigStatus(_args: Record<string, never> = {}): Va
     apiKeys: {
       etherscan: etherscanKey,
       oneInch: oneInchKey,
+      safe: safeKey,
       tronGrid: tronGridKey,
       walletConnectProjectId: wcProjectKey,
     },

@@ -37,6 +37,7 @@ beforeEach(async () => {
   delete process.env.RPC_API_KEY;
   delete process.env.ETHERSCAN_API_KEY;
   delete process.env.ONEINCH_API_KEY;
+  delete process.env.SAFE_API_KEY;
   delete process.env.TRON_API_KEY;
   delete process.env.WALLETCONNECT_PROJECT_ID;
   delete process.env.VAULTPILOT_SKILL_MARKER_PATH;
@@ -144,11 +145,29 @@ describe("get_vaultpilot_config_status — API key source classification", () =>
     const status = getVaultPilotConfigStatus();
     expect(status.apiKeys.etherscan).toEqual({ set: false, source: "unset" });
     expect(status.apiKeys.oneInch).toEqual({ set: false, source: "unset" });
+    expect(status.apiKeys.safe).toEqual({ set: false, source: "unset" });
     expect(status.apiKeys.tronGrid).toEqual({ set: false, source: "unset" });
     expect(status.apiKeys.walletConnectProjectId).toEqual({
       set: false,
       source: "unset",
     });
+  });
+
+  it("reports safe key from SAFE_API_KEY env var", async () => {
+    process.env.SAFE_API_KEY = "safe-env-secret";
+    const { getVaultPilotConfigStatus } = await loadFresh();
+    const status = getVaultPilotConfigStatus();
+    expect(status.apiKeys.safe).toEqual({ set: true, source: "env-var" });
+  });
+
+  it("reports safe key from config file when env var unset", async () => {
+    writeConfig({
+      rpc: { provider: "infura", apiKey: "k" },
+      safeApiKey: "config-safe-secret",
+    });
+    const { getVaultPilotConfigStatus } = await loadFresh();
+    const status = getVaultPilotConfigStatus();
+    expect(status.apiKeys.safe).toEqual({ set: true, source: "config" });
   });
 
   it("env-var source wins over config", async () => {
@@ -256,6 +275,7 @@ describe("get_vaultpilot_config_status — strict no-secrets contract", () => {
     const SECRETS = {
       etherscan: "ETHSCAN-PLANT-SECRET-DO-NOT-LEAK",
       oneInch: "ONEINCH-PLANT-SECRET-DO-NOT-LEAK",
+      safe: "SAFE-PLANT-SECRET-DO-NOT-LEAK",
       tron: "TRON-PLANT-SECRET-DO-NOT-LEAK",
       wcProject: "WC-PLANT-SECRET-DO-NOT-LEAK",
       ethRpc: "https://mainnet.example.com/PLANT-RPC-SECRET",
@@ -265,6 +285,7 @@ describe("get_vaultpilot_config_status — strict no-secrets contract", () => {
     } as const;
     process.env.ETHERSCAN_API_KEY = SECRETS.etherscan;
     process.env.ONEINCH_API_KEY = SECRETS.oneInch;
+    process.env.SAFE_API_KEY = SECRETS.safe;
     process.env.TRON_API_KEY = SECRETS.tron;
     process.env.WALLETCONNECT_PROJECT_ID = SECRETS.wcProject;
     process.env.ETHEREUM_RPC_URL = SECRETS.ethRpc;
@@ -379,6 +400,13 @@ describe("get_vaultpilot_config_status — first-run demo-mode hint (issue #371 
 
   it("self-clears when the user adds an Etherscan API key", async () => {
     process.env.ETHERSCAN_API_KEY = "k";
+    const { getVaultPilotConfigStatus } = await loadFresh();
+    const status = getVaultPilotConfigStatus();
+    expect(status.setupHints.find((h: { kind: string }) => h.kind === "demo-mode")).toBeUndefined();
+  });
+
+  it("self-clears when the user adds a Safe API key", async () => {
+    process.env.SAFE_API_KEY = "k";
     const { getVaultPilotConfigStatus } = await loadFresh();
     const status = getVaultPilotConfigStatus();
     expect(status.setupHints.find((h: { kind: string }) => h.kind === "demo-mode")).toBeUndefined();
