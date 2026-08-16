@@ -142,13 +142,12 @@ export function pinLedgerLivePeer(session: SessionTypes.Struct): PeerPinResult {
   // special-casing needed for that.
   //
   // Empty url is tolerated, but ONLY when name is already allowlisted
-  // (re-narrowed per #831 review). The pre-#831 code and this pin's
-  // own predecessor both claimed "Ledger Live mobile sometimes omits
-  // url" with zero evidence cited; we can't verify or refute that
+  // (re-narrowed per #831 review). The pre-#831 pin (afcf211) claimed
+  // "Ledger Live mobile sometimes omits url" with zero evidence cited; we can't verify or refute that
   // claim here either. So the code stays safe under BOTH readings:
   // if the claim is true, an unconditional url requirement would cry
   // wolf on every mobile pairing — the exact #831 defect class; if
-  // it's false, tolerating empty url when the name is unrecognized
+  // it's false, tolerating empty url when the name is recognized
   // buys an attacker nothing against this pin's actual threat model
   // (accidental wrong-wallet pairing — a mis-scanned MetaMask isn't
   // self-reported as "Ledger Wallet"), so gating the tolerance on
