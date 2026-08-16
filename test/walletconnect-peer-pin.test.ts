@@ -72,6 +72,22 @@ describe("pinLedgerLivePeer — match", () => {
     const result = pinLedgerLivePeer(session);
     expect(result.verdict).toBe("match");
   });
+
+  // Contract (narrowed per #831 review): empty url is tolerated, but
+  // ONLY when name is already allowlisted. Neither the pre-#831
+  // "mobile omits url" claim nor a hard url requirement is evidenced,
+  // so this is the reading that's safe under both: an unconditional
+  // requirement would cry wolf on every mobile pairing if the claim
+  // is true; the gate on `nameOk` means the tolerance can't be used
+  // to sneak an unrelated wallet past the pin either way.
+  it("matches an empty url when name is already allowlisted (narrow tolerance, #831 review)", () => {
+    const session = buildSession({
+      name: "Ledger Live",
+      url: "",
+      icons: [],
+    });
+    expect(pinLedgerLivePeer(session).verdict).toBe("match");
+  });
 });
 
 describe("pinLedgerLivePeer — mismatch", () => {
@@ -79,9 +95,13 @@ describe("pinLedgerLivePeer — mismatch", () => {
   // and names the url field, even when name is the canonical
   // "Ledger Live" — this is the accidental-wrong-wallet case the pin
   // exists to catch, and it must still warn after #831 exactly as it
-  // did before (control: the pre-#831 pin already warned here, since
-  // its url check required a *.ledger.com hostname too).
-  it("rejects a non-Ledger url even with a recognized name, naming the url field", () => {
+  // did before.
+  //
+  // CONTROL, NOT A FALSIFIER: the pre-#831 pin already warned on this
+  // exact fixture (its url check also required a *.ledger.com
+  // hostname), so this test doesn't distinguish old from new
+  // behavior — it just pins that #831 didn't regress it.
+  it("[control, not a falsifier] rejects a non-Ledger url even with a recognized name, naming the url field", () => {
     const session = buildSession({
       name: "Ledger Live",
       url: "https://evil.example",
@@ -91,6 +111,34 @@ describe("pinLedgerLivePeer — mismatch", () => {
     expect(result.verdict).toBe("mismatch");
     expect(result.message).toMatch(/url "https:\/\/evil\.example"/);
     expect(result.message).not.toMatch(/name "Ledger Live"/);
+  });
+
+  // Near-miss url fixtures pinning `hostMatchesLedger`'s suffix-match
+  // property (a plausible place for a lookalike-domain bug to hide).
+  // Traced by hand against `hostMatchesLedger`/`safeUrlHostname` and
+  // expected to pass immediately on this diff — not falsifiers, just
+  // regression coverage for the anchor now that it's the sole check
+  // for a non-empty url.
+  it("[near-miss] rejects a lookalike domain (evil-ledger.com is not a ledger.com subdomain)", () => {
+    const session = buildSession({
+      name: "Ledger Live",
+      url: "https://evil-ledger.com",
+      icons: [],
+    });
+    const result = pinLedgerLivePeer(session);
+    expect(result.verdict).toBe("mismatch");
+    expect(result.message).toMatch(/url "https:\/\/evil-ledger\.com"/);
+  });
+
+  it("[near-miss] rejects a ledger.com-prefixed lookalike host (ledger.com.evil.tld)", () => {
+    const session = buildSession({
+      name: "Ledger Live",
+      url: "https://ledger.com.evil.tld",
+      icons: [],
+    });
+    const result = pinLedgerLivePeer(session);
+    expect(result.verdict).toBe("mismatch");
+    expect(result.message).toMatch(/url "https:\/\/ledger\.com\.evil\.tld"/);
   });
 
   // Contract: name is a warning contributor, not a sole trigger — an
@@ -129,15 +177,19 @@ describe("pinLedgerLivePeer — mismatch", () => {
     expect(pinLedgerLivePeer(session).verdict).toBe("mismatch");
   });
 
-  it("rejects an empty url even with a recognized name — no empty-url leniency post-#831", () => {
+  // Other half of the narrowed empty-url contract: the tolerance is
+  // gated on `nameOk`, so an unrecognized name gets no benefit of the
+  // doubt from an empty url — both fields are named as mismatched.
+  it("rejects an empty url when name is NOT allowlisted — tolerance doesn't extend to unrecognized names", () => {
     const session = buildSession({
-      name: "Ledger Live",
+      name: "MetaMask",
       url: "",
-      icons: ["https://cdn.ledger.com/logo.png"],
+      icons: [],
     });
     const result = pinLedgerLivePeer(session);
     expect(result.verdict).toBe("mismatch");
-    expect(result.message).toMatch(/url ""/);
+    expect(result.message).toMatch(/name "MetaMask"/);
+    expect(result.message).toMatch(/url is empty/);
   });
 });
 

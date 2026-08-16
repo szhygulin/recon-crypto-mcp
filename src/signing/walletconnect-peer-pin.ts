@@ -36,14 +36,16 @@ import type { SessionTypes } from "@walletconnect/types";
  * Pinning policy (re-scoped by issue #831 — real Ledger Live was
  * failing 2 of the original 3 checks on every genuine pairing):
  *   - `url` hostname is the load-bearing anchor: must be `ledger.com`
- *     or a `*.ledger.com` subdomain, no empty-url exception. All
- *     three fields are equally peer-self-reported — none is more
- *     spoof-resistant than another — so this pin's real value is
- *     catching an ACCIDENTAL wrong-wallet pairing (the user scanned
- *     the QR with the wrong app), not a deliberate spoof (out of
- *     scope regardless, see "What this misses" above). `url` is the
- *     one field that actually identified the genuine peer in #831's
- *     observed metadata, so it alone carries that job now.
+ *     or a `*.ledger.com` subdomain. All three fields are equally
+ *     peer-self-reported — none is more spoof-resistant than another
+ *     — so this pin's real value is catching an ACCIDENTAL
+ *     wrong-wallet pairing (the user scanned the QR with the wrong
+ *     app), not a deliberate spoof (out of scope regardless, see
+ *     "What this misses" above). `url` is the one field that actually
+ *     identified the genuine peer in #831's observed metadata, so it
+ *     alone carries that job now. A narrow exception: an EMPTY url is
+ *     tolerated, but only when `name` is already allowlisted (see
+ *     below) — see the in-function comment for why.
  *   - `name` is checked against a small allowlist of names Ledger
  *     Live has been observed to publish (`"Ledger Live"`,
  *     `"Ledger Wallet"`; exact match, case-sensitive) but is a
@@ -125,7 +127,6 @@ export function pinLedgerLivePeer(session: SessionTypes.Struct): PeerPinResult {
       reportedUrl,
       message:
         `WalletConnect peer reported no metadata (name + url both empty). ` +
-        `This is unusual; legitimate Ledger Live always advertises name and url. ` +
         `Verify the connection on-device before approving signing prompts — the ` +
         `MCP cannot identify the peer.`,
     };
@@ -135,12 +136,26 @@ export function pinLedgerLivePeer(session: SessionTypes.Struct): PeerPinResult {
   // not a sole trigger — see module doc.
   const nameOk = LEDGER_LIVE_NAMES.has(reportedName);
 
-  // URL check: the load-bearing anchor (issue #831). Scheme can be
-  // omitted but hostname must match a Ledger suffix; no empty-url
-  // exception — an empty or non-Ledger url is exactly the
-  // accidental-wrong-wallet case this pin exists to catch.
+  // URL check: the load-bearing anchor (issue #831). A scheme-less
+  // url fails `new URL()` parsing (safeUrlHostname returns null), so
+  // it mismatches like any other unparseable/non-Ledger url — no
+  // special-casing needed for that.
+  //
+  // Empty url is tolerated, but ONLY when name is already allowlisted
+  // (re-narrowed per #831 review). The pre-#831 code and this pin's
+  // own predecessor both claimed "Ledger Live mobile sometimes omits
+  // url" with zero evidence cited; we can't verify or refute that
+  // claim here either. So the code stays safe under BOTH readings:
+  // if the claim is true, an unconditional url requirement would cry
+  // wolf on every mobile pairing — the exact #831 defect class; if
+  // it's false, tolerating empty url when the name is unrecognized
+  // buys an attacker nothing against this pin's actual threat model
+  // (accidental wrong-wallet pairing — a mis-scanned MetaMask isn't
+  // self-reported as "Ledger Wallet"), so gating the tolerance on
+  // `nameOk` closes that gap without reintroducing #831.
   const urlHost = safeUrlHostname(reportedUrl);
-  const urlOk = urlHost !== null && hostMatchesLedger(urlHost);
+  const urlMatchesLedger = urlHost !== null && hostMatchesLedger(urlHost);
+  const urlOk = urlMatchesLedger || (!reportedUrl && nameOk);
 
   if (nameOk && urlOk) {
     return {
@@ -159,9 +174,15 @@ export function pinLedgerLivePeer(session: SessionTypes.Struct): PeerPinResult {
     );
   }
   if (!urlOk) {
-    reasons.push(
-      `url "${reportedUrl}" doesn't match a ledger.com hostname`,
-    );
+    if (!reportedUrl) {
+      reasons.push(
+        `url is empty, which is only tolerated when name is a recognized Ledger Live name`,
+      );
+    } else {
+      reasons.push(
+        `url "${reportedUrl}" doesn't match a ledger.com hostname`,
+      );
+    }
   }
 
   return {
