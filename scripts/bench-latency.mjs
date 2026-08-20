@@ -68,26 +68,26 @@
  *       it never calls `verifyEvmCalldata` / 4byte.directory regardless
  *       of calldata shape.
  *
- * KNOWN CONFOUND — DefiLlama gas-cost-USD lookup (NOT mocked):
- *   `enrichTx` (all prepare_*) and `computePreviewCost` (preview_send)
- *   both call `getTokenPrice(chain, "native")` →
- *   src/data/prices.ts `getTokenPrices`, a REAL fetch to
- *   `https://coins.llama.fi` with a 10s timeout
- *   (src/data/http.ts `fetchWithTimeout`). On success it's cached 30s
- *   (`CACHE_TTL.PRICE`), so only the first iteration per bench run pays
- *   the real round trip; ON FAILURE NOTHING IS CACHED, so an offline /
- *   firewalled bench host pays the full ~10s timeout on EVERY prepare_*
- *   and preview_send iteration — inflating p95 for R2/R3 with a number
- *   that has nothing to do with `src/data/rpc.ts`'s RPC latency or the
- *   viem retry/backoff gap the issue calls out. This is real production
- *   behavior (the tool really does depend on DefiLlama), not a bug in
- *   this bench — but it means an offline run's R2/R3 FAIL verdicts must
- *   be read as "DefiLlama unreachable", not "RPC too slow", until this
- *   is run with real network egress. `prepare_weth_unwrap` additionally
- *   depends on 4byte.directory (see above) under the same failure mode.
- *   Mocking the HTTP price/4byte layer is out of scope here — the plan
- *   for this issue is a JSON-RPC mock only; flagged for a follow-up if
- *   the confound proves material once this is actually run.
+ * FORMERLY-KNOWN CONFOUND, NOW STUBBED — DefiLlama gas-cost-USD lookup and
+ * 4byte.directory calldata lookup:
+ *   `enrichTx` (all prepare_*) and `computePreviewCost` (preview_send) both
+ *   call `getTokenPrice(chain, "native")` → src/data/prices.ts
+ *   `getTokenPrices`, a fetch to `https://coins.llama.fi` (10s timeout,
+ *   src/data/http.ts `fetchWithTimeout`); `prepare_weth_unwrap`'s non-empty
+ *   calldata additionally reaches `fetch4byteSignatures` →
+ *   src/data/apis/fourbyte.ts, a fetch to `https://www.4byte.directory`
+ *   (also a 10s timeout on failure). Left unmocked, an offline / firewalled
+ *   bench host would pay up to two uncached ~10s timeouts on every affected
+ *   iteration, inflating p95 for R2/R3 with a number that has nothing to do
+ *   with `src/data/rpc.ts`'s RPC latency or the viem retry/backoff gap the
+ *   issue calls out — indistinguishable from "RPC too slow" without digging
+ *   into which host actually stalled.
+ *   Both hosts are now stubbed to resolve instantly by
+ *   `scripts/bench-latency-fetch-shim.cjs`, preloaded into the spawned
+ *   server via `--require` (see `FETCH_SHIM_PATH` in `startMcpClient`
+ *   below) — see that file for the stub responses. Every other host
+ *   (including the mock RPC server itself) passes through to the real
+ *   `fetch` unchanged.
  *
  * Env wiring (read from source, not guessed):
  *   - `ETHEREUM_RPC_URL`               src/config/chains.ts:33 (`ENV_URL_VAR`)
@@ -143,6 +143,7 @@ import { fileURLToPath } from "node:url";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..");
 const DIST_ENTRY = resolve(REPO_ROOT, "dist", "index.js");
+const FETCH_SHIM_PATH = resolve(SCRIPT_DIR, "bench-latency-fetch-shim.cjs");
 
 // ---------------------------------------------------------------------
 // ARCHITECTURE.md §2 budgets (R1/R2/R3), transcribed verbatim from issue
@@ -421,7 +422,11 @@ async function startMcpClient(rpcUrl) {
     );
   }
 
-  const child = spawn(process.execPath, [DIST_ENTRY], {
+  // --require (not --import — see FETCH_SHIM_PATH's own header for why)
+  // preloads the fetch-stubbing shim before dist/index.js's top-level code
+  // runs, so coins.llama.fi / www.4byte.directory are already stubbed for
+  // every call the server makes from its very first tool invocation.
+  const child = spawn(process.execPath, ["--require", FETCH_SHIM_PATH, DIST_ENTRY], {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,

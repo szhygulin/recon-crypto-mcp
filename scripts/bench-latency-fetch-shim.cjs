@@ -25,9 +25,14 @@
  * server reaches over plain HTTP via viem, not `fetch`) passes straight
  * through to the real `fetch`.
  *
- * Preloaded via `node --require <this file> dist/index.js` (see
- * scripts/bench-latency.mjs's `startMcpClient`) so `globalThis.fetch` is
- * already patched before dist/index.js's own top-level code runs.
+ * Wired in via the `--require` flag on the spawned child process
+ * (`FETCH_SHIM_PATH`, in scripts/bench-latency.mjs's `startMcpClient`), so
+ * `globalThis.fetch` is already patched before dist/index.js's own
+ * top-level code runs. That spawn-side wiring landed together with this
+ * file's rewritten header — an earlier revision of this shim existed but
+ * was never actually passed to `--require` anywhere, so it patched
+ * nothing; do not take this file's mere presence as proof it's in effect,
+ * check the spawn call.
  *
  * Written as CommonJS and loaded via `--require` rather than the more
  * modern `--import` (which the review initially suggested): package.json
