@@ -294,10 +294,12 @@ function mockEthCallResult(data) {
 
 // ---------------------------------------------------------------------
 // Mock EVM JSON-RPC server. One handler per method actually exercised by
-// the chosen tool set, plus a few defensive extras from the issue's
-// "likely set" that cost nothing to add. Every response is delayed by
-// `rpcDelayMs` to simulate realistic provider latency; unknown methods
-// get a loud JSON-RPC error instead of silently hanging.
+// the chosen tool set (PR #834 review dropped the eth_blockNumber /
+// eth_feeHistory / eth_getBalance branches this used to also carry —
+// re-verified against every benched handler's RPC calls: none reach
+// them, so they were dead code, not defensive coverage). Every response
+// is delayed by `rpcDelayMs` to simulate realistic provider latency;
+// unknown methods get a loud JSON-RPC error instead of silently hanging.
 
 function buildMockBlock() {
   const nowSec = Math.floor(Date.now() / 1000);
@@ -306,7 +308,7 @@ function buildMockBlock() {
     hash: "0x" + "ab".repeat(32),
     parentHash: "0x" + "cd".repeat(32),
     nonce: "0x0000000000000000",
-    sha3Uncles: "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934",
+    sha3Uncles: "0x01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934",
     logsBloom: "0x" + "00".repeat(256),
     transactionsRoot: "0x" + "00".repeat(32),
     stateRoot: "0x" + "00".repeat(32),
@@ -329,8 +331,6 @@ function dispatchRpc(method, params) {
   switch (method) {
     case "eth_chainId":
       return { ok: true, result: "0x1" }; // CHAIN_IDS.ethereum (src/types/index.ts:48)
-    case "eth_blockNumber":
-      return { ok: true, result: "0x112a880" };
     case "eth_getBlockByNumber":
       return { ok: true, result: buildMockBlock() };
     case "eth_getTransactionCount":
@@ -341,20 +341,6 @@ function dispatchRpc(method, params) {
       return { ok: true, result: "0x3b9aca00" };
     case "eth_maxPriorityFeePerGas":
       return { ok: true, result: "0x3b9aca00" };
-    case "eth_feeHistory":
-      // Defensive fallback — viem's estimateMaxPriorityFeePerGas should
-      // succeed via eth_maxPriorityFeePerGas above and never reach here.
-      return {
-        ok: true,
-        result: {
-          oldestBlock: "0x112a870",
-          baseFeePerGas: ["0x3b9aca00", "0x3b9aca00"],
-          gasUsedRatio: [0.5],
-          reward: [["0x3b9aca00"]],
-        },
-      };
-    case "eth_getBalance":
-      return { ok: true, result: "0xde0b6b3a7640000" }; // 1 ETH, unused by chosen tools
     case "eth_call":
       return { ok: true, result: mockEthCallResult(params?.[0]?.data) };
     case "eth_getStorageAt":
