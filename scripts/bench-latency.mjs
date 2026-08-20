@@ -556,15 +556,28 @@ async function timeCall(mcp, name, args) {
 }
 
 async function runTool(mcp, className, name, argsFn, iterations, onResult) {
-  const durations = [];
+  const durations = []; // timed sample — successful calls ONLY (see verdict())
+  let attempted = 0;
   let errors = 0;
   let lastError;
   for (let i = 0; i < iterations; i++) {
-    const args = argsFn(i);
-    if (args === null) break; // e.g. preview_send ran out of prepare_native_send handles
+    const args = await argsFn(i);
+    if (args === null) break; // argsFn signals the input supply is exhausted — stop early
+    attempted++;
+    if (args === undefined) {
+      // argsFn signals its own untimed setup step failed (e.g. preview_send
+      // couldn't mint a fresh prepare_native_send handle for this iteration)
+      // — count it as an attempt + error without spending a timed tools/call
+      // on input we already know is bad.
+      errors++;
+      lastError = "setup step failed before the timed call (see argsFn)";
+      if (onResult) onResult({ ms: 0, ok: false, errorMessage: lastError });
+      continue;
+    }
     const call = await timeCall(mcp, name, args);
-    durations.push(call.ms);
-    if (!call.ok) {
+    if (call.ok) {
+      durations.push(call.ms);
+    } else {
       errors++;
       lastError = call.errorMessage;
     }
@@ -575,6 +588,8 @@ async function runTool(mcp, className, name, argsFn, iterations, onResult) {
     tool: name,
     class: className,
     n: durations.length,
+    attempted,
+    iterations,
     errors,
     lastError,
     p50: round1(percentile(sorted, 50)),
@@ -583,7 +598,15 @@ async function runTool(mcp, className, name, argsFn, iterations, onResult) {
   };
 }
 
+// A tool's timing sample is only meaningful when every requested iteration
+// both ran AND succeeded — a failed call has no valid duration to rank, and
+// fewer attempts than requested (preview_send running out of mintable
+// handles, a mid-run abort, etc.) means the p95 is computed over a smaller,
+// silently-biased sample. Either condition makes the PASS/FAIL budget
+// comparison meaningless, so it's surfaced as its own verdict rather than
+// folded into FAIL (which would misreport "too slow" for "didn't run").
 function verdict(stat) {
+  if (stat.errors > 0 || stat.n < stat.iterations) return "INVALID";
   if (!Number.isFinite(stat.p95)) return "N/A";
   return stat.p95 <= BUDGETS_MS[stat.class] ? "PASS" : "FAIL";
 }
@@ -607,10 +630,20 @@ function formatTable(stats) {
   for (const r of rows) out.push(line(r));
 
   out.push("");
-  out.push("Class rollup (ARCHITECTURE.md §2 — PASS iff every tool in the class PASSes):");
+  out.push(
+    "Class rollup (ARCHITECTURE.md §2 — PASS iff every tool in the class PASSes; " +
+      "INVALID iff any tool in the class has errors or an incomplete sample):",
+  );
   for (const cls of ["get", "prepare", "preview"]) {
     const inClass = stats.filter((s) => s.class === cls);
-    const classVerdict = inClass.length === 0 ? "N/A" : inClass.every((s) => verdict(s) === "PASS") ? "PASS" : "FAIL";
+    let classVerdict;
+    if (inClass.length === 0) {
+      classVerdict = "N/A";
+    } else if (inClass.some((s) => verdict(s) === "INVALID")) {
+      classVerdict = "INVALID";
+    } else {
+      classVerdict = inClass.every((s) => verdict(s) === "PASS") ? "PASS" : "FAIL";
+    }
     out.push(`  ${cls.padEnd(8)} budget ${BUDGETS_MS[cls]}ms  -> ${classVerdict}`);
   }
   return out.join("\n");
@@ -703,9 +736,12 @@ async function main() {
       process.stderr.write(`bench-latency: wrote JSON report to ${outPath}\n`);
     }
 
-    const anyFail = stats.some((s) => verdict(s) === "FAIL");
-    if (anyFail && args.enforce) {
-      process.stderr.write("bench-latency: --enforce set and at least one class FAILed its budget.\n");
+    const anyFailOrInvalid = stats.some((s) => verdict(s) === "FAIL" || verdict(s) === "INVALID");
+    if (anyFailOrInvalid && args.enforce) {
+      process.stderr.write(
+        "bench-latency: --enforce set and at least one tool FAILed its budget or was INVALID " +
+          "(errors, or fewer completed iterations than requested).\n",
+      );
       process.exitCode = 1;
     }
   } finally {
