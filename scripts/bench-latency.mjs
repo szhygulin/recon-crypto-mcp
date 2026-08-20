@@ -531,6 +531,36 @@ function firstText(callToolResult) {
   return block?.type === "text" ? block.text : undefined;
 }
 
+/**
+ * Mint one fresh `prepare_native_send` handle, UNTIMED, for immediate
+ * consumption by the very next `preview_send` call (see PR #834 review,
+ * BLOCKER 2). Handles expire TX_TTL_MS (15 min) after mint
+ * (src/signing/tx-store.ts:20); minting a whole iteration's worth up front
+ * — as this bench originally did — let later handles sit unconsumed behind
+ * every earlier prepare_*/preview_send iteration's latency, risking expiry
+ * before `preview_send` ever got to them. Minting one handle right before
+ * timing the `preview_send` call that consumes it keeps every handle's
+ * mint-to-consume gap to a single round trip, well inside the TTL.
+ *
+ * Returns the handle string, or `undefined` on any failure (propagated by
+ * the caller as a recorded error, not a silent skip — see runTool()).
+ */
+async function mintNativeSendHandle(mcp) {
+  try {
+    const res = await mcp.callTool("prepare_native_send", {
+      wallet: WALLET,
+      chain: "ethereum",
+      to: RECIPIENT,
+      amount: "0.001",
+    });
+    if (res?.isError) return undefined;
+    const result = firstJson(res);
+    return result?.handle ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------
 // Benchmark runner
 
@@ -669,7 +699,6 @@ async function main() {
     mcp = await startMcpClient(url);
 
     const stats = [];
-    const handles = [];
 
     stats.push(
       await runTool(mcp, "get", "get_transaction_status", () => ({ chain: "ethereum", txHash: FAKE_TX_HASH }), args.iterations),
@@ -679,6 +708,10 @@ async function main() {
       await runTool(mcp, "get", "get_token_metadata", () => ({ address: TOKEN, chain: "ethereum" }), args.iterations),
     );
 
+    // Must run before preview_send below: the first prepare_* call in demo
+    // mode auto-selects the whale persona and flips live mode on
+    // (index.ts:1187) — preview_send's own per-iteration prepare_native_send
+    // mint calls (mintNativeSendHandle) depend on that having already run.
     stats.push(
       await runTool(
         mcp,
@@ -686,9 +719,6 @@ async function main() {
         "prepare_native_send",
         () => ({ wallet: WALLET, chain: "ethereum", to: RECIPIENT, amount: "0.001" }),
         args.iterations,
-        (call) => {
-          if (call.ok && call.result?.handle) handles.push(call.result.handle);
-        },
       ),
     );
 
@@ -707,20 +737,21 @@ async function main() {
         mcp,
         "preview",
         "preview_send",
-        (i) => (i < handles.length ? { handle: handles[i] } : null),
+        // Mint a FRESH handle immediately before timing each preview_send
+        // call (untimed — see mintNativeSendHandle's doc comment) rather
+        // than reusing a batch of handles minted earlier. `undefined` here
+        // means the mint failed, which runTool() records as an error for
+        // this iteration without spending a timed tools/call on it.
+        async () => {
+          const handle = await mintNativeSendHandle(mcp);
+          return handle ? { handle } : undefined;
+        },
         args.iterations,
       ),
     );
 
     const table = formatTable(stats);
     process.stdout.write(table + "\n");
-
-    if (handles.length < args.iterations) {
-      process.stderr.write(
-        `bench-latency: note — only ${handles.length}/${args.iterations} prepare_native_send calls ` +
-          `produced a handle; preview_send ran on ${handles.length} iterations instead of ${args.iterations}.\n`,
-      );
-    }
 
     if (args.json) {
       const outPath = resolve(REPO_ROOT, args.json);
