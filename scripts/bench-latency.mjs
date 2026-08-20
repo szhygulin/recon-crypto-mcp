@@ -109,8 +109,16 @@
  *     (both idempotent first-call background hooks fired from every tool
  *     response — src/index.ts:913,919 — disabled so they don't add
  *     unrelated network noise to a "measure RPC latency" bench)
- *   - `VAULTPILOT_SCOPE=""`            cleared so no host-env chain
- *     scoping narrows tool registration (mirrors bench-tools.mjs)
+ *   - `VAULTPILOT_CHAIN_FAMILIES=evm`  src/config/scope.ts:151-152 (`isFamilyEnabled`)
+ *   - `VAULTPILOT_PROTOCOLS=""`        src/config/scope.ts:151-152 (`isProtocolEnabled`)
+ *     (set explicitly rather than left to inherit from the host shell's env
+ *     via `...process.env` — an operator with e.g. `VAULTPILOT_CHAIN_FAMILIES=
+ *     solana` set for their own daily use would otherwise silently deregister
+ *     all three EVM-family tools this bench calls. All five benched tools are
+ *     family `evm` with no protocol tag — see `getToolScope()` — so `evm` /
+ *     `""` is both correct and independent of whatever the host has set.
+ *     `VAULTPILOT_SCOPE` from an earlier revision of this script was a
+ *     phantom var read by nothing; these two are the real gates.)
  *
  * Usage:
  *   npm run build                       # produce dist/ — NOT done by this script
@@ -422,7 +430,11 @@ async function startMcpClient(rpcUrl) {
       VAULTPILOT_DEMO: "true", // src/demo/index.ts:242 — strict literal gate
       VAULTPILOT_DISABLE_SKILL_AUTOINSTALL: "1", // src/setup/auto-install.ts:62
       VAULTPILOT_DISABLE_UPDATE_CHECK: "1", // src/shared/version-check.ts:23
-      VAULTPILOT_SCOPE: "",
+      // src/config/scope.ts:151-152 — explicit, not left to `...process.env`
+      // inheritance, so a host operator's own scope config can't silently
+      // deregister the EVM-family tools this bench calls (see header).
+      VAULTPILOT_CHAIN_FAMILIES: "evm",
+      VAULTPILOT_PROTOCOLS: "",
     },
   });
 
