@@ -21,9 +21,9 @@
  * This shim removes that ambiguity by making both hosts resolve instantly.
  *
  * ONLY `coins.llama.fi` and `www.4byte.directory` are intercepted; every
- * other host (including the mock RPC server itself, which the benched
- * server reaches over plain HTTP via viem, not `fetch`) passes straight
- * through to the real `fetch`.
+ * other host (including the mock RPC server itself — viem's http transport
+ * also rides `globalThis.fetch`, dispatch here is by hostname only)
+ * passes straight through to the real `fetch`.
  *
  * Wired in via the `--require` flag on the spawned child process
  * (`FETCH_SHIM_PATH`, in scripts/bench-latency.mjs's `startMcpClient`), so

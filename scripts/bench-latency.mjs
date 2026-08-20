@@ -40,8 +40,9 @@
  *       resolveTokenMeta/multicall path), `eth_call` (simulateTx,
  *       WETH.withdraw calldata), `eth_estimateGas`, `eth_gasPrice`.
  *       Non-empty calldata DOES hit `verifyEvmCalldata` →
- *       `fetch4byteSignatures` (src/data/apis/fourbyte.js) — a real
- *       network call to 4byte.directory. Deliberately included: most
+ *       `fetch4byteSignatures` (src/data/apis/fourbyte.ts) — normally a
+ *       real network call to 4byte.directory, here stubbed by the wired
+ *       fetch shim. Deliberately included: most
  *       real prepare_* calls carry calldata (swaps/supplies/approvals),
  *       so this is the representative case, not the exception.
  *       Chosen over `prepare_token_send` specifically to avoid
@@ -125,14 +126,14 @@
  *   node scripts/bench-latency.mjs
  *   node scripts/bench-latency.mjs --iterations 10 --rpc-delay-ms 300
  *   node scripts/bench-latency.mjs --json bench/latency.json
- *   node scripts/bench-latency.mjs --enforce   # exit 1 on any class FAIL
+ *   node scripts/bench-latency.mjs --enforce   # exit 1 on any class FAIL or INVALID
  *
  * Exit codes: 0 ok (or FAIL/INVALID without --enforce), 1 bench failure
  * (server crash, dist/ missing, malformed response, or a tools/call timeout
  * aborting the whole run — see ToolCallTimeoutError) or FAIL/INVALID-with-
  * --enforce. Default is report-only — no CI should gate on this until a
- * maintainer has run it once against real network egress and reviewed the
- * DefiLlama confound above.
+ * maintainer has run it once on a Node host. The DefiLlama/4byte confounds
+ * are stubbed by the wired fetch shim (see the CONFOUNDS section above).
  */
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -211,7 +212,7 @@ function printHelp() {
       "  node scripts/bench-latency.mjs --iterations N           Iterations per tool (default 30)",
       "  node scripts/bench-latency.mjs --rpc-delay-ms N         Per-RPC-call mock delay (default 150)",
       "  node scripts/bench-latency.mjs --json FILE              Also write machine-readable JSON to FILE",
-      "  node scripts/bench-latency.mjs --enforce                Exit 1 if any class FAILs its budget",
+      "  node scripts/bench-latency.mjs --enforce                Exit 1 if any class FAILs its budget or is INVALID",
       "  node scripts/bench-latency.mjs --help                   This message",
       "",
       "Requires a built dist/index.js (run `npm run build` first — this script never builds).",
