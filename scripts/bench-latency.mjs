@@ -127,11 +127,12 @@
  *   node scripts/bench-latency.mjs --json bench/latency.json
  *   node scripts/bench-latency.mjs --enforce   # exit 1 on any class FAIL
  *
- * Exit codes: 0 ok (or FAIL without --enforce), 1 bench failure (server
- * crash, dist/ missing, malformed response) or FAIL-with---enforce.
- * Default is report-only — no CI should gate on this until a maintainer
- * has run it once against real network egress and reviewed the DefiLlama
- * confound above.
+ * Exit codes: 0 ok (or FAIL/INVALID without --enforce), 1 bench failure
+ * (server crash, dist/ missing, malformed response, or a tools/call timeout
+ * aborting the whole run — see ToolCallTimeoutError) or FAIL/INVALID-with-
+ * --enforce. Default is report-only — no CI should gate on this until a
+ * maintainer has run it once against real network egress and reviewed the
+ * DefiLlama confound above.
  */
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
