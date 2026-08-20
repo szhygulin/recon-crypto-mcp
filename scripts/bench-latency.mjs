@@ -414,6 +414,33 @@ function send(child, msg) {
   child.stdin.write(JSON.stringify(msg) + "\n");
 }
 
+/**
+ * Thrown when a `tools/call` fails to answer within its timeout. This is
+ * deliberately NOT treated like an ordinary tool error (see timeCall()):
+ * giving up on waiting for a response doesn't mean the server gave up on
+ * producing one. The MCP server keeps running the handler after we stop
+ * waiting, and every EVM RPC call it makes goes through a per-chain,
+ * cap-2 semaphore (src/data/rpc.ts, RPC_CONCURRENCY_DEFAULT) shared by
+ * every tool this bench calls (all five run on "ethereum"). A single
+ * stuck call can permanently occupy one of only two slots, so every
+ * subsequent measurement — in the current tool's loop AND every later
+ * one — would queue behind it and read as corrupted-slow rather than
+ * reflecting real RPC latency. Surfacing this as a thrown error (instead
+ * of a recorded per-call failure) propagates out of runTool() and main()
+ * to the top-level `main().catch()` handler, aborting the entire run.
+ */
+class ToolCallTimeoutError extends Error {
+  constructor(name, timeoutMs) {
+    super(
+      `tools/call "${name}" timed out after ${timeoutMs}ms — aborting the entire bench (INVALID ` +
+        `run): the server may still be working through this call via its cap-2 per-chain RPC ` +
+        `semaphore (src/data/rpc.ts) even though we gave up waiting, so every measurement after ` +
+        `this point would be corrupted by queuing behind it.`,
+    );
+    this.name = "ToolCallTimeoutError";
+  }
+}
+
 async function startMcpClient(rpcUrl) {
   if (!existsSync(DIST_ENTRY)) {
     throw new Error(
@@ -463,8 +490,12 @@ async function startMcpClient(rpcUrl) {
 
   let readyResolve;
   const ready = new Promise((res, rej) => {
-    readyResolve = res;
-    setTimeout(() => rej(new Error("initialize handshake timed out after 30s")), 30_000);
+    const handshakeTimer = setTimeout(() => rej(new Error("initialize handshake timed out after 30s")), 30_000);
+    handshakeTimer.unref?.(); // never hold the process open on this alone
+    readyResolve = () => {
+      clearTimeout(handshakeTimer);
+      res();
+    };
   });
 
   child.stdout.on("data", (chunk) => {
@@ -514,13 +545,25 @@ async function startMcpClient(rpcUrl) {
     if (crashed) throw new Error(crashed);
     const id = nextId++;
     const p = new Promise((res, rej) => {
-      pending.set(id, { resolve: res, reject: rej });
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (pending.has(id)) {
           pending.delete(id);
-          rej(new Error(`tools/call "${name}" timed out after ${timeoutMs}ms`));
+          rej(new ToolCallTimeoutError(name, timeoutMs));
         }
       }, timeoutMs);
+      timer.unref?.(); // never hold the process open on this alone
+      // Wrap resolve/reject so a normal response (the stdout handler above)
+      // clears this timer instead of leaving it to fire uselessly later.
+      pending.set(id, {
+        resolve: (v) => {
+          clearTimeout(timer);
+          res(v);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          rej(e);
+        },
+      });
     });
     send(child, { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
     return p;
@@ -573,7 +616,8 @@ async function mintNativeSendHandle(mcp) {
     if (res?.isError) return undefined;
     const result = firstJson(res);
     return result?.handle ?? undefined;
-  } catch {
+  } catch (err) {
+    if (err instanceof ToolCallTimeoutError) throw err; // abort the whole bench — see class doc
     return undefined;
   }
 }
@@ -595,6 +639,7 @@ async function timeCall(mcp, name, args) {
       result = firstJson(res);
     }
   } catch (err) {
+    if (err instanceof ToolCallTimeoutError) throw err; // abort the whole bench — see class doc
     ok = false;
     errorMessage = String(err?.message ?? err).slice(0, 300);
   }
