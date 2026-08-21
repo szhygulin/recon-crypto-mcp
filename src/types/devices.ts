@@ -1,4 +1,3 @@
-/** Shape of ~/.vaultpilot-mcp/config.json. */
 /**
  * Cached Ledger pairing entry — what `pair_ledger_solana` populates and
  * `get_ledger_status` reads back. Persisted to ~/.vaultpilot-mcp/config.json
