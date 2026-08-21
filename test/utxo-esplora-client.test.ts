@@ -29,6 +29,21 @@ import type { EsploraChain } from "../src/modules/utxo/esplora-client.js";
  * existing indexer files rather than re-read off the module's own
  * `ESPLORA_CHAIN_PROFILES` — the point of the pin is to catch a
  * regression in that table, not restate it.
+ *
+ * Also pins the plan's hard constraint: per-chain singleton identity
+ * (`litecoin-core.test.ts:224,306` spies on `getLitecoinIndexer()`'s
+ * returned instance — a future cutover onto this factory must preserve
+ * that). Verified against the source factories first: `getBitcoinIndexer`
+ * / `getLitecoinIndexer` in the existing indexer files rebuild their
+ * cached instance when the resolved URL changes; `getEsploraClient`
+ * reproduces that `{url, impl}` cache exactly, so the URL-change-swaps-
+ * the-instance assertion below pins real, verified behavior.
+ *
+ * `getTx`'s absence on the LTC client is pinned at runtime only — this
+ * repo's `tsconfig.json` excludes `test/`, `npm run build` is a bare
+ * `tsc` over `src/**` only, and there is no vitest typecheck block, so a
+ * `@ts-expect-error` in this file is never actually type-checked by
+ * anything and would be a dead assertion.
  */
 
 interface ChainCase {
@@ -83,12 +98,19 @@ let tmpHome: string;
 beforeEach(() => {
   tmpHome = mkdtempSync(pjoin(tmpdir(), "vaultpilot-esplora-test-"));
   setConfigDirForTesting(pjoin(tmpHome, ".vaultpilot-mcp"));
-  for (const c of CASES) resetEsploraClient(c.chain);
+  // Hermetic even on a machine that already exports these for real usage
+  // against a self-hosted indexer — the default-fallback tests need both
+  // env vars genuinely unset, not just unset-by-this-suite.
+  for (const c of CASES) {
+    delete process.env[c.envVar];
+    resetEsploraClient(c.chain);
+  }
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  vi.restoreAllMocks();
   for (const c of CASES) {
     resetEsploraClient(c.chain);
     delete process.env[c.envVar];
@@ -187,23 +209,28 @@ describe.each(CASES)("esplora client — $chain", (c) => {
   });
 
   describe("retry shape (issue #199)", () => {
-    it("retries once on 429, only after the documented base delay elapses", async () => {
+    it("retries once on 429, at exactly the documented base delay (400ms)", async () => {
       vi.useFakeTimers();
+      // Pin the EXACT delay: with Math.random stubbed to 0, jitteredBackoffMs()
+      // (ESPLORA_RETRY_BASE_MS + floor(random() * ESPLORA_RETRY_JITTER_MS))
+      // resolves to exactly the 400ms base, with zero jitter contribution.
+      // Without this stub, a wrong base (e.g. 500ms) would still pass any
+      // test that only checks a wide elapsed-time window.
+      vi.spyOn(Math, "random").mockReturnValue(0);
       const fetchMock = vi
         .fn()
         .mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
         .mockResolvedValueOnce(new Response(JSON.stringify(emptyStats(ADDR)), { status: 200 }));
       vi.stubGlobal("fetch", fetchMock);
       const promise = getEsploraClient(c.chain).getBalance(ADDR);
-      // ESPLORA_RETRY_BASE_MS is 400 — the retry must not have fired yet.
       await vi.advanceTimersByTimeAsync(399);
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(1); // now at exactly 400ms
       await expect(promise).resolves.toMatchObject({ txCount: 0 });
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    it("honors Retry-After (seconds → ms), capped at 5000ms", async () => {
+    it("honors Retry-After (seconds → ms), capped at exactly 5000ms", async () => {
       vi.useFakeTimers();
       const fetchMock = vi
         .fn()
@@ -213,16 +240,17 @@ describe.each(CASES)("esplora client — $chain", (c) => {
         .mockResolvedValueOnce(new Response(JSON.stringify(emptyStats(ADDR)), { status: 200 }));
       vi.stubGlobal("fetch", fetchMock);
       const promise = getEsploraClient(c.chain).getBalance(ADDR);
-      // ESPLORA_MAX_RETRY_AFTER_MS caps the 10s header down to 5000ms.
+      // ESPLORA_MAX_RETRY_AFTER_MS caps the 10s header down to exactly 5000ms.
       await vi.advanceTimersByTimeAsync(4999);
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(2);
+      await vi.advanceTimersByTimeAsync(1); // now at exactly 5000ms
       await expect(promise).resolves.toMatchObject({ txCount: 0 });
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    it("retries once on a network error, only after the documented base delay elapses", async () => {
+    it("retries once on a network error, at exactly the documented base delay (400ms)", async () => {
       vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(0);
       const fetchMock = vi
         .fn()
         .mockRejectedValueOnce(new Error("ECONNRESET"))
@@ -231,7 +259,7 @@ describe.each(CASES)("esplora client — $chain", (c) => {
       const promise = getEsploraClient(c.chain).getBalance(ADDR);
       await vi.advanceTimersByTimeAsync(399);
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(1); // now at exactly 400ms
       await expect(promise).resolves.toMatchObject({ txCount: 0 });
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
@@ -252,7 +280,32 @@ describe.each(CASES)("esplora client — $chain", (c) => {
   });
 
   describe("fee-estimate fallback constants", () => {
-    it("falls back to the documented per-target-map defaults, verbatim", async () => {
+    it("reads the per-target-map values by the documented keys (1/3/6/144/1008)", async () => {
+      // Distinct-from-fallback values at each documented key — if the
+      // implementation queried a renamed key (e.g. "144" -> "145"), the
+      // lookup would miss and silently fall back to the hardcoded default
+      // below instead, and this assertion would go red.
+      let call = 0;
+      const fetchMock = vi.fn(async () => {
+        call++;
+        if (call === 1) return new Response("not found", { status: 404 });
+        return new Response(
+          JSON.stringify({ "1": 25, "3": 18, "6": 12, "144": 7, "1008": 3 }),
+          { status: 200 },
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const fees = await getEsploraClient(c.chain).getFeeEstimates();
+      expect(fees).toEqual({
+        fastestFee: 25,
+        halfHourFee: 18,
+        hourFee: 12,
+        economyFee: 7,
+        minimumFee: 3,
+      });
+    });
+
+    it("falls back to the documented hardcoded defaults, verbatim, when the map has no matching keys", async () => {
       let call = 0;
       const fetchMock = vi.fn(async () => {
         call++;
@@ -270,10 +323,36 @@ describe.each(CASES)("esplora client — $chain", (c) => {
       });
     });
   });
+
+  describe("singleton identity (hard constraint)", () => {
+    it("returns the SAME instance across repeated calls when the resolved URL is unchanged", () => {
+      const first = getEsploraClient(c.chain);
+      const second = getEsploraClient(c.chain);
+      expect(second).toBe(first);
+    });
+
+    it("swaps the instance when the resolved URL changes, mirroring getBitcoinIndexer/getLitecoinIndexer", () => {
+      const first = getEsploraClient(c.chain);
+      process.env[c.envVar] = "https://swapped.example/api";
+      const second = getEsploraClient(c.chain);
+      expect(second).not.toBe(first);
+      // ...and stabilizes again once the (new) URL stops changing.
+      const third = getEsploraClient(c.chain);
+      expect(third).toBe(second);
+    });
+  });
+});
+
+describe("singleton identity — cross-chain", () => {
+  it("keeps the BTC and LTC instances distinct", () => {
+    const btc = getEsploraClient("btc");
+    const ltc = getEsploraClient("ltc");
+    expect(btc as unknown).not.toBe(ltc as unknown);
+  });
 });
 
 describe("getTx — BTC-only surface (RBF fee-bump builder dependency)", () => {
-  it("exists on the BTC client, statically and at runtime", async () => {
+  it("exists on the BTC client as a callable method", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
@@ -289,9 +368,18 @@ describe("getTx — BTC-only surface (RBF fee-bump builder dependency)", () => {
     expect(tx.txid).toBe("aa".repeat(32));
   });
 
-  it("does not exist on the LTC client, statically or at runtime", () => {
-    const ltc = getEsploraClient("ltc");
-    // @ts-expect-error — getTx is BTC-only; must not type-check on the LTC client.
+  // Runtime-only: this repo's tsconfig excludes `test/` and nothing
+  // (build or vitest) type-checks this file, so a `@ts-expect-error`
+  // here would never actually be checked — it'd be dead. `getTx`'s
+  // absence on the LTC client's TYPE is enforced structurally instead,
+  // by `EsploraClient` (the type `getEsploraClient("ltc")` returns) not
+  // declaring the method; what this test pins is that the underlying
+  // `EsploraIndexerClient` instance genuinely lacks it as an own/
+  // prototype member too, not just in the type.
+  it("does not exist on the LTC client at runtime", () => {
+    const ltc = getEsploraClient("ltc") as unknown as { getTx?: unknown };
     expect(ltc.getTx).toBeUndefined();
+    expect(typeof ltc.getTx).not.toBe("function");
+    expect("getTx" in ltc).toBe(false);
   });
 });
