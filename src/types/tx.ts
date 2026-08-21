@@ -66,3 +66,92 @@ export interface TxVerification {
    */
   tronCalldataHex?: `0x${string}`;
 }
+
+/**
+ * Unsigned TRON transaction. Shape is unavoidably different from EVM:
+ * TronGrid builds the tx server-side (raw_data + raw_data_hex) and the
+ * device signs the serialized raw_data_hex. We keep the TRON tx shape
+ * separate from UnsignedTx so send_transaction's EVM-only security pipeline
+ * (eth_call re-simulation, chain-id check, spender allowlist) can't be
+ * silently shortcut by a TRON handle masquerading as an EVM one.
+ *
+ * Phase 3 (this release) routes TRON handles through `send_transaction`:
+ * the USB HID signer (@ledgerhq/hw-app-trx) verifies the device address
+ * matches `from`, signs `rawDataHex`, and broadcasts via TronGrid.
+ */
+export interface UnsignedTronTx {
+  chain: "tron";
+  /** Discriminator for the preview + future signer branching. */
+  action:
+    | "native_send"
+    | "trc20_send"
+    | "trc20_approve"
+    | "claim_rewards"
+    | "freeze"
+    | "unfreeze"
+    | "withdraw_expire_unfreeze"
+    | "vote"
+    | "lifi_swap"
+    | "sunswap_swap";
+  /** Base58 owner address (prefix T). */
+  from: string;
+  /** TronGrid-returned transaction ID (sha256 of raw_data_hex, hex string). */
+  txID: string;
+  /**
+   * TronGrid's raw_data object — opaque to us; serialized in raw_data_hex.
+   * Required for the standard `/wallet/broadcasttransaction` path. ABSENT
+   * for `lifi_swap` flows where we receive only `raw_data_hex` from LiFi
+   * and broadcast via `/wallet/broadcasthex` instead (broadcast.ts branches
+   * on this).
+   */
+  rawData?: unknown;
+  /** Hex-encoded raw_data used by the signer. */
+  rawDataHex: string;
+  /** Human-readable description for the preview. */
+  description: string;
+  decoded: {
+    functionName: string;
+    args: Record<string, string>;
+    /**
+     * ABI-encoded parameter payload (no `0x`, no selector) for TRC-20 calls.
+     * Set by the trc20_send / trc20_approve builders so the verification
+     * layer can compose the full calldata (`0x<selector><parameterHex>`)
+     * without re-deriving it from the human-readable args.
+     */
+    parameterHex?: string;
+  };
+  /**
+   * Fee limit in SUN, present on contract calls (TRC-20 transfers require it;
+   * TronGrid rejects triggersmartcontract without one). Absent on native TRX
+   * sends and WithdrawBalance — those pay bandwidth only.
+   */
+  feeLimitSun?: string;
+  /**
+   * Energy units the pre-flight triggerconstantcontract call consumed. Only
+   * present on contract calls where we pre-flight (TRC-20 transfers). The
+   * on-chain burn will be within a few percent of this number.
+   */
+  estimatedEnergyUsed?: string;
+  /**
+   * Estimated fee in SUN that will actually burn on-chain — energy units
+   * times the mainnet energy price (420 sun/energy as of 2024-10). The
+   * preview shows this alongside `feeLimitSun` so the user can see
+   * "expected ~15 TRX" next to "cap 100 TRX" and not think the cap is the
+   * charge.
+   */
+  estimatedEnergyCostSun?: string;
+  /** Opaque handle — see tron-tx-store.ts. Phase 3 signer consumes this. */
+  handle?: string;
+  /**
+   * Pre-sign verification payload, stamped by `issueTronHandle` on every
+   * prepared TRON tx. Optional during rollout; flipped to required after
+   * all call sites are updated.
+   */
+  verification?: TxVerification;
+  /**
+   * Invariant #14 — durable-binding source-of-truth verification (issue
+   * #460). Populated by `prepare_tron_vote` (one binding per Super
+   * Representative voted for). Absent on other TRON op kinds.
+   */
+  durableBindings?: import("../security/durable-binding.js").DurableBinding[];
+}
