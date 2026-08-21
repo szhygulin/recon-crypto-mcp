@@ -1,5 +1,14 @@
 // Shared domain types used across all modules.
 
+import type { SupportedChain } from "./chains.js";
+import type {
+  LendingPositionUnion,
+  LPPosition,
+  StakingPosition,
+  TokenAmount,
+} from "./positions.js";
+import type { TxVerification } from "./tx.js";
+
 export * from "./chains.js";
 
 export * from "./positions.js";
