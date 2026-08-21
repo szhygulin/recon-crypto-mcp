@@ -160,7 +160,7 @@ function weiToGweiShort(wei: string): string {
  * that happened between prepare and preview, without scrolling back through
  * the LEDGER BLIND-SIGN HASH + agent-task surfaces below.
  *
- * Differs from prepare-time `renderCostPreviewBlock`:
+ * Differs from prepare-time `renderCostPreviewBlock` (render/format.ts):
  *   - values come from the SERVER-PINNED tuple (the exact maxFeePerGas /
  *     maxPriorityFeePerGas / gas that go on-chain, not a prepare-time
  *     estimate that may now be stale),

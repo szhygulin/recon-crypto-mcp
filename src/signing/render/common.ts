@@ -3,7 +3,7 @@
  * the server supports today — kept inline because centralizing this in a
  * helper would be premature for four entries that rarely change.
  */
-export const EXPLORER_TX_URL: Record<string, (hash: string) => string> = {
+const EXPLORER_TX_URL: Record<string, (hash: string) => string> = {
   ethereum: (h) => `https://etherscan.io/tx/${h}`,
   arbitrum: (h) => `https://arbiscan.io/tx/${h}`,
   polygon: (h) => `https://polygonscan.com/tx/${h}`,
