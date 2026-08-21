@@ -683,6 +683,11 @@ const singletons: { [K in EsploraChain]?: { url: string; impl: EsploraClient } }
 
 export function getEsploraClient(chain: "btc"): BtcEsploraClient;
 export function getEsploraClient(chain: "ltc"): EsploraClient;
+// General overload — needed so callers holding a variable typed as the
+// union `EsploraChain` (rather than a literal `"btc"`/`"ltc"`) have a
+// matching signature to resolve against; TS overload resolution won't
+// match a union argument to either literal overload above.
+export function getEsploraClient(chain: EsploraChain): EsploraClient;
 export function getEsploraClient(chain: EsploraChain): EsploraClient {
   const profile = ESPLORA_CHAIN_PROFILES[chain];
   const url = resolveEsploraUrl(profile);
