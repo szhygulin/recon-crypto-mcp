@@ -1,13 +1,7 @@
 // Shared domain types used across all modules.
 
-import type { RpcProvider, SupportedChain } from "./chains.js";
-import type {
-  PairedBitcoinEntry,
-  PairedBitcoinMultisigWallet,
-  PairedLitecoinEntry,
-  PairedSolanaEntry,
-  PairedTronEntry,
-} from "./devices.js";
+import type { SupportedChain } from "./chains.js";
+import type { TxVerification } from "./tx.js";
 
 export * from "./chains.js";
 
@@ -279,25 +273,7 @@ export interface StakingPosition {
   meta?: Record<string, string | number | boolean>;
 }
 
-export interface PrivilegedRole {
-  role: string;
-  holder: `0x${string}`;
-  isContract: boolean;
-  isMultisig: boolean;
-  hasTimelock: boolean;
-  timelockDelaySeconds?: number;
-}
-
-export interface SecurityReport {
-  address: `0x${string}`;
-  chain: SupportedChain;
-  isVerified: boolean;
-  isProxy: boolean;
-  implementation?: `0x${string}`;
-  admin?: `0x${string}`;
-  dangerousFunctions: string[];
-  privilegedRoles: PrivilegedRole[];
-}
+export * from "./security.js";
 
 /**
  * A TRON token balance. Shaped like TokenAmount but with a base58 `token`
@@ -1077,74 +1053,7 @@ export interface UnsignedSolanaTx {
   };
 }
 
-/**
- * Per-argument decode from the calldata — one entry per ABI input field.
- * `valueHuman` is populated only when we can apply decimals + symbol (known
- * ERC-20 tokens via `TOKEN_META`). For everything else, `value` is the raw
- * stringified bigint / address / bytes and callers render that directly.
- */
-export interface DecodedArg {
-  name: string;
-  type: string;
-  value: string;
-  valueHuman?: string;
-}
-
-/**
- * Local decode of the exact calldata that will be signed. Built from the
- * static ABI registry in `src/abis/*` via viem's `decodeFunctionData`. Never
- * calls a network — if the destination isn't in our registry, `source` is
- * `"none"` and the user is told to rely entirely on the swiss-knife URL.
- */
-export interface HumanDecode {
-  /** Function name (`"supply"`), or `"nativeTransfer"` / `"unknown"`. */
-  functionName: string;
-  /** Full signature like `supply(address,uint256,address,uint16)`. */
-  signature?: string;
-  args: DecodedArg[];
-  /**
-   * - `"local-abi"`: full decode against an ABI in our static registry — `functionName` is the canonical on-chain name and is corroborable against 4byte.directory's selector→name mapping.
-   * - `"local-abi-partial"`: the destination is in our registry but the specific selector/facet isn't (e.g. LiFi Diamond bridge facets) — we surfaced a positional decode of a known shared sub-tuple, but `functionName` is synthetic and MUST NOT be cross-checked against 4byte (a name-equality check would always fail by design).
-   * - `"native"`: pure native-value transfer, no calldata.
-   * - `"none"`: unknown destination, no decode possible.
-   */
-  source: "local-abi" | "local-abi-partial" | "native" | "none";
-}
-
-/**
- * Pre-sign verification payload — attached to EVERY prepared transaction
- * unconditionally. The user is expected to open `decoderUrl` in a browser,
- * compare what swiss-knife.xyz decodes against `humanDecode` in chat, and
- * only approve on Ledger if the two agree. The `payloadHash` is a
- * domain-tagged keccak256 that can be recomputed independently from the
- * swiss-knife URL params and is re-checked at send time against the exact
- * bytes forwarded to WalletConnect (the bytes-we-previewed == bytes-we-sign
- * proof).
- */
-export interface TxVerification {
-  /** keccak256 of `("VaultPilot-txverify-v1:" ‖ chainId ‖ to ‖ value ‖ data)` for EVM; `("VaultPilot-txverify-v1:tron:" ‖ rawDataHex)` for TRON. */
-  payloadHash: `0x${string}`;
-  /** First 8 hex chars (no `0x`) of `payloadHash` — short enough to read off a Ledger screen and eyeball-match. */
-  payloadHashShort: string;
-  /** swiss-knife.xyz decoder URL with calldata, address, chainId preloaded. EVM only; absent when calldata is too large to fit or on TRON. */
-  decoderUrl?: string;
-  /** Fallback when `decoderUrl` can't be built — short instructions telling the user to paste calldata/address/chainId manually. */
-  decoderPasteInstructions?: string;
-  /** Local decode of the calldata (viem + ABI registry). */
-  humanDecode: HumanDecode;
-  /** Canonical comparison string `<chainId>:<to>:<value>:<data>` — exactly the four fields fed into the fingerprint. */
-  comparisonString: string;
-  /**
-   * TRC-20 calldata bytes (`0x` + 4-byte selector + ABI-encoded params) for
-   * `trc20_send` / `trc20_approve` actions. Surfaced so the agent can
-   * (a) decode the recipient slot itself and cross-check it against the
-   * typed base58 address (mirror of EVM CHECK 1), and (b) splice into a
-   * swiss-knife.xyz decoder URL the user can open in the browser. Absent
-   * for native TRX sends, freeze/unfreeze, votes, and other non-ABI
-   * actions — those have no calldata to decode.
-   */
-  tronCalldataHex?: `0x${string}`;
-}
+export * from "./tx.js";
 
 /** Unsigned transaction, ready to be sent to Ledger Live for signing. */
 export interface UnsignedTx {
@@ -1541,96 +1450,4 @@ export interface UnsignedLitecoinTx {
   fingerprint?: `0x${string}`;
 }
 
-export interface UserConfig {
-  rpc: {
-    provider: RpcProvider;
-    /** API key for infura/alchemy. Ignored when provider === "custom". */
-    apiKey?: string;
-    /** Only used when provider === "custom". */
-    customUrls?: Partial<Record<SupportedChain, string>>;
-  };
-  etherscanApiKey?: string;
-  /** Optional 1inch Developer Portal API key for intra-chain swap-quote comparison. */
-  oneInchApiKey?: string;
-  /**
-   * Optional Reservoir API key for the NFT-portfolio tools (`get_nft_*`).
-   * Reservoir's free tier serves anonymous requests but rate-limits at
-   * a tight ceiling that doesn't survive multi-chain portfolio fan-out;
-   * configuring a key avoids 429s. Free key at https://reservoir.tools/.
-   * Env var `RESERVOIR_API_KEY` takes priority over this field.
-   */
-  reservoirApiKey?: string;
-  /**
-   * Safe Transaction Service API key. Required to call `get_safe_positions` and
-   * the v2/v3 propose/execute Safe tools — modern `*.safe.global` endpoints
-   * authenticate every request. Get one at https://developer.safe.global/.
-   * Env var `SAFE_API_KEY` takes priority over this field.
-   */
-  safeApiKey?: string;
-  /**
-   * TronGrid API key (`TRON-PRO-API-KEY` header). Required to read TRX and
-   * TRC-20 balances on the `tron` chain — TronGrid rate-limits unauthenticated
-   * calls to ~15 req/min, which is too tight for portfolio fan-out.
-   */
-  tronApiKey?: string;
-  /**
-   * Solana mainnet RPC URL. Paste the full URL from your provider (Helius,
-   * QuickNode, Alchemy Solana, Triton, etc.) — most include the API key in
-   * the URL (e.g. `https://mainnet.helius-rpc.com/?api-key=KEY`). The public
-   * mainnet endpoint is rate-limited and unreliable for production use;
-   * configuring a provider is strongly recommended. Env var `SOLANA_RPC_URL`
-   * takes priority over this field.
-   */
-  solanaRpcUrl?: string;
-  /**
-   * Bitcoin indexer base URL (Esplora-compatible REST API). Defaults to
-   * mempool.space's free public API; override here when running against a
-   * self-hosted Esplora / Electrs / Mempool.space instance, or any
-   * privacy-preserving relay. Env var `BITCOIN_INDEXER_URL` takes priority
-   * over this field.
-   */
-  bitcoinIndexerUrl?: string;
-  /**
-   * Litecoin indexer base URL (Esplora-compatible REST API). Defaults
-   * to litecoinspace.org's free public API; override here when running
-   * against a self-hosted Esplora / Electrs instance. Env var
-   * `LITECOIN_INDEXER_URL` takes priority over this field.
-   */
-  litecoinIndexerUrl?: string;
-  walletConnect?: {
-    projectId?: string;
-    /** Topic of the active WC session (so we can resume after restart). */
-    sessionTopic?: string;
-    pairingTopic?: string;
-  };
-  /**
-   * Cached Ledger pairings, persisted across server restarts. Public fields
-   * only (addresses, BIP-44 paths, app versions) — no private keys, no
-   * secrets. The signing path always re-derives from the live device and
-   * verifies the address before signing, so a planted/stale entry can at
-   * worst surface a wrong address in `get_ledger_status` (which the user
-   * notices when their balances don't match).
-   */
-  pairings?: {
-    solana?: PairedSolanaEntry[];
-    tron?: PairedTronEntry[];
-    /**
-     * Bitcoin pairings — typically four entries per accountIndex, one
-     * per address type (legacy / p2sh-segwit / segwit / taproot). Same
-     * write-through-to-disk semantics as the Solana / TRON slices.
-     */
-    bitcoin?: PairedBitcoinEntry[];
-    /**
-     * Registered Bitcoin multi-sig wallet policies. One entry per
-     * registered wallet; each carries the descriptor + cosigner xpubs +
-     * Ledger policy HMAC needed to sign subsequent PSBTs without
-     * re-walking the on-device descriptor approval flow.
-     */
-    bitcoinMultisig?: PairedBitcoinMultisigWallet[];
-    /**
-     * Litecoin pairings — same shape as the Bitcoin slice, BIP-44
-     * coin_type 2 instead of 0.
-     */
-    litecoin?: PairedLitecoinEntry[];
-  };
-}
+export * from "./config.js";
