@@ -7,6 +7,7 @@ import type {
   StakingPosition,
   TokenAmount,
 } from "./positions.js";
+import type { PortfolioCoverage } from "./portfolio.js";
 import type { TxVerification } from "./tx.js";
 
 export * from "./chains.js";
