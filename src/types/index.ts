@@ -1,5 +1,14 @@
 // Shared domain types used across all modules.
 
+import type { RpcProvider, SupportedChain } from "./chains.js";
+import type {
+  PairedBitcoinEntry,
+  PairedBitcoinMultisigWallet,
+  PairedLitecoinEntry,
+  PairedSolanaEntry,
+  PairedTronEntry,
+} from "./devices.js";
+
 export * from "./chains.js";
 
 /** A token balance with optional USD valuation. */
