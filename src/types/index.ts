@@ -1,13 +1,7 @@
 // Shared domain types used across all modules.
 
-import type { RpcProvider, SupportedChain } from "./chains.js";
-import type {
-  PairedBitcoinEntry,
-  PairedBitcoinMultisigWallet,
-  PairedLitecoinEntry,
-  PairedSolanaEntry,
-  PairedTronEntry,
-} from "./devices.js";
+import type { SupportedChain } from "./chains.js";
+import type { TxVerification } from "./tx.js";
 
 export * from "./chains.js";
 
