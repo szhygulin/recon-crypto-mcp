@@ -95,7 +95,7 @@ export function truncateHex(data: string, bytelenLabel: boolean): string {
  * doesn't want to eyeball here anyway.
  */
 const HEX_BLOB_RE = /0x[0-9a-fA-F]{67,}/g;
-export function truncateNestedHex(s: string): string {
+function truncateNestedHex(s: string): string {
   return s.replace(HEX_BLOB_RE, (m) => {
     const byteLen = Math.floor((m.length - 2) / 2);
     return `${m.slice(0, 14)}…${m.slice(-8)} (${byteLen} bytes)`;
