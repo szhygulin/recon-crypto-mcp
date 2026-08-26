@@ -13,7 +13,7 @@ import * as ltcIndexer from "../src/modules/litecoin/indexer.js";
  * this pins that shape so neither barrel can silently re-accumulate a
  * local implementation or a local type block.
  *
- * Checked entirely via source text (no tsc / running build in this
+ * Checked via source text plus two live namespace imports (no tsc in this
  * environment): the barrels' own exports are TYPE aliases for the most
  * part, which are erased at runtime, so a plain `import *` + `Object.keys`
  * check (as `test/execution-decomposition.test.ts` uses for its
@@ -76,7 +76,7 @@ function listTsFilesRecursive(relDir: string): string[] {
 /**
  * Strip `/* *\/` and `//` comments before running any structural regex
  * over source text, so prose that happens to mention "class" (e.g.
- * `btc/multisig.ts`'s "attack class" discussion) can't fire a check
+ * `the barrels' own doc prose`'s "attack class" discussion) can't fire a check
  * meant to catch real declarations.
  */
 function stripComments(source: string): string {
@@ -120,13 +120,18 @@ const HTTP_IMPORT_RE = /from\s+["'][^"']*\bdata\/http(?:\.js)?["']/;
  *    `fetch(` in the same file — catches a duck-typed client that never
  *    declares `implements` at all.
  */
-const IMPLEMENTS_IFACE_RE = /\bimplements\s+(?:Esplora|Btc\w*Esplora\w*)Client\b/;
+const IMPLEMENTS_IFACE_RE =
+  /\bimplements\s+(?:(?:Esplora|Btc\w*Esplora\w*)Client|(?:Bitcoin|Litecoin)Indexer)\b/;
 const HAS_BASE_URL_RE = /\bbaseUrl\b/;
 const HAS_REQUEST_CALL_RE = /\b(?:fetchWithTimeout|fetch)\s*\(/;
 
 function definesEsploraLikeClient(source: string): boolean {
   const src = stripComments(source);
   if (IMPLEMENTS_IFACE_RE.test(src)) return true;
+  // Duck-type branch requires an actual class token: a class-less file with
+  // a hoisted baseUrl const plus a fetch call (e.g. btc/price.ts one
+  // refactor away) is not a client and must not turn this guard red.
+  if (!CLASS_RE.test(src)) return false;
   return HAS_BASE_URL_RE.test(src) && HAS_REQUEST_CALL_RE.test(src);
 }
 
@@ -165,7 +170,6 @@ function exportedNames(source: string): string[] {
  */
 function valueExportedNames(ns: Record<string, unknown>): string[] {
   return Object.keys(ns)
-    .filter((k) => typeof ns[k] === "function")
     .sort();
 }
 
