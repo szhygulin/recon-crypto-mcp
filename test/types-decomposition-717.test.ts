@@ -32,12 +32,24 @@ function read(file: string): string {
   return readFileSync(join(typesDir, file), "utf8");
 }
 
-/** Every top-level `export interface|type|const|function|enum|class Name` in a file's source text. */
+/** Strips /* ... *\/ block-comment spans (non-greedy, multiline) before line-scanning,
+ * so a JSDoc header or commented-out code can't be mistaken for live source. */
+function stripBlockComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+/**
+ * Every top-level exported declaration name in a file's source text (block comments
+ * stripped first, per stripBlockComments above). Covers interface|type|const|function|
+ * enum|class plus declare/namespace/abstract class/async function/let/var, and treats
+ * `const enum` as one keyword so its name isn't misread as the literal word "enum".
+ */
 function declaredNames(src: string): string[] {
   const names: string[] = [];
-  const re = /^export (?:interface|type|const|function|enum|class) (\w+)/gm;
+  const re =
+    /^export (?:declare )?(?:abstract )?(?:async )?(?:const enum|interface|type|const|function|enum|class|namespace|let|var) (\w+)/gm;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(src))) names.push(m[1]);
+  while ((m = re.exec(stripBlockComments(src)))) names.push(m[1]);
   return names.sort();
 }
 
@@ -133,11 +145,22 @@ describe("types/index.ts decomposition (#717, ARCHITECTURE §5.4)", () => {
     expect(total).toBe(59);
   });
 
+  it("src/types/ contains exactly the seven domain files plus index.ts — no undeclared file slips the allowlist net", () => {
+    // Regression: an unlisted file (e.g. misc.ts) added under src/types/ with its own
+    // `export *` line is never iterated by the per-file checks below and would pass
+    // silently, widening the barrel's surface outside the #717 split plan.
+    const actual = readdirSync(typesDir)
+      .filter((f) => f.endsWith(".ts"))
+      .sort();
+    const expected = [...Object.keys(DOMAIN_ALLOWLISTS), "index.ts"].sort();
+    expect(actual).toEqual(expected);
+  });
+
   it("index.ts is a pure re-export barrel — no domain type defined inline", () => {
     const src = read("index.ts");
     expect(declaredNames(src)).toEqual([]);
 
-    const codeLines = src
+    const codeLines = stripBlockComments(src)
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("//"));
@@ -168,6 +191,24 @@ describe("types/index.ts decomposition (#717, ARCHITECTURE §5.4)", () => {
       expect(declaredNames(read(file))).toEqual(allowlist);
     });
   }
+
+  it("domain files declare, never re-export — no `export *` or `export type { ... }` widening the barrel", () => {
+    // Regression: a domain file containing `export * from "./other.js"` or
+    // `export type { X } from "./other.js"` satisfies every allowlist-name check above
+    // (declaredNames only looks for declarations) while silently widening what that
+    // file publicly exposes.
+    for (const file of Object.keys(DOMAIN_ALLOWLISTS)) {
+      const codeLines = stripBlockComments(read(file))
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && !l.startsWith("//"));
+      for (const line of codeLines) {
+        expect(line, `${file} re-exports instead of declaring: ${line}`).not.toMatch(
+          /^export (type )?(\*|\{)/,
+        );
+      }
+    }
+  });
 
   it("no file under src/types/ imports its own barrel (./index.js) — no reintroduced cycle", () => {
     const files = readdirSync(typesDir).filter((f) => f.endsWith(".ts"));
