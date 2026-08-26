@@ -75,9 +75,8 @@ function listTsFilesRecursive(relDir: string): string[] {
 
 /**
  * Strip `/* *\/` and `//` comments before running any structural regex
- * over source text, so prose that happens to mention "class" (e.g.
- * `the barrels' own doc prose`'s "attack class" discussion) can't fire a check
- * meant to catch real declarations.
+ * over source text, so prose that happens to mention "class" can't fire a
+ * check meant to catch real declarations.
  */
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
