@@ -49,7 +49,8 @@ function declaredNames(src: string): string[] {
   const re =
     /^export (?:declare )?(?:abstract )?(?:async )?(?:const enum|interface|type|const|function|enum|class|namespace|let|var) (\w+)/gm;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(stripBlockComments(src)))) names.push(m[1]);
+  const stripped = stripBlockComments(src);
+  while ((m = re.exec(stripped))) names.push(m[1]);
   return names.sort();
 }
 
@@ -214,7 +215,9 @@ describe("types/index.ts decomposition (#717, ARCHITECTURE §5.4)", () => {
     const files = readdirSync(typesDir).filter((f) => f.endsWith(".ts"));
     expect(files.length).toBeGreaterThan(0);
 
-    const offenders = files.filter((f) => /from\s+["']\.\/index\.js["']/.test(read(f)));
+    const offenders = files.filter((f) =>
+      /from\s+["']\.\/index\.js["']/.test(stripBlockComments(read(f))),
+    );
     expect(
       offenders,
       `files under src/types/ importing ./index.js (would reintroduce a barrel cycle): ${offenders.join(", ")}`,
