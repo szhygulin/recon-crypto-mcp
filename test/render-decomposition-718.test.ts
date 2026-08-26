@@ -11,6 +11,10 @@ import * as tron from "../src/signing/render/tron.js";
 import * as evm from "../src/signing/render/evm.js";
 import * as solana from "../src/signing/render/solana.js";
 import * as notices from "../src/signing/render/notices.js";
+// The barrel itself, imported directly (regression: every other import in
+// this file goes straight to a chain module, so a dropped `export *` line
+// in render-verification.ts would otherwise never be exercised).
+import * as barrel from "../src/signing/render-verification.js";
 
 /**
  * Structural falsifier for the render-verification.ts decomposition
@@ -22,7 +26,13 @@ import * as notices from "../src/signing/render/notices.js";
  *
  *  2. EXPORT-ALLOWLIST + RESOLUTION: each per-chain `src/signing/render/*.ts`
  *     module exists and exports EXACTLY its allowlisted entry points, per
- *     the split plan's inventory (issue #718 comment). This is the §5
+ *     the split plan's inventory (issue #718 comment), AND each of those
+ *     entry points resolves through the barrel (render-verification.ts) to
+ *     the identical function object — the literal reading of "each
+ *     per-chain render entry point resolves to its chain module" (§5.3).
+ *     A dropped `export *` line in the barrel is caught here even though
+ *     every other assertion in this file imports the chain modules
+ *     directly and never touches render-verification.ts. This is the §5
  *     preamble's per-module allowlist that keeps the one-time split from
  *     silently un-happening.
  *
@@ -50,7 +60,11 @@ const BARREL_PATH = path.join(
 // comment's per-chain inventory. Interfaces (e.g. `AutoInstallContext`,
 // `RenderableSolanaPrepareResult`) are TS-only and erased at compile time,
 // so they never appear as runtime module exports and are intentionally
-// absent from these lists — only function entry points are checked.
+// absent from these lists. The check below compares the module's FULL
+// runtime export surface (`Object.keys`), not just its functions, so a
+// future `export const` (or any other non-function export) landing outside
+// the allowlist fails too — ARCHITECTURE.md §5 requires ANY new export to
+// fail this check, not only new functions.
 const MODULE_ALLOWLISTS: Record<string, { ns: Record<string, unknown>; allow: string[] }> = {
   "format.ts": {
     ns: format as unknown as Record<string, unknown>,
@@ -117,19 +131,26 @@ const MODULE_ALLOWLISTS: Record<string, { ns: Record<string, unknown>; allow: st
   },
 };
 
-function exportedFunctionNames(ns: Record<string, unknown>): string[] {
-  return Object.keys(ns)
-    .filter((k) => typeof ns[k] === "function")
-    .sort();
-}
-
 // Matches an actual import/require of render-verification (any relative
 // depth, with or without a .js/.ts extension) — never a substring inside a
-// string literal, comment, or Markdown link. Anchored to statement-leading
-// `import` / dynamic `import(` / `require(` so a docstring URL mentioning
-// the file path in prose cannot match.
+// string literal, comment, or Markdown link. Four forms, each a distinct
+// cycle-creating regression:
+//  - `import ... from "...render-verification..."` (anchored to line start)
+//  - `export ... from "...render-verification..."` — a re-export creates
+//    the same cycle as an import (regression: previously only `import` was
+//    in the leading-keyword alternation, so `export { x } from
+//    "../render-verification.js"` evaded).
+//  - bare `import "...render-verification..."` with no `from` clause
+//    (regression: the import-from alternative requires a literal `from`,
+//    so a side-effect-only import evaded).
+//  - `import(...)`, left UNANCHORED to the line start so an assignment
+//    prefix doesn't hide it (regression: `const x = await
+//    import("...render-verification...")` evaded when this alternative was
+//    anchored, since the line starts with `const`, not `import(`).
+// `require(...)` stays anchored behind a leading const/let/var, unchanged
+// from the original design (not one of the evasions above).
 const BACK_IMPORT_RE =
-  /^\s*(import\b[^;]*from\s+["'][^"']*render-verification(?:\.[jt]s)?["']|import\(\s*["'][^"']*render-verification(?:\.[jt]s)?["']\s*\)|(?:const|let|var)\s+.*require\(\s*["'][^"']*render-verification(?:\.[jt]s)?["']\s*\))/m;
+  /^\s*(?:import|export)\b[^;]*from\s+["'][^"']*render-verification(?:\.[jt]s)?["']|^\s*import\s+["'][^"']*render-verification(?:\.[jt]s)?["']|import\(\s*["'][^"']*render-verification(?:\.[jt]s)?["']\s*\)|^\s*(?:const|let|var)\s+.*require\(\s*["'][^"']*render-verification(?:\.[jt]s)?["']\s*\)/m;
 
 describe("render-verification.ts decomposition (#718, ARCHITECTURE §5.3)", () => {
   it("render-verification.ts is a pure barrel: only re-export lines, no declarations", () => {
@@ -151,7 +172,20 @@ describe("render-verification.ts decomposition (#718, ARCHITECTURE §5.3)", () =
   for (const [file, { ns, allow }] of Object.entries(MODULE_ALLOWLISTS)) {
     it(`render/${file} exists and exports EXACTLY its allowlisted entry points`, () => {
       expect(existsSync(path.join(RENDER_DIR, file))).toBe(true);
-      expect(exportedFunctionNames(ns)).toEqual([...allow].sort());
+      // Plain key equality against the FULL export surface (regression: a
+      // `typeof === "function"` filter here would let a future
+      // `export const` escape the allowlist undetected — interfaces erase
+      // at runtime and never appear in Object.keys either way, so filtering
+      // to functions bought nothing but a blind spot).
+      expect(Object.keys(ns).sort()).toEqual([...allow].sort());
+      // Barrel resolution: each allowlisted export must be the SAME
+      // function object when reached through render-verification.ts
+      // (regression: this file's other assertions only ever import the
+      // chain module directly, so a dropped `export *` line in the barrel
+      // would pass every check above while breaking every real caller).
+      for (const name of allow) {
+        expect(Object.is((barrel as Record<string, unknown>)[name], ns[name])).toBe(true);
+      }
     });
   }
 
@@ -175,12 +209,29 @@ describe("render-verification.ts decomposition (#718, ARCHITECTURE §5.3)", () =
   it("control: the back-import check actually fires on a real import statement", () => {
     // Proves the regex isn't vacuously passing — a known-bad line trips it.
     expect(BACK_IMPORT_RE.test('import { x } from "../render-verification.js";')).toBe(true);
-    // And the pinned Markdown-link prose in solana.ts (same substring,
-    // no import keyword) must NOT trip it.
+    // Regression coverage for the three forms that evaded the prior regex:
+    // export-from re-export.
     expect(
-      BACK_IMPORT_RE.test(
-        '    "  > [Verifier source](https://github.com/szhygulin/vaultpilot-mcp/blob/main/src/signing/render-verification.ts).",',
-      ),
-    ).toBe(false);
+      BACK_IMPORT_RE.test('export { renderVerificationBlock } from "../render-verification.js";'),
+    ).toBe(true);
+    // bare side-effect import (no `from` clause).
+    expect(BACK_IMPORT_RE.test('import "../render-verification.js";')).toBe(true);
+    // assigned dynamic import.
+    expect(
+      BACK_IMPORT_RE.test('const mod = await import("../render-verification.js");'),
+    ).toBe(true);
+
+    // And the pinned Markdown-link prose in solana.ts (same substring, no
+    // import/export/require keyword) must NOT trip it. Read the REAL line
+    // from the actual file at test runtime rather than hand-typing a
+    // paraphrase, so this control stays coupled to the exact text it is
+    // meant to prove is a false-positive risk (regression: a paraphrase can
+    // silently drift from render/solana.ts and stop proving anything).
+    const solanaSrc = readFileSync(path.join(RENDER_DIR, "solana.ts"), "utf8");
+    const verifierSourceLines = solanaSrc
+      .split("\n")
+      .filter((l) => l.includes("[Verifier source]"));
+    expect(verifierSourceLines.length).toBe(1);
+    expect(BACK_IMPORT_RE.test(verifierSourceLines[0])).toBe(false);
   });
 });
